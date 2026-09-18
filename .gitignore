@@ -1,0 +1,21 @@
+work/
+data/
+outputs/
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+.pytest_cache/
+.pytest-tmp/
+.ruff_cache/
+*.egg-info/
+.DS_Store
+
+# Local-only coding-agent working files (collaboration rules and handoff notes)
+AGENTS.md
+CLAUDE.md
+HANDOFF.md
+ROLES.md
+TASKS.md
