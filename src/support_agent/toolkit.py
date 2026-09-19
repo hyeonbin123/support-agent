@@ -89,6 +89,7 @@ class ToolSpec:
     write: bool  # True = changes the DB (confirmation, approval and the MCP write scope apply)
     unordered_args: tuple[str, ...] = ()  # list arguments whose order carries no meaning
     terminates: bool = False  # True = the conversation ends after a successful call (hand-off)
+    uncompared_args: tuple[str, ...] = ()  # free text and the like: ignored when calls are compared
 
     def schema(self) -> dict[str, Any]:
         return {"name": self.name, "description": self.description, "parameters": llm_schema(self.args_model)}
@@ -118,7 +119,11 @@ BeforeWrite = Callable[[ToolSpec, dict[str, Any]], ToolResult | None]
 
 
 def tool(
-    *, write: bool, unordered_args: tuple[str, ...] = (), terminates: bool = False
+    *,
+    write: bool,
+    unordered_args: tuple[str, ...] = (),
+    terminates: bool = False,
+    uncompared_args: tuple[str, ...] = (),
 ) -> Callable[[Handler], ToolSpec]:
     """Turn `def name(session, ctx, args: SomeArgs) -> dict` with a docstring into a ToolSpec.
 
@@ -132,7 +137,14 @@ def tool(
         if not fn.__doc__:
             raise TypeError(f"{fn.__name__}: the docstring is the tool description and is required")
         return ToolSpec(
-            fn.__name__, inspect.cleandoc(fn.__doc__), args_model, fn, write, unordered_args, terminates
+            fn.__name__,
+            inspect.cleandoc(fn.__doc__),
+            args_model,
+            fn,
+            write,
+            unordered_args,
+            terminates,
+            uncompared_args,
         )
 
     return wrap
@@ -155,9 +167,9 @@ def make_registry(*specs: ToolSpec) -> Registry:
         flat = json.dumps(schema)
         if "$ref" in flat or "anyOf" in flat:
             raise ValueError(f"{spec.name}: the argument schema must be flat (no $ref, no anyOf)")
-        for arg in spec.unordered_args:
+        for arg in (*spec.unordered_args, *spec.uncompared_args):
             if arg not in spec.args_model.model_fields:
-                raise ValueError(f"{spec.name}: unordered_args names an unknown field {arg!r}")
+                raise ValueError(f"{spec.name}: unordered_args/uncompared_args name an unknown field {arg!r}")
         registry[spec.name] = spec
     return registry
 

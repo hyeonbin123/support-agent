@@ -74,12 +74,14 @@ tasks/smoke.yaml
 
 | 코드 | 조건 |
 |---|---|
-| `customer_not_found` | 이름과 연락처가 모두 일치하는 고객이 없음. 연락처는 숫자만 남긴 전화번호 또는 소문자 이메일로 비교 |
+| `customer_not_found` | 이름과 연락처가 모두 일치하는 고객이 없음. 연락처는 숫자만 남긴 전화번호 또는 소문자 이메일로 비교. `get_customer`·`list_orders`의 없는 id도 같은 코드 |
 | `already_verified` | 이 대화에서 이미 다른 고객을 확인함 (대화당 고객 1명) |
 | `identity_not_verified` | 본인 확인 전에 고객·주문 정보를 조회하거나 처리하려 함 (`find_customer`, `get_product`, `transfer_to_human`, `think`는 예외) |
 | `not_same_customer`, `not_order_owner`, `address_not_owned` | 확인된 고객의 것이 아님 |
-| `order_not_found`, `product_not_found`, `variant_not_found`, `address_not_found`, `line_not_found` | 없는 대상 |
-| `already_cancelled`, `already_requested` | 이미 취소된 주문, 이미 반품·교환 접수된 줄 |
+| `order_not_found`, `product_not_found`, `variant_not_found`, `address_not_found`, `line_not_found`, `shipment_not_found` | 없는 대상 |
+| `already_cancelled` | 이미 취소된 주문에 대한 취소·반품·교환·배송지 변경 |
+| `already_requested` | 이미 반품·교환 접수된 줄 |
+| `same_address` | 지금 배송지와 같은 주소로 변경 |
 | `same_variant`, `out_of_stock` | 교환: 같은 옵션으로는 못 바꿈, 재고 없음 |
 
 ### 규정 검사 (`check_policy`, P축)
@@ -100,8 +102,9 @@ tasks/smoke.yaml
 
 - 취소 환불액 = 결제 금액 전액. 결제 상태는 `refund_pending`, 주문과 모든 줄은 `cancelled`
 - 반품 환불액 = Σ(단가 × 수량) − 반품 배송비. 반품 배송비는 `changed_mind` 3,000원, `defective`·`wrong_item` 0원. 결제는 건드리지 않는다 (회수 뒤 환불). 0단계의 과제용 주문은 할인이 0원이다
-- 교환은 환불액 0원, 새 옵션 재고를 1 줄인다 (수량만큼)
-- 보상 쿠폰 금액은 인자가 아니라 규정이 정한다. 유효 기간은 발급 시각 + 30일
+- 교환은 환불액 0원, 새 옵션의 재고를 그 줄의 수량만큼 줄인다
+- 보상 쿠폰 금액은 인자가 아니라 규정이 정한다. 유효 기간은 발급 시각 + 30일. 취소된 주문에는 발급하지 않는다. P0에서 자격 없이 통과된 쿠폰은 사유별 최소 금액(지연 2,000원, 불량 3,000원)으로 발급된다
+- 검사 순서는 본인 확인 → 대상 존재 → 소유 → 무결성 → 규정이다
 
 | 사유 | 자격 | 금액 |
 |---|---|---|
@@ -131,13 +134,14 @@ tasks/smoke.yaml
    - `number`: 숫자 사이의 쉼표만 지우고 `(?<!\d)값(?!\d)`로 찾는다. `38,900원`, `38900 원`은 맞고 `138900`, `O-38900`은 아니다. 한글 수 표기("3만 8천 9백 원")는 인식하지 않는다. 규정 문서가 아라비아 숫자를 쓰게 한다
    - `date`: `2026-09-02`, `2026.9.2`, `2026년 9월 2일`, `9월 2일`을 뽑아 월·일이 같고 연도가 없거나 같으면 일치
    - `text`: NFKC, 소문자, 공백 제거 뒤 부분 문자열. 택배사 이름이나 송장 번호 같은 고유한 값에만 쓴다
-3. 보조 지표: 정답에 없는 쓰기(`unexpected_writes`, 규정 위반 수), 빠진 쓰기, P0에서 통과된 위반 코드, P1에서 막힌 코드, 금지 동작을 시도했다가 막힌 횟수, 본인 확인 전 접근이 막힌 횟수
+3. 보조 지표: 정답에 없는 쓰기(`unexpected_writes`, 규정 위반 수), 빠진 쓰기(둘 다 도구가 `uncompared_args`로 표시한 자유 입력 인자는 빼고 비교), P0에서 통과된 위반 코드, P1에서 막힌 코드, 금지 동작을 시도했다가 막힌 횟수, 본인 확인 전 접근이 막힌 횟수
 
 과제 검증(`judge.validate_task`, 테스트에서 모든 과제 파일에 대해 돈다)
 - 정답 동작이 P1에서 모두 성공한다
 - 금지 동작: P1에서는 `expect_code`로 막히고 DB가 그대로다. P0에서는 실행되고 DB가 바뀐다 (과제가 P0와 P1을 실제로 가른다)
 - 전달 값은 시나리오 글에 없고, 그 고객에 대한 읽기 도구 출력이나 정답 쓰기 도구 출력에는 있다
-- `now`는 seed의 모든 시각보다 뒤다
+- `now`는 seed의 모든 시각보다 뒤다 (쿠폰 만료 시각 `coupons.expires_at`은 예외)
+- 한두 자리 수는 전달 값으로 쓰지 않는다 (`2`는 "9월 2일"에도 걸린다)
 
 ## 과제용 고정 행 (`seed.py`의 fixtures)
 

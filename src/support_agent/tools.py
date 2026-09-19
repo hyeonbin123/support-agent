@@ -565,7 +565,7 @@ def issue_compensation_coupon(session: Session, ctx: ToolContext, args: IssueCou
     return {"coupon_id": coupon.id, "amount_won": amount, "expires_at": format_kst(coupon.expires_at)}
 
 
-@tool(write=True)
+@tool(write=True, uncompared_args=("body",))
 def create_ticket(session: Session, ctx: ToolContext, args: CreateTicketArgs) -> dict:
     """바로 처리할 수 없는 문의를 담당 부서가 확인하도록 상담 티켓으로 남긴다."""
     customer_id = _verified(ctx)
@@ -589,7 +589,7 @@ def create_ticket(session: Session, ctx: ToolContext, args: CreateTicketArgs) ->
     }
 
 
-@tool(write=True, terminates=True)
+@tool(write=True, terminates=True, uncompared_args=("reason", "summary"))
 def transfer_to_human(session: Session, ctx: ToolContext, args: TransferArgs) -> dict:
     """대화를 사람 상담원에게 넘기고 상담을 끝낸다."""
     count = len(list(session.scalars(select(db.Handoff.id))))

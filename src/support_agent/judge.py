@@ -25,6 +25,7 @@ from support_agent.toolkit import (
     ToolBugError,
     ToolContext,
     ToolResult,
+    ToolSpec,
     canonical_args,
     execute,
 )
@@ -138,8 +139,10 @@ def delivered_texts(messages: Sequence[Message]) -> list[str]:
 # ---------------------------------------------------------------- verdict
 
 
-def _dumps(args: Mapping[str, Any]) -> str:
-    return json.dumps(args, sort_keys=True, ensure_ascii=False)
+def _dumps(args: Mapping[str, Any], spec: ToolSpec | None = None) -> str:
+    """Arguments as a comparable string, without the ones the tool marks as uncompared (free text)."""
+    skip = spec.uncompared_args if spec else ()
+    return json.dumps({k: v for k, v in args.items() if k not in skip}, sort_keys=True, ensure_ascii=False)
 
 
 def _action_key(action: ToolAction, registry: Registry) -> tuple[str, str]:
@@ -148,13 +151,14 @@ def _action_key(action: ToolAction, registry: Registry) -> tuple[str, str]:
     if spec is None:
         return action.tool, _dumps(action.args)
     try:
-        return action.tool, _dumps(canonical_args(spec, spec.args_model.model_validate(action.args)))
+        return action.tool, _dumps(canonical_args(spec, spec.args_model.model_validate(action.args)), spec)
     except ValueError:  # pydantic's ValidationError; validate_task reports such a task
         return action.tool, _dumps(action.args)
 
 
-def _log_key(log: ToolCallLog) -> tuple[str, str]:
-    return log.name, _dumps(log.args if log.args is not None else log.raw_arguments)
+def _log_key(log: ToolCallLog, registry: Registry) -> tuple[str, str]:
+    args = log.args if log.args is not None else log.raw_arguments
+    return log.name, _dumps(args, registry.get(log.name))
 
 
 def judge(
@@ -174,7 +178,7 @@ def judge(
     for required in task.required_values:
         values[required.label] = values.get(required.label, True) and value_found(required, texts)
 
-    done = Counter(_log_key(log) for log in tool_log if log.ok and log.write)
+    done = Counter(_log_key(log, registry) for log in tool_log if log.ok and log.write)
     gold = Counter(_action_key(action, registry) for action in task.gold_actions)
     forbidden = {_action_key(action, registry) for action in task.forbidden_actions}
     blocked = [log for log in tool_log if log.policy_blocked]
@@ -188,7 +192,7 @@ def judge(
         missing_writes=sum((gold - done).values()),
         policy_violations=[code for log in tool_log for code in log.violations],
         policy_blocks=[log.error_code or "" for log in blocked],
-        blocked_forbidden_attempts=sum(1 for log in blocked if _log_key(log) in forbidden),
+        blocked_forbidden_attempts=sum(1 for log in blocked if _log_key(log, registry) in forbidden),
         auth_blocks=sum(1 for log in tool_log if log.error_code == AUTH_ERROR_CODE),
         db_diff=db.diff_dumps(gold_dump, final_dump),
     )

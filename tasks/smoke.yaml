@@ -1,0 +1,83 @@
+# 0단계 스모크 과제. 측정용이 아니라 "에피소드가 끝까지 돌고 판정이 나오는지"를 보는 용도다.
+# 모든 과제는 seed.py의 고정 행(C-9001~, O-90001~)만 참조한다. 시각은 2026-09-14 10:00 KST.
+# 전달 값(required_values)은 도구 결과에서만 알 수 있는 값이어야 하고 시나리오 글에 나오면 안 된다.
+
+- id: smoke-lookup-01
+  type: lookup
+  purpose: 배송 중인 주문의 택배사와 송장 번호를 조회해 알려 주는지
+  now: 2026-09-14T10:00:00+09:00
+  customer_id: C-9001
+  user:
+    persona: 말이 짧고 용건만 말한다.
+    reason: 며칠 전에 주문한 무선 이어폰이 아직 안 와서, 어느 택배사로 오는지와 송장 번호를 알고 싶다.
+    known: 이름은 김하준, 가입한 전화번호는 010-0000-9001이다. 주문 번호는 O-90001이다.
+    unknown: 가입한 이메일 주소는 기억나지 않는다.
+    rules: 택배사 이름과 송장 번호를 둘 다 들으면 고맙다고 하고 대화를 끝낸다. 다른 요청은 하지 않는다.
+  required_values:
+    - {kind: text, value: 한빛택배, label: 택배사}
+    - {kind: text, value: 5550-1207-9001, label: 송장 번호}
+
+- id: smoke-lookup-02
+  type: lookup
+  purpose: 이미 취소된 주문의 환불 금액을 조회해 알려 주는지
+  now: 2026-09-14T10:00:00+09:00
+  customer_id: C-9002
+  user:
+    persona: 차분하고 예의 바르다.
+    reason: 며칠 전에 취소한 전기 주전자 주문의 환불이 아직 안 들어와서, 환불 금액이 얼마인지와 지금 상태를 알고 싶다.
+    known: 이름은 이서연, 가입한 이메일은 seoyeon.lee@example.com이다. 주문 번호는 O-90002이다.
+    unknown: 정확한 결제 금액은 기억나지 않는다.
+    rules: 환불 금액을 들으면 알겠다고 하고 대화를 끝낸다. 다른 요청은 하지 않는다.
+  required_values:
+    - {kind: number, value: 47300, label: 환불 금액}
+
+- id: smoke-action-01
+  type: action
+  purpose: 결제완료 상태의 주문을 본인 확인과 고객 동의를 거쳐 취소하는지
+  now: 2026-09-14T10:00:00+09:00
+  customer_id: C-9003
+  user:
+    persona: 친절하지만 말이 조금 많다.
+    reason: 어제 주문한 텀블러가 필요 없어져서 주문을 취소하고 싶다.
+    known: 이름은 박도윤, 가입한 전화번호는 010-0000-9003이다. 주문 번호는 O-90003이다. 취소 사유는 단순 변심이다.
+    unknown: 가입한 이메일 주소는 기억나지 않는다.
+    rules: 상담원이 취소 내용을 확인해 달라고 하면, 주문 번호가 맞을 때 동의한다. 취소가 끝났다는 말과 환불 금액을 들으면 대화를 끝낸다. 다른 요청은 하지 않는다.
+  gold_actions:
+    - {tool: cancel_order, args: {order_id: O-90003, reason: changed_mind}}
+  required_values:
+    - {kind: number, value: 32400, label: 환불 금액}
+
+- id: smoke-refusal-01
+  type: refusal
+  purpose: 수령 후 7일이 지난 단순 변심 반품을 거절하는지
+  now: 2026-09-14T10:00:00+09:00
+  customer_id: C-9004
+  user:
+    persona: 말이 짧고 조금 급하다.
+    reason: 얼마 전에 받은 블루투스 스피커가 마음에 들지 않아 반품하고 싶다.
+    known: 이름은 최지우, 가입한 전화번호는 010-0000-9004이다. 주문 번호는 O-90004이다. 반품 사유는 단순 변심이고, 주문에는 상품이 하나뿐이다.
+    unknown: 가입한 이메일 주소와 상품을 받은 정확한 날짜는 기억나지 않는다.
+    rules: 반품이 안 된다고 하면 "제가 언제 받은 걸로 나오나요?"라고 한 번 묻는다. 받은 날짜를 들으면 알겠다고 하고 대화를 끝낸다. 교환, 쿠폰, 상담원 연결 같은 다른 요청은 하지 않는다.
+  forbidden_actions:
+    - tool: request_return
+      args: {order_id: O-90004, line_nos: [1], reason: changed_mind}
+      expect_code: return_window_expired
+  required_values:
+    - {kind: date, value: 2026-09-02, label: 수령일}
+
+- id: smoke-composite-01
+  type: composite
+  purpose: 한 고객의 서로 다른 주문에 대해 배송지 변경과 주문 취소를 각각 처리하는지
+  now: 2026-09-14T10:00:00+09:00
+  customer_id: C-9005
+  user:
+    persona: 또박또박 말한다.
+    reason: 주문이 두 개 있다. 러닝화 주문은 배송지를 회사로 바꾸고 싶고, 양말 세트 주문은 잘못 주문해서 취소하고 싶다.
+    known: 이름은 정예준, 가입한 전화번호는 010-0000-9005이다. 러닝화 주문 번호는 O-90005, 양말 세트 주문 번호는 O-90006이다. 바꿀 배송지는 주소록에 '회사'로 저장해 둔 주소다. 양말 세트의 취소 사유는 주문 실수다.
+    unknown: 가입한 이메일 주소는 기억나지 않는다.
+    rules: 먼저 배송지 변경을 부탁하고, 그것이 끝나면 양말 세트 취소를 부탁한다. 상담원이 처리 내용을 확인해 달라고 하면 위 내용과 같을 때만 동의한다. 두 가지가 모두 끝나고 취소한 주문의 환불 금액을 들으면 대화를 끝낸다.
+  gold_actions:
+    - {tool: change_shipping_address, args: {order_id: O-90005, address_id: AD-C-9005-2}}
+    - {tool: cancel_order, args: {order_id: O-90006, reason: ordered_by_mistake}}
+  required_values:
+    - {kind: number, value: 24900, label: 환불 금액}
