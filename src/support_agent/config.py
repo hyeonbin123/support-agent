@@ -25,7 +25,9 @@ Termination = Literal[
     "context_limit",
     "infra_error",
 ]
-JUDGED: frozenset[str] = frozenset({"user_stop", "out_of_scope", "handoff"})
+# max_user_turns is judged too: ending the conversation is the simulator's job, and an agent gains
+# nothing by stalling (the database and what it said are judged as they are).
+JUDGED: frozenset[str] = frozenset({"user_stop", "out_of_scope", "handoff", "max_user_turns"})
 
 
 @dataclass(frozen=True)

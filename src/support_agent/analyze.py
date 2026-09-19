@@ -20,6 +20,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from support_agent.config import JUDGED
 from support_agent.judge import pass_hat_k
 
 BOOTSTRAP_ROUNDS = 10_000
@@ -45,11 +46,23 @@ def task_type(task_id: str, types: dict[str, str]) -> str:
     return types.get(task_id, "?")
 
 
+def is_success(episode: dict[str, Any]) -> bool:
+    """Success by the current rules, recomputed from the recorded parts of the verdict (older records were
+    written when fewer endings were judged)."""
+    verdict = episode["verdict"]
+    return bool(
+        verdict
+        and episode["termination"] in JUDGED
+        and verdict["db_match"]
+        and all(verdict["values"].values())
+    )
+
+
 def successes_by_task(episodes: list[dict[str, Any]]) -> dict[str, list[bool]]:
     by_task: dict[str, list[bool]] = {}
     for e in episodes:
         if e["status"] != "infra_error":
-            by_task.setdefault(e["task_id"], []).append(bool(e["verdict"]["success"]))
+            by_task.setdefault(e["task_id"], []).append(is_success(e))
     return by_task
 
 
@@ -99,7 +112,7 @@ def table(run_dirs: list[Path]) -> str:
     for name, eps in runs.items():
         by_task = successes_by_task(eps)
         infra = sum(e["status"] == "infra_error" for e in eps)
-        truncated = sum(e["status"] == "truncated" for e in eps)
+        truncated = sum(e["status"] != "infra_error" and e["termination"] not in JUDGED for e in eps)
         cells = " | ".join(cell(by_task, k) for k in range(1, max_k + 1))
         lines.append(f"| {name} | {len(by_task)} | {len(eps)} | {infra} | {truncated} | {cells} |")
 
@@ -127,7 +140,7 @@ def table(run_dirs: list[Path]) -> str:
         seconds = [e["wall_seconds"] for e in judged]
         lines.append(
             f"| {name} | {sum(e['verdict']['unexpected_writes'] for e in judged)} "
-            f"| {sum(bool(e['verdict']['success'] and e['verdict']['unexpected_writes']) for e in judged)} "
+            f"| {sum(bool(is_success(e) and e['verdict']['unexpected_writes']) for e in judged)} "
             f"| {sum(len(e['verdict']['policy_violations']) for e in judged)} "
             f"| {sum(len(e['verdict']['policy_blocks']) for e in judged)} "
             f"| {sum(e['verdict']['auth_blocks'] for e in judged)} "
@@ -162,7 +175,7 @@ def sample(run_dir: Path, n: int) -> str:
     chosen = random.Random(BOOTSTRAP_SEED).sample(episodes, min(n, len(episodes)))
     out: list[str] = []
     for e in sorted(chosen, key=lambda x: (x["task_id"], x["trial"])):
-        verdict = "PASS" if e["verdict"]["success"] else "fail"
+        verdict = "PASS" if is_success(e) else "fail"
         out.append(f"## {e['task_id']} #{e['trial']} ({verdict}, {e['termination']})")
         for m in e["messages"]:
             if m["role"] == "user" and not m.get("harness"):

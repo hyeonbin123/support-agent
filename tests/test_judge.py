@@ -431,7 +431,7 @@ def test_judge_value_in_the_customers_words_does_not_count(tiny_engine):
 
 @pytest.mark.parametrize(
     "termination",
-    ["max_agent_calls", "max_user_turns", "too_many_tool_errors", "agent_format_error", "context_limit"],
+    ["max_agent_calls", "too_many_tool_errors", "agent_format_error", "context_limit"],
 )
 def test_judge_truncated_episode_fails_even_when_everything_matches(tiny_engine, termination):
     calls = [("toy_cancel_order", {"order_id": "O-1"})]
