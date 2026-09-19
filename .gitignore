@@ -8,7 +8,7 @@ __pycache__/
 .env.*
 !.env.example
 .pytest_cache/
-.pytest-tmp/
+.pytest-tmp*/
 .ruff_cache/
 *.egg-info/
 .DS_Store
