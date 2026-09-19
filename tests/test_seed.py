@@ -237,15 +237,24 @@ def test_fixture_products_are_dedicated_and_exchangeable(session):
 # --- every row ---
 
 
+def _is_task_row(value) -> bool:
+    """Hand-written rows of the smoke, dev and test tasks: their ids carry a 9xxx number."""
+    import re
+
+    return isinstance(value, str) and re.search(r"(?:^|-)9\d{3,4}(?:-|$)", value) is not None
+
+
 def test_row_counts(session):
     def count(model) -> int:
-        return len(session.scalars(select(model)).all())
+        # Generated rows only; the hand-written task rows (90xx, 91xx, 92xx) are checked by the task tests.
+        rows = session.scalars(select(model)).all()
+        return sum(not _is_task_row(getattr(r, "id", None) or getattr(r, "order_id", None)) for r in rows)
 
-    assert count(db.Customer) == 40 + 5
-    assert 60 <= count(db.CustomerAddress) - 6 <= 80
-    assert count(db.Product) == 25 + 6
-    assert 50 <= count(db.ProductVariant) - 13 <= 70
-    assert count(db.Order) == 120 + 6
+    assert count(db.Customer) == 40
+    assert 60 <= count(db.CustomerAddress) <= 80
+    assert count(db.Product) == 25
+    assert 50 <= count(db.ProductVariant) <= 70
+    assert count(db.Order) == 120
     assert 3 <= count(db.ServiceRequest) <= 12
     assert 25 <= count(db.Coupon) <= 35
     assert count(db.Ticket) == 15
@@ -433,14 +442,13 @@ def test_coupons_and_tickets(session):
 
 def test_bulk_datetimes_are_inside_the_window(engine):
     """Every datetime of a generated row (coupon expiry included) is in [2026-06-01, SEED_END]."""
-    fixture_ids = set(seed.FIXTURE_CUSTOMER_IDS) | set(seed.FIXTURE_ORDER_IDS)
     start, end = seed.BULK_START.astimezone(UTC), seed.SEED_END.astimezone(UTC)
     checked = 0
     for table, rows in db.dump_db(engine).items():
         columns = db.Base.metadata.tables[table].columns
         time_columns = [c.name for c in columns if isinstance(c.type, db.UTCDateTime)]
         for row in rows:
-            if {row.get("id"), row.get("order_id"), row.get("customer_id")} & fixture_ids:
+            if any(_is_task_row(row.get(key)) for key in ("id", "order_id", "customer_id", "request_id")):
                 continue
             for name in time_columns:
                 if row[name] is not None:

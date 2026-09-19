@@ -298,6 +298,9 @@ def _forbidden_problems(task: Task, gold: Engine, registry: Registry) -> list[st
     return problems
 
 
+PRODUCT_READ_TOOL = "get_product"
+
+
 def _read_outputs(
     task: Task, seed_engine: Engine, registry: Registry, read_tools: Sequence[str]
 ) -> list[str]:
@@ -307,6 +310,7 @@ def _read_outputs(
     ctx = _context(task, enforce_policy=True, verified=True)
     outputs: list[str] = []
     order_ids: list[str] = []
+    product_ids: list[str] = []
     try:
         specs = [registry[name] for name in read_tools if name in registry]
         for spec in specs:
@@ -326,6 +330,16 @@ def _read_outputs(
                 continue
             for order_id in order_ids:
                 result = execute(registry, engine, ctx, spec.name, {"order_id": order_id})
+                if result.ok:
+                    outputs.append(result.content)
+                    items = json.loads(result.content).get("items", [])
+                    for item in items if isinstance(items, list) else []:
+                        if isinstance(item, dict) and item.get("product_id") not in (None, *product_ids):
+                            product_ids.append(item["product_id"])
+        # Products the customer ordered: their other options, prices and stock are reachable too.
+        if PRODUCT_READ_TOOL in registry:
+            for product_id in product_ids:
+                result = execute(registry, engine, ctx, PRODUCT_READ_TOOL, {"product_id": product_id})
                 if result.ok:
                     outputs.append(result.content)
     finally:

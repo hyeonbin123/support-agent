@@ -93,7 +93,7 @@ def _between(rng: random.Random, start: datetime, end: datetime) -> datetime:
     return start + rng.randrange((end - start) // _MINUTE + 1) * _MINUTE
 
 
-def _kst(month: int, day: int, hour: int, minute: int) -> datetime:
+def kst(month: int, day: int, hour: int, minute: int) -> datetime:
     return datetime(2026, month, day, hour, minute, tzinfo=KST)
 
 
@@ -101,7 +101,7 @@ def shipping_fee(items_won: int) -> int:
     return 0 if items_won >= FREE_SHIPPING_FROM_WON else SHIPPING_FEE_WON
 
 
-def _new_order(
+def new_order(
     order_id: str,
     customer_id: str,
     status: db.OrderStatus,
@@ -148,7 +148,7 @@ def _new_order(
     return order, items
 
 
-class _Rows:
+class Rows:
     """Rows grouped by table, flushed in foreign-key order."""
 
     def __init__(self) -> None:
@@ -179,7 +179,7 @@ class _Rows:
         ]
 
 
-def _bulk_customers(rng: random.Random, rows: _Rows) -> None:
+def _bulk_customers(rng: random.Random, rows: Rows) -> None:
     phones = rng.sample(range(1000, 9000), N_CUSTOMERS)  # fixtures use 9001..9005
     for i in range(1, N_CUSTOMERS + 1):
         name = rng.choice(SURNAMES) + rng.choice(GIVEN_NAMES)
@@ -191,7 +191,7 @@ def _bulk_customers(rng: random.Random, rows: _Rows) -> None:
             phone=f"0100000{phones[i - 1]:04d}",
             email=f"user{i:04d}@example.com",
             grade=db.CustomerGrade.VIP if rng.random() < 0.15 else db.CustomerGrade.NORMAL,
-            joined_at=_between(rng, BULK_START, _kst(8, 5, 23, 59)),
+            joined_at=_between(rng, BULK_START, kst(8, 5, 23, 59)),
         )
         rows.customers.append(customer)
         n_addresses = 1 + (rng.random() < 0.55) + (rng.random() < 0.2)
@@ -212,7 +212,7 @@ def _bulk_customers(rng: random.Random, rows: _Rows) -> None:
             )
 
 
-def _bulk_products(rng: random.Random, rows: _Rows) -> None:
+def _bulk_products(rng: random.Random, rows: Rows) -> None:
     for i, (name, category, options) in enumerate(PRODUCTS, start=1):
         rows.products.append(db.Product(id=f"P-{i:04d}", name=name, category=category))
         for n, (label, price) in enumerate(options, start=1):
@@ -250,7 +250,7 @@ def _ordered_at(rng: random.Random, status: db.OrderStatus, joined_at: datetime)
     return _between(rng, SEED_END - _DAY, SEED_END - _HOUR)
 
 
-def _bulk_orders(rng: random.Random, rows: _Rows) -> None:
+def _bulk_orders(rng: random.Random, rows: Rows) -> None:
     products = {p.id: p for p in rows.products}
     addresses: dict[str, list[db.CustomerAddress]] = {}
     for address in rows.addresses:
@@ -297,7 +297,7 @@ def _bulk_orders(rng: random.Random, rows: _Rows) -> None:
 
         cancelled = status == db.OrderStatus.CANCELLED
         cancelled_at = ordered_at + rng.randrange(10, 20 * 60) * _MINUTE if cancelled else None
-        order, items = _new_order(
+        order, items = new_order(
             order_id,
             customer_id,
             status,
@@ -349,7 +349,7 @@ def _bulk_orders(rng: random.Random, rows: _Rows) -> None:
         )
 
 
-def _bulk_requests(rng: random.Random, rows: _Rows) -> None:
+def _bulk_requests(rng: random.Random, rows: Rows) -> None:
     """A few returns and exchanges on delivered orders; at most one request per order."""
     shipments = {s.order_id: s for s in rows.shipments}
     items: dict[str, list[db.OrderItem]] = {}
@@ -413,7 +413,7 @@ def _bulk_requests(rng: random.Random, rows: _Rows) -> None:
             )
 
 
-def _bulk_coupons(rng: random.Random, rows: _Rows) -> None:
+def _bulk_coupons(rng: random.Random, rows: Rows) -> None:
     """Compensation coupons where the rule allows one, then unused promo coupons up to N_COUPONS.
 
     Coupons are issued early enough that expires_at (issue + 30 days) is not after SEED_END.
@@ -480,7 +480,7 @@ def _bulk_coupons(rng: random.Random, rows: _Rows) -> None:
         )
 
 
-def _bulk_tickets(rng: random.Random, rows: _Rows) -> None:
+def _bulk_tickets(rng: random.Random, rows: Rows) -> None:
     orders: dict[str, list[db.Order]] = {}
     for order in rows.orders:
         orders.setdefault(order.customer_id, []).append(order)
@@ -508,15 +508,15 @@ def _bulk_tickets(rng: random.Random, rows: _Rows) -> None:
 
 # (customer_id, name, phone, email, joined_at, ((label, postal_code, address), ...))
 _FIXTURE_CUSTOMERS = (
-    ("C-9001", "김하준", "01000009001", "hajun.kim@example.com", _kst(5, 11, 10, 0),
+    ("C-9001", "김하준", "01000009001", "hajun.kim@example.com", kst(5, 11, 10, 0),
      (("집", "10391", "가온시 한빛구 가상로 12, 101동 1203호"),)),
-    ("C-9002", "이서연", "01000009002", "seoyeon.lee@example.com", _kst(5, 12, 10, 0),
+    ("C-9002", "이서연", "01000009002", "seoyeon.lee@example.com", kst(5, 12, 10, 0),
      (("집", "20417", "누리시 새별구 새싹길 45, 203동 502호"),)),
-    ("C-9003", "박도윤", "01000009003", "doyun.park@example.com", _kst(5, 13, 10, 0),
+    ("C-9003", "박도윤", "01000009003", "doyun.park@example.com", kst(5, 13, 10, 0),
      (("집", "30528", "다솜시 푸른구 너울로 8, 105동 904호"),)),
-    ("C-9004", "최지우", "01000009004", "jiwoo.choi@example.com", _kst(5, 14, 10, 0),
+    ("C-9004", "최지우", "01000009004", "jiwoo.choi@example.com", kst(5, 14, 10, 0),
      (("집", "40639", "라온시 은하구 도담길 77, 102동 301호"),)),
-    ("C-9005", "정예준", "01000009005", "yejun.jung@example.com", _kst(5, 15, 10, 0),
+    ("C-9005", "정예준", "01000009005", "yejun.jung@example.com", kst(5, 15, 10, 0),
      (("집", "50741", "마루시 솔내구 미르로 23, 107동 1501호"),
       ("회사", "50852", "마루시 달빛구 소담길 5, 가상빌딩 8층"))),
 )  # fmt: skip
@@ -538,23 +538,23 @@ _SIMPLE_PAY = db.PaymentMethod.SIMPLE_PAY
 # order_id: customer, status, ordered_at, address, variant, quantity, payment method, tracking number,
 # shipped_at, delivered_at, promised_by
 _FIXTURE_ORDERS = (
-    ("O-90001", "C-9001", db.OrderStatus.SHIPPED, _kst(9, 11, 20, 15), "AD-C-9001-1", "V-9001-01", 1, _CARD,
-     "5550-1207-9001", _kst(9, 12, 16, 30), None, date(2026, 9, 15)),
-    ("O-90002", "C-9002", db.OrderStatus.CANCELLED, _kst(9, 10, 21, 40), "AD-C-9002-1", "V-9002-01", 1,
+    ("O-90001", "C-9001", db.OrderStatus.SHIPPED, kst(9, 11, 20, 15), "AD-C-9001-1", "V-9001-01", 1, _CARD,
+     "5550-1207-9001", kst(9, 12, 16, 30), None, date(2026, 9, 15)),
+    ("O-90002", "C-9002", db.OrderStatus.CANCELLED, kst(9, 10, 21, 40), "AD-C-9002-1", "V-9002-01", 1,
      _SIMPLE_PAY, "5550-1207-9002", None, None, date(2026, 9, 14)),
-    ("O-90003", "C-9003", db.OrderStatus.PAID, _kst(9, 13, 11, 10), "AD-C-9003-1", "V-9003-01", 2, _CARD,
+    ("O-90003", "C-9003", db.OrderStatus.PAID, kst(9, 13, 11, 10), "AD-C-9003-1", "V-9003-01", 2, _CARD,
      "5550-1207-9003", None, None, date(2026, 9, 16)),
-    ("O-90004", "C-9004", db.OrderStatus.DELIVERED, _kst(8, 30, 19, 25), "AD-C-9004-1", "V-9004-01", 1, _CARD,
-     "5550-1207-9004", _kst(9, 1, 15, 0), _kst(9, 2, 14, 20), date(2026, 9, 3)),
-    ("O-90005", "C-9005", db.OrderStatus.PREPARING, _kst(9, 12, 8, 50), "AD-C-9005-1", "V-9005-02", 1,
+    ("O-90004", "C-9004", db.OrderStatus.DELIVERED, kst(8, 30, 19, 25), "AD-C-9004-1", "V-9004-01", 1, _CARD,
+     "5550-1207-9004", kst(9, 1, 15, 0), kst(9, 2, 14, 20), date(2026, 9, 3)),
+    ("O-90005", "C-9005", db.OrderStatus.PREPARING, kst(9, 12, 8, 50), "AD-C-9005-1", "V-9005-02", 1,
      _SIMPLE_PAY, "5550-1207-9005", None, None, date(2026, 9, 16)),
-    ("O-90006", "C-9005", db.OrderStatus.PAID, _kst(9, 13, 22, 5), "AD-C-9005-1", "V-9006-01", 3, _CARD,
+    ("O-90006", "C-9005", db.OrderStatus.PAID, kst(9, 13, 22, 5), "AD-C-9005-1", "V-9006-01", 3, _CARD,
      "5550-1207-9006", None, None, date(2026, 9, 17)),
 )  # fmt: skip
-_FIXTURE_CANCELLED_AT = _kst(9, 11, 9, 5)  # O-90002
+_FIXTURE_CANCELLED_AT = kst(9, 11, 9, 5)  # O-90002
 
 
-def _fixtures(rows: _Rows) -> None:
+def _fixtures(rows: Rows) -> None:
     addresses: dict[str, db.CustomerAddress] = {}
     for customer_id, name, phone, email, joined_at, places in _FIXTURE_CUSTOMERS:
         rows.customers.append(
@@ -612,7 +612,7 @@ def _fixtures(rows: _Rows) -> None:
     ) in _FIXTURE_ORDERS:
         cancelled = status == db.OrderStatus.CANCELLED
         variant = variants[variant_id]
-        order, items = _new_order(
+        order, items = new_order(
             order_id,
             customer_id,
             status,
@@ -657,7 +657,7 @@ def _fixtures(rows: _Rows) -> None:
 def build_seed_engine() -> Engine:
     """The seed database, built once per process. Never write to it: copy it with db.memory_engine(...)."""
     rng = random.Random(SEED)
-    rows = _Rows()
+    rows = Rows()
     _bulk_customers(rng, rows)
     _bulk_products(rng, rows)
     _bulk_orders(rng, rows)
@@ -665,6 +665,11 @@ def build_seed_engine() -> Engine:
     _bulk_coupons(rng, rows)
     _bulk_tickets(rng, rows)
     _fixtures(rows)
+    # Rows that the dev and test tasks refer to. Imported here because those modules use this one's helpers.
+    from support_agent import fixtures_dev, fixtures_test
+
+    fixtures_dev.add_fixtures(rows)
+    fixtures_test.add_fixtures(rows)
 
     engine = db.memory_engine()
     db.Base.metadata.create_all(engine)

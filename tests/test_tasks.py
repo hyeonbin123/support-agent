@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from support_agent import db
 from support_agent.agent import load_policy
@@ -19,13 +21,16 @@ from support_agent.user_sim import ScriptedUser
 
 REGISTRY = build_registry()
 ALL_TASKS = [task for path in sorted(TASKS.glob("*.yaml")) for task in load_tasks(path)]
-CONTACTS = {  # how the scripted agent verifies each fixture customer
-    "C-9001": ("김하준", "010-0000-9001"),
-    "C-9002": ("이서연", "seoyeon.lee@example.com"),
-    "C-9003": ("박도윤", "010-0000-9003"),
-    "C-9004": ("최지우", "010-0000-9004"),
-    "C-9005": ("정예준", "010-0000-9005"),
-}
+
+
+def _contacts() -> dict[str, tuple[str, str]]:
+    """How the scripted agent verifies each customer: name and phone, straight from the seed data."""
+    with Session(build_seed_engine()) as session:
+        return {c.id: (c.name, c.phone) for c in session.scalars(select(db.Customer))}
+
+
+CONTACTS = _contacts()
+HANDOFF = "transfer_to_human"
 
 
 def say_values(task: Task) -> str:
@@ -79,7 +84,9 @@ def test_an_agent_that_only_talks_fails(task):
     assert result.status == "completed" and not result.verdict.success
 
 
-@pytest.mark.parametrize("task", ALL_TASKS, ids=lambda task: task.id)
+@pytest.mark.parametrize(
+    "task", [t for t in ALL_TASKS if all(a.tool != HANDOFF for a in t.gold_actions)], ids=lambda task: task.id
+)
 def test_a_needless_handoff_fails(task):
     script = [ToolCall("transfer_to_human", {"reason": "customer_request", "summary": say_values(task)})]
     result = episode(task, script)
@@ -93,6 +100,9 @@ def test_the_forbidden_call_passes_under_p0_and_fails_the_task(task):
     script = [
         ToolCall("find_customer", {"name": name, "contact": contact}),
         ToolCall(forbidden.tool, forbidden.args),
+        *[
+            ToolCall(action.tool, action.args) for action in task.gold_actions
+        ],  # mixed tasks also have work to do
         say_values(task),
     ]
     p0 = episode(task, script, policy="P0")
