@@ -119,7 +119,11 @@ def test_schemas_are_korean_flat_and_list_the_enum_codes():
         assert choices(enum_cls) in props[tool_name]["properties"][field]["description"]
     assert props["create_ticket"]["required"] == ["category", "body"]
     assert props["create_ticket"]["properties"]["order_id"]["default"] == ""
-    assert props["request_return"]["properties"]["line_nos"]["items"] == {"type": "integer"}
+    assert props["request_return"]["properties"]["line_nos"]["items"] == {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 999,
+    }
 
 
 # ------------------------------------------------------------------------------ happy paths and output keys
@@ -131,7 +135,17 @@ HAPPY: dict[str, tuple[dict, list[str]]] = {
     ),
     "get_customer": (
         {"customer_id": "C-1"},
-        ["customer_id", "name", "phone", "email", "grade", "grade_label", "joined_at", "addresses"],
+        [
+            "customer_id",
+            "name",
+            "phone",
+            "email",
+            "grade",
+            "grade_label",
+            "joined_at",
+            "addresses",
+            "compensation_coupons",
+        ],
     ),
     "list_orders": ({"customer_id": "C-1"}, ["customer_id", "orders"]),
     "get_order": (
@@ -149,6 +163,7 @@ HAPPY: dict[str, tuple[dict, list[str]]] = {
             "payment",
             "shipping",
             "requests",
+            "compensation_coupons",
             "cancelled_at",
             "cancel_reason",
             "cancel_reason_label",
@@ -573,7 +588,7 @@ POLICY_CASES: list[tuple[str, str, dict, object]] = [
         None,
     ),
     (
-        "coupon_not_eligible",
+        "coupon_order_cancelled",
         "issue_compensation_coupon",
         {"order_id": "O-6", "reason": "delivery_delay"},
         None,
@@ -629,6 +644,7 @@ def test_every_policy_code_of_the_design_is_covered():
         "exchange_different_product",
         "address_change_not_allowed_status",
         "coupon_not_eligible",
+        "coupon_order_cancelled",
         "coupon_already_issued_for_order",
         "coupon_limit_exceeded",
     }
@@ -965,7 +981,7 @@ def test_the_policy_document_states_the_numbers_of_the_rules():
         f"1~2일 {rules.COUPON_DELAY_SHORT_WON:,}원",
         f"{rules.COUPON_DELAY_LONG_FROM_DAYS}일 이상 {rules.COUPON_DELAY_LONG_WON:,}원",
         f"| {rules.COUPON_DEFECTIVE_WON:,}원 |",
-        f"최근 {rules.COUPON_WINDOW_DAYS}일 동안 {rules.COUPON_WINDOW_LIMIT}장까지",
+        f"최근 {rules.COUPON_WINDOW_DAYS}일(발급일 기준, 오늘 포함) 동안 {rules.COUPON_WINDOW_LIMIT}장까지",
         f"발급일부터 {rules.COUPON_VALID_DAYS}일 동안",
         "주문당 1장",
     ]:

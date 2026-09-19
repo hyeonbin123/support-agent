@@ -7,14 +7,17 @@ Nothing here reads the wall clock, uuid or random numbers: time is `ctx.now`, ne
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from datetime import timedelta
+from typing import Annotated
 
 from pydantic import Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from support_agent import db, rules
-from support_agent.clock import format_kst, format_kst_date
+from support_agent.clock import format_kst, format_kst_date, kst_date
 from support_agent.config import HANDOFF_MESSAGE
 from support_agent.labels import choices, label
 from support_agent.toolkit import Registry, ToolArgs, ToolContext, make_registry, tool
@@ -28,6 +31,9 @@ CANCELLABLE = (db.OrderStatus.PAID, db.OrderStatus.PREPARING)
 class FindCustomerArgs(ToolArgs):
     name: str = Field(description="고객 이름")
     contact: str = Field(description="가입한 전화번호 또는 이메일")
+
+
+LineNo = Annotated[int, Field(ge=1, le=999)]
 
 
 class CustomerArgs(ToolArgs):
@@ -49,7 +55,11 @@ class CancelOrderArgs(ToolArgs):
 
 class RequestReturnArgs(ToolArgs):
     order_id: str = Field(description="주문 번호")
-    line_nos: list[int] = Field(min_length=1, description="반품할 주문 상품의 줄 번호(line_no) 목록")
+    line_nos: list[LineNo] = Field(
+        min_length=1,
+        max_length=50,
+        description="반품할 주문 상품의 줄 번호(line_no) 목록. 같은 주문의 여러 줄은 한 번에 접수한다",
+    )
     reason: db.RequestReason = Field(description=f"반품 사유. {choices(db.RequestReason)}")
 
     @field_validator("line_nos")
@@ -62,7 +72,7 @@ class RequestReturnArgs(ToolArgs):
 
 class RequestExchangeArgs(ToolArgs):
     order_id: str = Field(description="주문 번호")
-    line_no: int = Field(description="교환할 주문 상품의 줄 번호(line_no)")
+    line_no: LineNo = Field(description="교환할 주문 상품의 줄 번호(line_no)")
     new_variant_id: str = Field(description="새로 받을 옵션 번호 (예: V-0001-02)")
     reason: db.RequestReason = Field(description=f"교환 사유. {choices(db.RequestReason)}")
 
@@ -144,6 +154,11 @@ def _check_delivered_in_window(ctx: ToolContext, order: db.Order, kind: str, wor
         f"배송완료 상태의 주문만 {word}할 수 있습니다.",
     )
     delivered_at = order.shipment.delivered_at if order.shipment is not None else None
+    ctx.require(
+        order.status != db.OrderStatus.DELIVERED or delivered_at is not None,
+        "shipment_not_found",
+        "배송완료 주문인데 수령 시각 기록이 없습니다.",
+    )
     if delivered_at is not None:
         ctx.check_policy(
             rules.within_return_window(ctx.now, delivered_at),
@@ -165,12 +180,39 @@ def _compensation_coupons(session: Session, **where: str) -> list[db.Coupon]:
     return list(session.scalars(query))
 
 
+_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def _coupon_fact(coupon: db.Coupon) -> dict:
+    """Facts only, so that the agent can apply the coupon limits of the policy itself."""
+    return {
+        "coupon_id": coupon.id,
+        "order_id": coupon.order_id,
+        "reason": coupon.reason.value if coupon.reason else None,
+        "reason_label": label(coupon.reason) if coupon.reason else None,
+        "amount_won": coupon.amount_won,
+        "issued_at": format_kst(coupon.issued_at),
+    }
+
+
 def _normalise_contact(contact: str) -> tuple[str, str]:
     """(column, value): an e-mail in lower case, or a phone number reduced to its digits."""
-    text = contact.strip()
-    if "@" in text:
-        return "email", text.lower()
-    return "phone", "".join(ch for ch in text if ch.isdigit())
+    text = unicodedata.normalize("NFKC", contact)
+    email = _EMAIL.search(text)
+    if email:
+        return "email", email.group(0).lower()
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if digits.startswith("8210"):  # +82 10-0000-0000
+        digits = "0" + digits[2:]
+    return "phone", digits
+
+
+def _normalise_name(name: str) -> str:
+    text = "".join(unicodedata.normalize("NFKC", name).split())
+    for suffix in ("고객님", "고객", "님"):
+        if len(text) > len(suffix) + 1 and text.endswith(suffix):
+            return text[: -len(suffix)]
+    return text
 
 
 # -------------------------------------------------------------------------------------------------- reads
@@ -180,7 +222,7 @@ def _normalise_contact(contact: str) -> tuple[str, str]:
 def find_customer(session: Session, ctx: ToolContext, args: FindCustomerArgs) -> dict:
     """이름과 가입 연락처(전화번호 또는 이메일)로 고객 본인 확인을 한다. 둘 다 일치해야 한다."""
     column, value = _normalise_contact(args.contact)
-    name = "".join(args.name.split())
+    name = _normalise_name(args.name)
     found = None
     if value and name:
         candidates = session.scalars(
@@ -226,6 +268,9 @@ def get_customer(session: Session, ctx: ToolContext, args: CustomerArgs) -> dict
             }
             for a in customer.addresses
         ],
+        "compensation_coupons": [
+            _coupon_fact(c) for c in _compensation_coupons(session, customer_id=customer.id)
+        ],
     }
 
 
@@ -256,7 +301,9 @@ def list_orders(session: Session, ctx: ToolContext, args: CustomerArgs) -> dict:
 
 @tool(write=False)
 def get_order(session: Session, ctx: ToolContext, args: OrderArgs) -> dict:
-    """주문 한 건의 상품, 금액, 결제, 배송지, 반품·교환 접수 내역을 조회한다."""
+    """주문 한 건의 상품, 금액, 결제, 배송지, 반품·교환 접수, 보상 쿠폰 내역을 조회한다.
+
+    출고·수령 시각은 track_shipment로 본다."""
     order = _own_order(session, ctx, args.order_id)
     payment = order.payment
     items = []
@@ -313,6 +360,7 @@ def get_order(session: Session, ctx: ToolContext, args: OrderArgs) -> dict:
             }
             for r in order.requests
         ],
+        "compensation_coupons": [_coupon_fact(c) for c in _compensation_coupons(session, order_id=order.id)],
         "cancelled_at": format_kst(order.cancelled_at),
         "cancel_reason": order.cancel_reason.value if order.cancel_reason else None,
         "cancel_reason_label": label(order.cancel_reason) if order.cancel_reason else None,
@@ -514,11 +562,16 @@ def change_shipping_address(session: Session, ctx: ToolContext, args: ChangeAddr
 def issue_compensation_coupon(session: Session, ctx: ToolContext, args: IssueCouponArgs) -> dict:
     """배송 지연이나 상품 불량을 겪은 주문에 보상 쿠폰을 발급한다. 금액은 규정이 정한다."""
     order = _own_order(session, ctx, args.order_id)
+    ctx.check_policy(
+        order.status != db.OrderStatus.CANCELLED,
+        "coupon_order_cancelled",
+        "취소된 주문에는 보상 쿠폰을 발급하지 않습니다.",
+    )
 
     if args.reason == db.CompensationReason.DELIVERY_DELAY:
         amount = None
         shipment = order.shipment
-        if shipment is not None and order.status != db.OrderStatus.CANCELLED:
+        if shipment is not None:
             late = rules.delay_days(shipment.promised_by, shipment.delivered_at, ctx.now)
             amount = rules.compensation_amount_won(args.reason, late)
         ctx.check_policy(amount is not None, "coupon_not_eligible", "도착 예정일보다 늦어진 주문이 아닙니다.")
@@ -537,11 +590,12 @@ def issue_compensation_coupon(session: Session, ctx: ToolContext, args: IssueCou
     ctx.check_policy(
         not for_order, "coupon_already_issued_for_order", "이 주문에는 이미 보상 쿠폰이 발급되었습니다."
     )
-    window_start = ctx.now - timedelta(days=rules.COUPON_WINDOW_DAYS)
+    # Counted by KST calendar date, like the return window: issued within the last 30 days including today.
+    first_day = kst_date(ctx.now) - timedelta(days=rules.COUPON_WINDOW_DAYS - 1)
     recent = [
         c
         for c in _compensation_coupons(session, customer_id=order.customer_id)
-        if window_start < c.issued_at <= ctx.now
+        if first_day <= kst_date(c.issued_at) <= kst_date(ctx.now)
     ]
     days, limit = rules.COUPON_WINDOW_DAYS, rules.COUPON_WINDOW_LIMIT
     ctx.check_policy(

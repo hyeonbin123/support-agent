@@ -173,12 +173,17 @@ def test_dump_ignores_free_text_columns(tiny_engine):
     one = with_texts("영수증 문의", "고객 요청", db.HandoffReason.CUSTOMER_REQUEST)
     two = with_texts("다른 본문", "다른 요약", db.HandoffReason.OUT_OF_SCOPE)
     assert set(one["tickets"][0]) == {"id", "customer_id", "order_id", "category", "created_at"}
-    assert set(one["handoffs"][0]) == {"id", "customer_id", "created_at"}
+    assert set(one["handoffs"][0]) == {"id", "created_at"}
     assert one == two
     assert db.diff_dumps(one, two) == {}
     assert db.state_hash(one) == db.state_hash(two)
 
-    assert db.IGNORED_COLUMNS == {("tickets", "body"), ("handoffs", "summary"), ("handoffs", "reason")}
+    assert db.IGNORED_COLUMNS == {
+        ("tickets", "body"),
+        ("handoffs", "summary"),
+        ("handoffs", "reason"),
+        ("handoffs", "customer_id"),
+    }
 
 
 def test_dump_rejects_floats(tiny_engine):

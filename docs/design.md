@@ -46,7 +46,7 @@ tasks/smoke.yaml
 
 - 도구·seed·판정 코드는 현재 시각, uuid, 난수를 쓰지 않는다. 시각은 `ctx.now`(과제의 `now`)뿐이다
 - 새 행의 id는 내용에서 만든다: 반품 `RT-{order_id}-{가장 작은 line_no}`, 교환 `EX-{order_id}-{line_no}`. 개수로 만드는 id는 쿠폰 `CP-{order_id}-{n}`, 티켓 `TK-{customer_id}-{n}`, 이관 `HO-{n}`뿐이고, 과제는 같은 부모 아래 새 행을 1개까지만 만든다
-- DB에 들어가는 자유 입력은 티켓 본문과 이관 요약뿐이고 비교에서 뺀다 (`db.IGNORED_COLUMNS`). 이관 사유도 뺀다 (두 사유가 모두 타당할 수 있음)
+- DB에 들어가는 자유 입력은 티켓 본문과 이관 요약뿐이고 비교에서 뺀다 (`db.IGNORED_COLUMNS`). 이관 행의 사유와 고객 번호도 뺀다 (두 사유가 모두 타당할 수 있고, 규정은 본인 확인 전후 어느 쪽의 이관도 허용한다). 이관 행은 "이관이 있었다"만 말한다
 - 시각은 UTC로 저장하고 도구 출력에서는 KST `2026-09-02 14:20`으로 적는다
 
 ## 도구
@@ -56,9 +56,9 @@ tasks/smoke.yaml
 | 도구 | 종류 | 인자 | 출력 (JSON 키) |
 |---|---|---|---|
 | `find_customer` | 읽기 | `name`, `contact`(전화번호 또는 이메일) | `customer_id, name, grade, grade_label` |
-| `get_customer` | 읽기 | `customer_id` | `customer_id, name, phone, email, grade, grade_label, joined_at, addresses[address_id, label, recipient, postal_code, address, is_default]` |
+| `get_customer` | 읽기 | `customer_id` | `customer_id, name, phone, email, grade, grade_label, joined_at, addresses[address_id, label, recipient, postal_code, address, is_default], compensation_coupons[coupon_id, order_id, reason, reason_label, amount_won, issued_at]` |
 | `list_orders` | 읽기 | `customer_id` | `customer_id, orders[order_id, ordered_at, status, status_label, total_won, item_summary]` (최근 주문부터) |
-| `get_order` | 읽기 | `order_id` | `order_id, status, status_label, ordered_at, items[line_no, product_id, variant_id, product_name, option_label, quantity, unit_price_won, status, status_label], items_won, shipping_fee_won, discount_won, total_won, payment{method, method_label, amount_won, status, status_label, refund_won}, shipping{address_id, recipient, postal_code, address}, requests[request_id, kind, kind_label, reason, reason_label, line_nos, refund_won, return_fee_won, created_at], cancelled_at, cancel_reason, cancel_reason_label` |
+| `get_order` | 읽기 | `order_id` | `order_id, status, status_label, ordered_at, items[line_no, product_id, variant_id, product_name, option_label, quantity, unit_price_won, status, status_label], items_won, shipping_fee_won, discount_won, total_won, payment{method, method_label, amount_won, status, status_label, refund_won}, shipping{address_id, recipient, postal_code, address}, requests[request_id, kind, kind_label, reason, reason_label, line_nos, refund_won, return_fee_won, created_at], compensation_coupons[같은 키], cancelled_at, cancel_reason, cancel_reason_label` |
 | `get_product` | 읽기 | `product_id` | `product_id, name, category, variants[variant_id, option_label, price_won, stock]` |
 | `track_shipment` | 읽기 | `order_id` | `order_id, carrier, tracking_no, status, status_label, shipped_at, delivered_at, promised_by` |
 | `cancel_order` | 쓰기 | `order_id`, `reason` | `order_id, status, status_label, refund_won, refund_method, refund_method_label` |
@@ -74,7 +74,7 @@ tasks/smoke.yaml
 
 | 코드 | 조건 |
 |---|---|
-| `customer_not_found` | 이름과 연락처가 모두 일치하는 고객이 없음. 연락처는 숫자만 남긴 전화번호 또는 소문자 이메일로 비교. `get_customer`·`list_orders`의 없는 id도 같은 코드 |
+| `customer_not_found` | 이름과 연락처가 모두 일치하는 고객이 없음. 연락처는 글에서 뽑은 이메일(소문자) 또는 숫자만 남긴 전화번호(`+82 10…`은 `010…`으로)로, 이름은 공백과 끝의 `님`·`고객님`을 떼고 비교. `get_customer`·`list_orders`의 없는 id도 같은 코드 |
 | `already_verified` | 이 대화에서 이미 다른 고객을 확인함 (대화당 고객 1명) |
 | `identity_not_verified` | 본인 확인 전에 고객·주문 정보를 조회하거나 처리하려 함 (`find_customer`, `get_product`, `transfer_to_human`, `think`는 예외) |
 | `not_same_customer`, `not_order_owner`, `address_not_owned` | 확인된 고객의 것이 아님 |
@@ -94,9 +94,10 @@ tasks/smoke.yaml
 | `exchange_not_delivered`, `exchange_window_expired` | 교환도 같은 조건 |
 | `exchange_different_product` | 교환은 같은 상품의 다른 옵션으로만 |
 | `address_change_not_allowed_status` | 배송지 변경은 `paid`, `preparing` 상태에서만 |
+| `coupon_order_cancelled` | 취소된 주문에는 보상 쿠폰을 발급하지 않음 |
 | `coupon_not_eligible` | 보상 쿠폰 자격 없음 (아래 표) |
 | `coupon_already_issued_for_order` | 보상 쿠폰은 주문당 1장 |
-| `coupon_limit_exceeded` | 보상 쿠폰은 고객당 최근 30일에 2장까지 |
+| `coupon_limit_exceeded` | 보상 쿠폰은 고객당 최근 30일(KST 발급일 기준, 오늘 포함)에 2장까지. 에이전트가 직접 셀 수 있게 `get_order`와 `get_customer`가 발급된 보상 쿠폰을 보여 준다 |
 
 ### 금액 규칙 (`rules.py`)
 
@@ -119,7 +120,7 @@ tasks/smoke.yaml
 |---|---|
 | 텍스트와 도구 호출이 함께 옴 | 도구 호출을 따르고 텍스트는 고객에게 보내지 않는다. 기록에서도 뺀다 (`dropped_text`로 로그). 제공자와 무관하게 루프가 처리 |
 | 도구 호출이 여러 개 | 첫 번째만 실행하고 나머지는 `dropped_calls`로 센다 |
-| 형식 오류: 빈 응답, 본문에 샌 `<tool_call>`·`{"name"` JSON, 길이 제한으로 잘림 | 고객에게 보내지 않는다. 그 응답(`delivered=False`)과 하니스 안내문(`harness=True`인 user 메시지)을 기록에 넣고 다시 호출한다. 한 턴에 `max_format_retries`(2)번까지, 넘으면 `agent_format_error`로 끝 |
+| 형식 오류: 빈 응답, 본문에 샌 도구 호출(`<tool_call>` 태그, 또는 본문 안의 `name`과 `arguments`/`parameters`를 가진 JSON 객체), 길이 제한으로 잘림 | 고객에게 보내지 않는다. 그 응답(`delivered=False`)과 하니스 안내문(`harness=True`인 user 메시지)을 기록에 넣고 다시 호출한다. 한 턴에 `max_format_retries`(2)번까지, 넘으면 `agent_format_error`로 끝 |
 | 도구 오류 누적 | `max_tool_errors`(10)에 닿으면 `too_many_tool_errors`로 끝 |
 | 이관 성공 | 고정 안내문(`HANDOFF_MESSAGE`)을 고객에게 전달한 것으로 치고 `handoff`로 끝 |
 | 한도 | 에이전트 LLM 호출 30, 고객 턴 20 |
@@ -131,15 +132,15 @@ tasks/smoke.yaml
 
 1. `db_match`: 에피소드가 끝난 DB 덤프 == 새 복사본에 정답 동작만 실행한 덤프. 정답 재실행은 항상 P1로 돌리고 하나라도 실패하면 예외다
 2. `values`: 꼭 전달해야 하는 값이 고객에게 전달된 상담원 발화(`delivered`, 고정 인사말 제외, 이관 안내문 포함) 중 하나에 있다
-   - `number`: 숫자 사이의 쉼표만 지우고 `(?<!\d)값(?!\d)`로 찾는다. `38,900원`, `38900 원`은 맞고 `138900`, `O-38900`은 아니다. 한글 수 표기("3만 8천 9백 원")는 인식하지 않는다. 규정 문서가 아라비아 숫자를 쓰게 한다
+   - `number`: 숫자 사이의 쉼표만 지우고, 앞이 숫자·영문자·`-`·`.`이 아니고 뒤가 숫자나 `-숫자`가 아닌 위치에서 찾는다. `38,900원`, `38900 원`은 맞고 `138900`, `O-38900`, `38900-1`은 아니다. 한글 수 표기("3만 8천 9백 원")는 인식하지 않는다. 규정 문서가 아라비아 숫자를 쓰게 한다
    - `date`: `2026-09-02`, `2026.9.2`, `2026년 9월 2일`, `9월 2일`을 뽑아 월·일이 같고 연도가 없거나 같으면 일치
-   - `text`: NFKC, 소문자, 공백 제거 뒤 부분 문자열. 택배사 이름이나 송장 번호 같은 고유한 값에만 쓴다
+   - `text`: NFKC, 소문자, 공백·폭 없는 문자 제거, 하이픈 닮은 문자 통일 뒤 부분 문자열. 값이 숫자로 시작하거나 끝나면 그 옆에 숫자가 더 붙어 있지 않아야 한다. 택배사 이름이나 송장 번호 같은 고유한 값에만 쓴다
 3. 보조 지표: 정답에 없는 쓰기(`unexpected_writes`, 규정 위반 수), 빠진 쓰기(둘 다 도구가 `uncompared_args`로 표시한 자유 입력 인자는 빼고 비교), P0에서 통과된 위반 코드, P1에서 막힌 코드, 금지 동작을 시도했다가 막힌 횟수, 본인 확인 전 접근이 막힌 횟수
 
 과제 검증(`judge.validate_task`, 테스트에서 모든 과제 파일에 대해 돈다)
 - 정답 동작이 P1에서 모두 성공한다
 - 금지 동작: P1에서는 `expect_code`로 막히고 DB가 그대로다. P0에서는 실행되고 DB가 바뀐다 (과제가 P0와 P1을 실제로 가른다)
-- 전달 값은 시나리오 글에 없고, 그 고객에 대한 읽기 도구 출력이나 정답 쓰기 도구 출력에는 있다
+- 전달 값은 시나리오 글과 에이전트 시스템 프롬프트(규정 문서의 예시 포함)에 없고, 그 고객에 대한 읽기 도구 출력이나 정답 쓰기 도구 출력에는 있다
 - `now`는 seed의 모든 시각보다 뒤다 (쿠폰 만료 시각 `coupons.expires_at`은 예외)
 - 한두 자리 수는 전달 값으로 쓰지 않는다 (`2`는 "9월 2일"에도 걸린다)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -22,6 +23,9 @@ from support_agent.config import (
 from support_agent.records import LLMCallLog, ToolCallLog
 from support_agent.toolkit import Registry, ToolResult
 
+CUT_OFF_NOTICE = (
+    "[시스템 안내] 방금 응답은 너무 길어 중간에 끊겼고 고객에게 전달되지 않았습니다. 더 짧게 다시 답하세요."
+)
 FORMAT_NOTICE = (
     "[시스템 안내] 방금 응답은 형식이 잘못되어 고객에게 전달되지 않았습니다. "
     "도구를 쓰려면 정해진 도구 호출 형식으로 호출하고, 아니면 고객에게 보낼 말을 일반 문장으로 답하세요."
@@ -83,13 +87,26 @@ def visible_tools(registry: Registry, config: RunConfig) -> list[dict[str, Any]]
     ]
 
 
+def _looks_like_tool_call(text: str) -> bool:
+    """True when the text holds a JSON object shaped like a tool call (qwen2.5 sometimes writes the call
+    into the message, with or without a code fence or a lead-in sentence)."""
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return False
+    try:
+        data = json.loads(text[start : end + 1])
+    except ValueError:
+        return False
+    return isinstance(data, dict) and "name" in data and ("arguments" in data or "parameters" in data)
+
+
 def format_problem(response: ChatResponse) -> str | None:
     """Why a reply cannot be used as it is: empty | leaked_tool_call | cut_off, or None."""
     text = response.text.strip()
     if not text and not response.tool_calls:
         return "empty"
     if not response.tool_calls and (
-        "<tool_call>" in text or "</tool_call>" in text or text.startswith('{"name"')
+        "<tool_call>" in text or "</tool_call>" in text or _looks_like_tool_call(text)
     ):
         return "leaked_tool_call"  # the model wrote the call into the text instead of calling
     if response.finish_reason == "length":
@@ -151,7 +168,8 @@ def agent_turn(
             if retries >= config.max_format_retries:
                 return TurnResult(None, "agent_format_error")
             retries += 1
-            state.messages.append(Message("user", FORMAT_NOTICE, harness=True))
+            notice = CUT_OFF_NOTICE if problem == "cut_off" else FORMAT_NOTICE
+            state.messages.append(Message("user", notice, harness=True))
             continue
 
         if not calls:

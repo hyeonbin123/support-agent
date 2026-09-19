@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import re
 import time
+import traceback
+import unicodedata
 
 from sqlalchemy import Engine
 
@@ -12,8 +15,6 @@ from support_agent.chat import ChatProvider, ProviderError
 from support_agent.config import (
     FIRST_AGENT_MESSAGE,
     JUDGED,
-    OUT_OF_SCOPE_TOKEN,
-    STOP_TOKEN,
     RunConfig,
     Termination,
 )
@@ -33,16 +34,29 @@ def gold_dump_of(task: Task, seed_engine: Engine, registry: Registry) -> db.Dump
         engine.dispose()
 
 
+_STOP = re.compile(r"#{2,}\s*STOP\s*#{2,}", re.IGNORECASE)
+_OUT_OF_SCOPE = re.compile(r"#{2,}\s*OUT[-_ ]?OF[-_ ]?SCOPE\s*#{2,}", re.IGNORECASE)
+
+
+def split_ending(user_text: str) -> tuple[str, Termination | None]:
+    """The customer's words without the end token, and how the customer ended (tolerant of `### stop ###`)."""
+    text = unicodedata.normalize("NFKC", user_text)
+    for pattern, ending in ((_OUT_OF_SCOPE, "out_of_scope"), (_STOP, "user_stop")):
+        if pattern.search(text):
+            return pattern.sub("", text).strip(), ending
+    return user_text, None
+
+
 def _converse(
     state: AgentState, user: User, task: Task, trial: int, config: RunConfig, provider, registry, run_tool
 ) -> Termination:
     agent_text = FIRST_AGENT_MESSAGE
     for _ in range(config.max_user_turns):
-        user_text = user.reply(agent_text)
-        if STOP_TOKEN in user_text:
-            return "user_stop"
-        if OUT_OF_SCOPE_TOKEN in user_text:
-            return "out_of_scope"
+        user_text, ending = split_ending(user.reply(agent_text))
+        if ending and not user_text:
+            return ending
+        # Text that came with the token ("네, 진행해 주세요 ###STOP###") still gets its answer;
+        # otherwise a simulator habit would be counted as the agent's failure.
         turn = agent_turn(
             state,
             user_text,
@@ -55,6 +69,8 @@ def _converse(
         )
         if turn.stop:
             return turn.stop
+        if ending:
+            return ending
         agent_text = turn.reply or ""
     return "max_user_turns"
 
@@ -86,9 +102,12 @@ def run_episode(
     error = ""
     try:
         termination = _converse(state, user, task, trial, config, provider, registry, run_tool)
-    except (ProviderError, SimulatorError, ToolBugError) as exc:
-        # The model server, the simulator or our own tool code failed: nobody's task failure.
+    except Exception as exc:  # noqa: BLE001
+        # The model server, the simulator or our own code failed: nobody's task failure, and one broken
+        # episode must not end a run that takes hours. KeyboardInterrupt still stops the run.
         termination, error = "infra_error", f"{type(exc).__name__}: {exc}"
+        if not isinstance(exc, ProviderError | SimulatorError | ToolBugError):
+            error += "\n" + traceback.format_exc()
 
     final_dump = db.dump_db(engine)
     engine.dispose()

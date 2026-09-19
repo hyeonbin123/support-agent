@@ -320,9 +320,10 @@ class Handoff(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
 
-# Columns left out of the DB comparison: free text, and the hand-off reason (two reasons can both be fair).
+# Columns left out of the DB comparison: free text, and what a hand-off row says beyond "it happened"
+# (two reasons can both be fair, and the policy allows a hand-off before or after verification).
 IGNORED_COLUMNS: frozenset[tuple[str, str]] = frozenset(
-    {("tickets", "body"), ("handoffs", "summary"), ("handoffs", "reason")}
+    {("tickets", "body"), ("handoffs", "summary"), ("handoffs", "reason"), ("handoffs", "customer_id")}
 )
 
 

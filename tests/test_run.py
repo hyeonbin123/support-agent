@@ -49,3 +49,18 @@ def test_a_script_that_runs_out_is_an_infra_error_not_a_task_failure():
 
 def test_run_ids_are_safe_windows_folder_names():
     assert run.safe_name("qwen2.5:7b-instruct") == "qwen2.5-7b-instruct"
+
+
+def test_pass_hat_k_uses_every_valid_trial_and_names_tasks_that_were_never_measured():
+    task_a = next(t for t in ALL_TASKS if t.id == "smoke-action-01")
+    task_b = next(t for t in ALL_TASKS if t.id == "smoke-lookup-01")
+    name, contact = CONTACTS[task_a.customer_id]
+    good = [ToolCall("find_customer", {"name": name, "contact": contact})]
+    good += [ToolCall(a.tool, a.args) for a in task_a.gold_actions] + [say_values(task_a)]
+    results = [episode(task_a, ["안 됩니다."]), episode(task_a, good), episode(task_a, good)]
+    lost = episode(task_b, ["모르겠습니다."])
+    lost.status, lost.verdict = "infra_error", None
+    summary = run.summarise([*results, lost])
+    assert summary["by_task"] == {"smoke-action-01": "2/3"}
+    assert summary["pass_hat_k"][1] == 2 / 3  # not 0.0: the first trial alone would say so
+    assert summary["tasks_without_valid_trials"] == ["smoke-lookup-01"]

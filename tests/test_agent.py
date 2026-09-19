@@ -12,6 +12,7 @@ from toy_tools import TOY_REGISTRY
 
 from support_agent import db
 from support_agent.agent import (
+    CUT_OFF_NOTICE,
     FORMAT_NOTICE,
     AgentState,
     agent_turn,
@@ -143,7 +144,8 @@ def test_format_problem_retries_with_notice(tiny_engine, kind):
     undelivered, notice = h.state.messages[3], h.state.messages[4]
     assert undelivered.role == "assistant" and undelivered.delivered is False
     assert undelivered.content == bad.text
-    assert (notice.role, notice.content, notice.harness) == ("user", FORMAT_NOTICE, True)
+    expected = CUT_OFF_NOTICE if kind == "cut_off" else FORMAT_NOTICE
+    assert (notice.role, notice.content, notice.harness) == ("user", expected, True)
     assert h.provider.requests[1]["messages"][-1] == notice
     assert h.state.format_errors == 1
     assert [log.format_error for log in h.state.llm_log] == [kind, None]

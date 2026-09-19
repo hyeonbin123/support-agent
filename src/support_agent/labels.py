@@ -28,12 +28,12 @@ LABELS: dict[type[enum.Enum], dict[str, str]] = {
     db.CancelReason: {
         "changed_mind": "단순 변심",
         "ordered_by_mistake": "주문 실수",
-        "delivery_too_slow": "배송 지연",
+        "delivery_too_slow": "배송이 너무 늦어서",
     },
     db.RequestKind: {"return": "반품", "exchange": "교환"},
     db.RequestReason: {"changed_mind": "단순 변심", "defective": "상품 불량", "wrong_item": "오배송"},
     db.CouponKind: {"promo": "프로모션", "compensation": "보상"},
-    db.CompensationReason: {"delivery_delay": "배송 지연", "defective_item": "상품 불량"},
+    db.CompensationReason: {"delivery_delay": "배송 지연 보상", "defective_item": "상품 불량 보상"},
     db.TicketCategory: {
         "delivery": "배송",
         "refund": "환불",

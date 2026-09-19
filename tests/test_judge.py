@@ -368,11 +368,10 @@ def test_gold_replay_is_always_p1_and_respects_gold_verified(tiny_engine):
         required_values=[],
     )
     dump = db.dump_db(gold_engine(unverified, tiny_engine, REGISTRY))
-    assert dump["handoffs"] == [
-        {"id": "HO-1", "customer_id": None, "created_at": "2026-09-14T01:00:00+00:00"}
-    ]
+    assert dump["handoffs"] == [{"id": "HO-1", "created_at": "2026-09-14T01:00:00+00:00"}]
+    # Who was verified at hand-off time is not compared: the policy allows a hand-off before or after.
     verified = unverified.model_copy(update={"gold_verified": True})
-    assert db.dump_db(gold_engine(verified, tiny_engine, REGISTRY))["handoffs"][0]["customer_id"] == "C-1"
+    assert db.dump_db(gold_engine(verified, tiny_engine, REGISTRY)) == dump
 
 
 # ---------------------------------------------------------------- judge

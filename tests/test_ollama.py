@@ -432,7 +432,7 @@ def test_preload():
     )
     provider = make(server, num_ctx=8192, think=False)
 
-    assert provider.preload() == pytest.approx(2500.0)
+    assert provider.preload() >= 0.0  # measured by the client, not taken from load_duration
     body = server.bodies()[0]
     assert body == {
         "model": MODEL,

@@ -183,8 +183,11 @@ class OllamaProvider(ChatProvider):
         if not isinstance(msg, dict):
             detail = raw.get("error") or json.dumps(raw, ensure_ascii=False)[:300]
             raise ProviderError(f"ollama: response has no message: {detail}")
+        content = msg.get("content") or ""
+        if not isinstance(content, str):
+            raise ProviderError(f"ollama: message content is not text: {str(content)[:300]}")
         return ChatResponse(
-            text=_clean(msg.get("content") or ""),
+            text=_clean(content),
             tool_calls=_parse_tool_calls(msg.get("tool_calls")),
             usage=Usage(
                 prompt_tokens=raw.get("prompt_eval_count", 0) or 0,
@@ -207,7 +210,9 @@ class OllamaProvider(ChatProvider):
             "keep_alive": self.keep_alive,
             "options": {"num_ctx": self.num_ctx},
         }
-        return _ms(self._request("POST", "/api/chat", body), "load_duration")
+        started = time.perf_counter()
+        self._request("POST", "/api/chat", body)
+        return (time.perf_counter() - started) * 1000
 
     def loaded_models(self) -> list[dict[str, Any]]:
         """Models the server holds in memory right now; [] when the server cannot be asked."""

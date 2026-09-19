@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
@@ -28,6 +28,29 @@ class ToolArgs(BaseModel):
     """Base class of every tool argument model. Invented arguments are rejected."""
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _storable_text(cls, data: Any) -> Any:
+        """Lone surrogates and NUL bytes would crash the database driver or the report writer."""
+
+        def check(value: Any) -> None:
+            if isinstance(value, str):
+                if "\x00" in value:
+                    raise ValueError("text must not contain NUL characters")
+                try:
+                    value.encode("utf-8")
+                except UnicodeEncodeError as error:
+                    raise ValueError("text is not valid Unicode") from error
+            elif isinstance(value, dict):
+                for item in value.values():
+                    check(item)
+            elif isinstance(value, list):
+                for item in value:
+                    check(item)
+
+        check(data)
+        return data
 
 
 class ToolError(Exception):
@@ -246,6 +269,7 @@ def execute(
     with Session(engine) as session:
         try:
             result = spec.handler(session, ctx, args)
+            content = json.dumps(result, ensure_ascii=False)
             session.commit()
         except ToolError as error:
             session.rollback()
@@ -256,5 +280,4 @@ def execute(
             session.rollback()
             ctx.state = saved_state
             raise ToolBugError(f"{name}({clean}) raised {type(error).__name__}: {error}") from error
-    content = json.dumps(result, ensure_ascii=False)
     return ToolResult(True, content, args=clean, violations=tuple(ctx.violations[seen:]))

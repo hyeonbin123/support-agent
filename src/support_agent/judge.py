@@ -102,8 +102,21 @@ def _date_found(value: date, text: str) -> bool:
     )
 
 
+_HYPHENS = re.compile("[\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uff0d]")
+_ZERO_WIDTH = re.compile("[\u200b\u200c\u200d\u2060\ufeff]")
+
+
 def _squash(text: str) -> str:
-    return _SPACES.sub("", unicodedata.normalize("NFKC", text).lower())
+    text = _ZERO_WIDTH.sub("", unicodedata.normalize("NFKC", text).lower())
+    return _SPACES.sub("", _HYPHENS.sub("-", text))
+
+
+def _text_found(value: str, text: str) -> bool:
+    needle = _squash(value)
+    # A value that starts or ends with a digit (a tracking number) must not sit inside a longer number.
+    before = r"(?<!\d)" if needle[:1].isdigit() else ""
+    after = r"(?!\d)" if needle[-1:].isdigit() else ""
+    return re.search(before + re.escape(needle) + after, _squash(text)) is not None
 
 
 def value_found(value: RequiredValue, texts: Sequence[str]) -> bool:
@@ -115,7 +128,7 @@ def value_found(value: RequiredValue, texts: Sequence[str]) -> bool:
         elif value.kind == "date":
             hit = _date_found(value.value, text)  # type: ignore[arg-type]
         else:
-            hit = _squash(str(value.value)) in _squash(text)
+            hit = _text_found(str(value.value), text)
         if hit:
             return True
     return False
@@ -325,6 +338,7 @@ def validate_task(
     seed_engine: Engine,
     registry: Registry,
     read_tools: Sequence[str] = DEFAULT_READ_TOOLS,
+    prompt_texts: Sequence[str] = (),
 ) -> list[str]:
     """Problems of a task file against the seed data and the tools. An empty list means the task is fine."""
     problems: list[str] = []
@@ -335,13 +349,22 @@ def validate_task(
         problems.append(f"{task.id}: customer {task.customer_id} is not in the seed data")
     problems += _seed_time_problems(task, seed_engine)
 
-    scenario = [task.user.all_text()]
+    # A value that the scenario or the agent's prompt (policy examples!) already contains proves nothing.
     for required in task.required_values:
-        if value_found(required, scenario):
-            problems.append(
-                f"{task.id}: required value {required.label!r} ({required.value}) "
-                "is given away by the scenario"
-            )
+        for source, texts in (("scenario", [task.user.all_text()]), ("agent prompt", list(prompt_texts))):
+            if value_found(required, texts):
+                problems.append(
+                    f"{task.id}: required value {required.label!r} ({required.value}) "
+                    f"is given away by the {source}"
+                )
+
+    with seed_engine.connect() as conn:
+        orders = db.Order.__table__
+        for action in [*task.gold_actions, *task.forbidden_actions]:
+            order_id = action.args.get("order_id")
+            row = conn.execute(select(orders.c.discount_won).where(orders.c.id == order_id)).first()
+            if row is not None and row[0] != 0:
+                problems.append(f"{task.id}: {order_id} has a discount; refund rules do not cover that yet")
 
     try:
         gold, gold_outputs = _replay_gold(task, seed_engine, registry)

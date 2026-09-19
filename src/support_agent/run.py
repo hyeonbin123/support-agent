@@ -35,6 +35,7 @@ from support_agent.tasks import load_tasks
 from support_agent.tools import build_registry
 from support_agent.user_sim import LLMUser, build_user_prompt
 
+MAX_CONSECUTIVE_INFRA_ERRORS = 3  # the model server is probably down: stop instead of burning the task list
 OTHER_GPU_USE_LIMIT_MIB = 3000  # desktop apps take 1-2 GiB; more than this means another job is running
 
 
@@ -84,7 +85,8 @@ def summarise(results: list[EpisodeResult]) -> dict[str, Any]:
     by_task: dict[str, list[bool]] = {}
     for r in counted:
         by_task.setdefault(r.task_id, []).append(bool(r.verdict and r.verdict.success))
-    trials = min((len(v) for v in by_task.values()), default=0)
+    # A task whose every trial was an infra error must not vanish from the table without a trace.
+    unmeasured = sorted({r.task_id for r in results} - set(by_task))
     agent_calls = [c for r in counted for c in r.llm_calls if c.who == "agent"]
     user_calls = [c for r in counted for c in r.llm_calls if c.who == "user"]
 
@@ -99,8 +101,14 @@ def summarise(results: list[EpisodeResult]) -> dict[str, Any]:
             t: sum(r.termination == t for r in results) for t in sorted({r.termination for r in results})
         },
         "successes": sum(sum(v) for v in by_task.values()),
-        "pass_hat_k": pass_k_table({k: v[:trials] for k, v in by_task.items()}) if trials else {},
+        # pass^k uses every valid trial of a task (C(c,k)/C(n,k) with the task's own n), for k up to the
+        # smallest n. Trials lost to infra errors therefore shrink k, never the success counts.
+        "pass_hat_k": pass_k_table(by_task) if by_task else {},
         "by_task": {k: f"{sum(v)}/{len(v)}" for k, v in sorted(by_task.items())},
+        "tasks_without_valid_trials": unmeasured,
+        "successes_with_unexpected_writes": sum(
+            bool(r.verdict and r.verdict.success and r.verdict.unexpected_writes) for r in counted
+        ),
         "unexpected_writes": sum(r.verdict.unexpected_writes for r in counted if r.verdict),
         "policy_violations": sum(len(r.verdict.policy_violations) for r in counted if r.verdict),
         "policy_blocks": sum(len(r.verdict.policy_blocks) for r in counted if r.verdict),
@@ -112,6 +120,8 @@ def summarise(results: list[EpisodeResult]) -> dict[str, Any]:
         "agent_call_ms": mean([c.wall_ms for c in agent_calls]),
         "agent_prompt_eval_ms": mean([c.prompt_eval_ms for c in agent_calls]),
         "agent_prompt_tokens_max": max((c.prompt_tokens for c in agent_calls), default=0),
+        # The context-limit check reads prompt_tokens; calls that report none are blind spots.
+        "agent_calls_without_prompt_tokens": sum(c.prompt_tokens == 0 for c in agent_calls),
         "user_call_ms": mean([c.wall_ms for c in user_calls]),
         "model_load_ms_total": round(sum(c.load_ms for c in agent_calls + user_calls), 1),
     }
@@ -135,9 +145,12 @@ def main() -> None:
 
     if "test" in Path(args.tasks).stem and not args.allow_test:
         parser.error("test tasks are measured once per stage; pass --allow-test when the stage is done")
+    commit = _git("rev-parse", "HEAD")
     dirty = bool(_git("status", "--porcelain"))
-    if args.official and dirty:
-        parser.error("--official needs a clean working tree, so that the commit describes the code that ran")
+    if args.official and (dirty or not commit):
+        parser.error(
+            "--official needs git and a clean working tree, so that the commit describes the code that ran"
+        )
 
     config = RunConfig(
         model=args.model,
@@ -148,6 +161,9 @@ def main() -> None:
     )
     tasks = load_tasks(args.tasks)
     if args.task_id:
+        unknown = sorted(set(args.task_id) - {t.id for t in tasks})
+        if unknown:
+            parser.error(f"unknown task ids: {unknown}")
         tasks = [t for t in tasks if t.id in set(args.task_id)]
     if not tasks:
         parser.error("no tasks selected")
@@ -168,6 +184,12 @@ def main() -> None:
     seed_engine = build_seed_engine()
     seed_dump = db.dump_db(seed_engine)
     policy_text = load_policy()
+    # Everything that can fail without the model fails here, before hours of GPU time are spent.
+    gold_dumps = {task.id: gold_dump_of(task, seed_engine, registry) for task in tasks}
+    print(f"loading {config.model} ... {provider.preload() / 1000:.1f} s")
+    if not same:
+        print(f"loading {config.user_model} ... {user_provider.preload() / 1000:.1f} s")
+        print("warning: two models take turns; if both do not fit in GPU memory every turn reloads one")
     started = datetime.now(UTC)
     run_id = "-".join(
         p
@@ -188,7 +210,7 @@ def main() -> None:
         "run_id": run_id,
         "started_at": started.isoformat(timespec="seconds"),
         "official": args.official,
-        "commit": _git("rev-parse", "HEAD"),
+        "commit": commit,
         "dirty": dirty,
         "config": config.to_dict(),
         "trials": args.trials,
@@ -217,12 +239,49 @@ def main() -> None:
         seed_file.write_text(json.dumps(seed_dump, ensure_ascii=False), encoding="utf-8", newline="\n")
 
     print(f"run {run_id}: {len(tasks)} tasks x {args.trials} trials -> {run_dir}")
-    print(f"loading {config.model} ... {provider.preload() / 1000:.1f} s")
     results: list[EpisodeResult] = []
+    try:
+        _run_all(
+            tasks,
+            args.trials,
+            results,
+            run_dir,
+            config,
+            provider,
+            user_provider,
+            registry,
+            seed_engine,
+            policy_text,
+            gold_dumps,
+            run_id,
+        )
+    finally:  # also after Ctrl-C or a crash: what was measured so far stays readable
+        summary = summarise(results)
+        (run_dir / "summary.json").write_text(
+            json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n"
+        )
+        print(json.dumps(summary, ensure_ascii=False, indent=1))
+
+
+def _run_all(
+    tasks,
+    trials,
+    results,
+    run_dir,
+    config,
+    provider,
+    user_provider,
+    registry,
+    seed_engine,
+    policy_text,
+    gold_dumps,
+    run_id,
+) -> None:
+    infra_streak = 0
     with (run_dir / "episodes.jsonl").open("a", encoding="utf-8", newline="\n") as out:
         for task in tasks:
-            gold_dump = gold_dump_of(task, seed_engine, registry)
-            for trial in range(args.trials):
+            gold_dump = gold_dumps[task.id]
+            for trial in range(trials):
                 result = run_episode(
                     task,
                     trial,
@@ -240,12 +299,9 @@ def main() -> None:
                 out.flush()
                 mark = "infra" if result.verdict is None else ("PASS" if result.verdict.success else "fail")
                 print(f"  {task.id} #{trial}: {mark:5} {result.termination:22} {result.wall_seconds:6.1f} s")
-
-    summary = summarise(results)
-    (run_dir / "summary.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n"
-    )
-    print(json.dumps(summary, ensure_ascii=False, indent=1))
+                infra_streak = infra_streak + 1 if result.status == "infra_error" else 0
+                if infra_streak >= MAX_CONSECUTIVE_INFRA_ERRORS:
+                    sys.exit(f"{infra_streak} infra errors in a row; stopping. Last: {result.error[:300]}")
 
 
 if __name__ == "__main__":
