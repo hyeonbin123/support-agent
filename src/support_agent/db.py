@@ -344,14 +344,14 @@ def memory_engine(source: Engine | None = None) -> Engine:
 
 
 def _plain(value: Any) -> Any:
+    if isinstance(value, enum.Enum):  # before str: every enum here is a StrEnum
+        return value.value
     if value is None or isinstance(value, bool | int | str):
         return value
     if isinstance(value, datetime):
         return value.astimezone(UTC).isoformat(timespec="seconds")
     if isinstance(value, date):
         return value.isoformat()
-    if isinstance(value, enum.Enum):
-        return value.value
     raise TypeError(f"unexpected column value {value!r}: money is integer won, there are no floats")
 
 

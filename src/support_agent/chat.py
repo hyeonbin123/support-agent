@@ -36,6 +36,8 @@ class Message:
             ]
         if self.tool_name:
             out["tool_name"] = self.tool_name
+        if self.tool_call_id:
+            out["tool_call_id"] = self.tool_call_id
         if not self.delivered:
             out["delivered"] = False
         if self.harness:

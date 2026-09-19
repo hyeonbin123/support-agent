@@ -1,0 +1,193 @@
+"""The agent loop: one customer turn in, tool calls until the agent answers or the episode must stop."""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import datetime
+from importlib.resources import files
+from typing import Any
+
+from support_agent.chat import ChatProvider, ChatResponse, Message
+from support_agent.clock import to_kst
+from support_agent.config import (
+    FIRST_AGENT_MESSAGE,
+    HANDOFF_MESSAGE,
+    THINK_TOOL,
+    RunConfig,
+    Termination,
+    derive_seed,
+)
+from support_agent.records import LLMCallLog, ToolCallLog
+from support_agent.toolkit import Registry, ToolResult
+
+FORMAT_NOTICE = (
+    "[시스템 안내] 방금 응답은 형식이 잘못되어 고객에게 전달되지 않았습니다. "
+    "도구를 쓰려면 정해진 도구 호출 형식으로 호출하고, 아니면 고객에게 보낼 말을 일반 문장으로 답하세요."
+)
+_WEEKDAYS = "월화수목금토일"
+
+# The loop never sees the DB or the ToolContext; the caller passes a closure over toolkit.execute.
+RunTool = Callable[[str, dict], ToolResult]
+
+
+@dataclass
+class AgentState:
+    messages: list[Message]
+    agent_calls: int = 0  # LLM calls so far in this episode
+    tool_errors: int = 0
+    format_errors: int = 0
+    dropped_calls: int = 0
+    tool_log: list[ToolCallLog] = field(default_factory=list)
+    llm_log: list[LLMCallLog] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "messages": [m.to_dict() for m in self.messages],
+            "agent_calls": self.agent_calls,
+            "tool_errors": self.tool_errors,
+            "format_errors": self.format_errors,
+            "dropped_calls": self.dropped_calls,
+        }
+
+
+@dataclass(frozen=True)
+class TurnResult:
+    reply: str | None  # what the customer is told; None when the episode stops without a reply
+    stop: Termination | None  # None = the conversation goes on
+
+
+def _prompt_file(name: str) -> str:
+    return (files("support_agent") / "prompts" / name).read_text(encoding="utf-8")
+
+
+def load_policy() -> str:
+    return _prompt_file("policy.md")
+
+
+def build_system_prompt(policy_text: str, now: datetime) -> str:
+    local = to_kst(now)
+    now_text = f"{local:%Y-%m-%d %H:%M} ({_WEEKDAYS[local.weekday()]}요일)"
+    return _prompt_file("agent.md").format(policy=policy_text.strip(), now=now_text)
+
+
+def new_state(system_prompt: str) -> AgentState:
+    return AgentState([Message("system", system_prompt), Message("assistant", FIRST_AGENT_MESSAGE)])
+
+
+def visible_tools(registry: Registry, config: RunConfig) -> list[dict[str, Any]]:
+    """Tool schemas shown to the model. The think tool exists only under R1."""
+    return [
+        spec.schema() for spec in registry.values() if spec.name != THINK_TOOL or config.reasoning == "R1"
+    ]
+
+
+def format_problem(response: ChatResponse) -> str | None:
+    """Why a reply cannot be used as it is: empty | leaked_tool_call | cut_off, or None."""
+    text = response.text.strip()
+    if not text and not response.tool_calls:
+        return "empty"
+    if not response.tool_calls and (
+        "<tool_call>" in text or "</tool_call>" in text or text.startswith('{"name"')
+    ):
+        return "leaked_tool_call"  # the model wrote the call into the text instead of calling
+    if response.finish_reason == "length":
+        return "cut_off"
+    return None
+
+
+def agent_turn(
+    state: AgentState,
+    user_text: str,
+    *,
+    provider: ChatProvider,
+    registry: Registry,
+    run_tool: RunTool,
+    config: RunConfig,
+    task_id: str = "",
+    trial: int = 0,
+) -> TurnResult:
+    """Handle one customer message. ProviderError and ToolBugError pass through to the episode runner."""
+    state.messages.append(Message("user", user_text))
+    tools = visible_tools(registry, config)
+    retries = 0  # format retries are counted per turn
+    while state.agent_calls < config.max_agent_calls:
+        index = state.agent_calls
+        seed = derive_seed(config.base_seed, task_id, trial, "agent", index)
+        response = provider.chat(
+            state.messages, tools, temperature=config.temperature, seed=seed, max_tokens=config.max_tokens
+        )
+        state.agent_calls += 1
+        problem = format_problem(response)
+        calls = response.tool_calls
+        usage = response.usage
+        state.llm_log.append(
+            LLMCallLog(
+                who="agent",
+                index=index,
+                seed=seed,
+                text=response.text,
+                tool_calls=[{"name": c.name, "arguments": c.arguments, "id": c.id} for c in calls],
+                format_error=problem,
+                dropped_text=response.text if calls and not problem else "",
+                dropped_calls=max(len(calls) - 1, 0) if not problem else 0,
+                finish_reason=response.finish_reason,
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                wall_ms=usage.wall_ms,
+                load_ms=usage.load_ms,
+                prompt_eval_ms=usage.prompt_eval_ms,
+                eval_ms=usage.eval_ms,
+            )
+        )
+        # Ollama silently cuts the front of an overlong prompt, so stop before that happens.
+        if usage.prompt_tokens > 0.95 * config.num_ctx:
+            return TurnResult(None, "context_limit")
+
+        if problem:
+            state.format_errors += 1
+            state.messages.append(Message("assistant", response.text, delivered=False))
+            if retries >= config.max_format_retries:
+                return TurnResult(None, "agent_format_error")
+            retries += 1
+            state.messages.append(Message("user", FORMAT_NOTICE, harness=True))
+            continue
+
+        if not calls:
+            state.messages.append(Message("assistant", response.text))
+            return TurnResult(response.text, None)
+
+        # Only the first call runs; text that came with it is not delivered and not kept in history.
+        call = calls[0]
+        state.dropped_calls += len(calls) - 1
+        state.messages.append(Message("assistant", "", (call,)))
+        spec = registry.get(call.name)
+        started = time.perf_counter()
+        result = run_tool(call.name, call.arguments)
+        state.tool_log.append(
+            ToolCallLog(
+                agent_call=index,
+                name=call.name,
+                raw_arguments=call.arguments,
+                args=result.args,
+                ok=result.ok,
+                error_code=result.error_code,
+                policy_blocked=result.policy_blocked,
+                violations=list(result.violations),
+                content=result.content,
+                write=spec.write if spec else False,
+                ms=(time.perf_counter() - started) * 1000,
+            )
+        )
+        state.messages.append(
+            Message("tool", result.content, tool_name=call.name, tool_call_id=call.id or None)
+        )
+        if not result.ok:
+            state.tool_errors += 1
+            if state.tool_errors >= config.max_tool_errors:
+                return TurnResult(None, "too_many_tool_errors")
+        elif spec is not None and spec.terminates:
+            state.messages.append(Message("assistant", HANDOFF_MESSAGE))
+            return TurnResult(HANDOFF_MESSAGE, "handoff")
+    return TurnResult(None, "max_agent_calls")
