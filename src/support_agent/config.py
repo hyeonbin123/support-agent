@@ -35,7 +35,7 @@ class RunConfig:
     policy: Literal["P0", "P1"] = "P0"  # P0: rules only in the prompt, P1: tools also refuse
     reasoning: Literal["R0", "R1", "R2"] = "R0"  # R1: think tool, R2: confirmation enforced before writes
     temperature: float = 0.0
-    user_temperature: float = 0.7
+    user_temperature: float = 0.3
     base_seed: int = 1000
     num_ctx: int = 16384
     max_tokens: int = 1024

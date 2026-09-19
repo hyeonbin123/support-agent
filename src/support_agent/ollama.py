@@ -89,6 +89,9 @@ def _parse_tool_calls(items: Any) -> tuple[ToolCall, ...]:
     return tuple(calls)
 
 
+REPEAT_LIMIT_ERROR = "token repeat limit reached"
+
+
 class OllamaProvider(ChatProvider):
     name = "ollama"
 
@@ -176,7 +179,15 @@ class OllamaProvider(ChatProvider):
             body["think"] = self.think
 
         start = time.perf_counter()
-        raw = self._request("POST", "/api/chat", body)
+        try:
+            raw = self._request("POST", "/api/chat", body)
+        except ProviderError as error:
+            if REPEAT_LIMIT_ERROR not in str(error):
+                raise
+            # The model fell into repeating one token and the server cut it off. That is the model's
+            # output going wrong, not the server failing: report an empty, cut-off reply.
+            wall_ms = (time.perf_counter() - start) * 1000.0
+            return ChatResponse(text="", usage=Usage(wall_ms=wall_ms), finish_reason="repeat_limit")
         wall_ms = (time.perf_counter() - start) * 1000.0
 
         msg = raw.get("message")

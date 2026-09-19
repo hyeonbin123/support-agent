@@ -8,7 +8,7 @@ from support_agent.chat import ChatResponse, Message, ScriptedProvider, ToolCall
 from support_agent.clock import KST
 from support_agent.config import OUT_OF_SCOPE_TOKEN, STOP_TOKEN, RunConfig, derive_seed
 from support_agent.tasks import RequiredValue, Task, ToolAction, UserScenario
-from support_agent.user_sim import LLMUser, ScriptedUser, SimulatorError, build_user_prompt
+from support_agent.user_sim import TURN_REMINDER, LLMUser, ScriptedUser, SimulatorError, build_user_prompt
 
 GREETING = "안녕하세요, 고객센터입니다. 무엇을 도와드릴까요?"
 
@@ -111,10 +111,13 @@ def test_llm_user_flips_roles_and_passes_seed_and_temperature():
     first, second, third = provider.requests
     assert [m.role for m in first["messages"]] == ["system", "user"]
     assert first["messages"][0].content == build_user_prompt(task)
-    assert first["messages"][1].content == GREETING
+    assert first["messages"][1].content.startswith(f"{GREETING}\n\n{TURN_REMINDER}")  # sent with the reminder
+    assert task.user.known in first["messages"][1].content
     assert [m.role for m in second["messages"]] == ["system", "user", "assistant", "user"]
     assert second["messages"][2].content == "주문 취소하려고요."
-    assert second["messages"][3].content == "성함과 연락처를 알려 주세요."
+    assert second["messages"][3].content.startswith("성함과 연락처를 알려 주세요.\n\n(고객 역할 지침")
+    assert TURN_REMINDER not in second["messages"][1].content  # only the newest message carries it
+    assert all(TURN_REMINDER not in m.content for m in user.messages)  # the record stays clean
     assert len(third["messages"]) == 6
 
     for index, request in enumerate(provider.requests):
