@@ -26,6 +26,7 @@ def turn(tiny_engine, script, **config):
         run_tool=lambda name, args: execute(TOY_REGISTRY, engine, ctx, name, args),
         config=RunConfig(**config),
     )
+    turn.provider = provider
     return result, state, engine
 
 
@@ -114,3 +115,12 @@ def test_paired_difference_resamples_tasks_and_keeps_pairs():
     assert same == (0.0, 0.0, 0.0)
     with pytest.raises(ValueError, match="same tasks"):
         analyze.paired_difference(base, {"a": [True] * 4}, 1)
+
+
+def test_g2_samples_the_retry_but_not_the_first_attempt(tiny_engine):
+    script = ["확인해 보겠습니다.", ToolCall("toy_cancel_order", {"order_id": "O-1"}), "취소했습니다."]
+    _, state, _ = turn(tiny_engine, script, guard="G2")
+    temperatures = [request["temperature"] for request in turn.provider.requests]
+    assert temperatures == [0.0, 0.7, 0.7] and state.stalls == 1
+    _, _, _ = turn(tiny_engine, script, guard="G1")
+    assert [request["temperature"] for request in turn.provider.requests] == [0.0, 0.0, 0.0]

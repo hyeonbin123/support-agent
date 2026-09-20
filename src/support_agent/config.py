@@ -36,7 +36,8 @@ class RunConfig:
     user_model: str = "qwen2.5:7b-instruct"
     policy: Literal["P0", "P1"] = "P0"  # P0: rules only in the prompt, P1: tools also refuse
     reasoning: Literal["R0", "R1", "R2"] = "R0"  # R1: think tool, R2: confirmation enforced before writes
-    guard: Literal["G0", "G1"] = "G0"  # G1: a reply that only promises to act is sent back, not delivered
+    # G1: a reply that only promises to act is sent back, not delivered. G2: and the retry is sampled.
+    guard: Literal["G0", "G1", "G2"] = "G0"
     rescue: Literal["F0", "F1"] = "F0"  # F1: a tool call leaked into the text is parsed and run
     temperature: float = 0.0
     user_temperature: float = 0.3
@@ -46,6 +47,7 @@ class RunConfig:
     max_agent_calls: int = 30  # LLM calls by the agent per episode
     max_user_turns: int = 20
     max_tool_errors: int = 10
+    stall_retry_temperature: float = 0.7  # G2 only
     max_stall_retries: int = 2  # per agent turn (G1); after that the reply is delivered as it is
     max_format_retries: int = 2  # per agent turn; 0 reproduces the strict "one malformed reply fails" rule
 

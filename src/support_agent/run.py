@@ -137,7 +137,7 @@ def main() -> None:
     parser.add_argument("--policy", choices=["P0", "P1"], default="P0")
     parser.add_argument("--reasoning", choices=["R0", "R1"], default="R0", help="R2 arrives in stage 2")
     parser.add_argument(
-        "--guard", choices=["G0", "G1"], default="G0", help="G1: hold back replies that only promise"
+        "--guard", choices=["G0", "G1", "G2"], default="G0", help="G1: hold back replies that only promise"
     )
     parser.add_argument(
         "--rescue", choices=["F0", "F1"], default="F0", help="F1: run tool calls leaked into text"

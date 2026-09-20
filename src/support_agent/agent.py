@@ -168,8 +168,12 @@ def agent_turn(
     while state.agent_calls < config.max_agent_calls:
         index = state.agent_calls
         seed = derive_seed(config.base_seed, task_id, trial, "agent", index)
+        # G2: a retry after a held-back stall is sampled, because at temperature 0 the model tends to
+        # answer the notice with the very same sentence.
+        retrying_stall = config.guard == "G2" and stall_retries > 0
+        temperature = config.stall_retry_temperature if retrying_stall else config.temperature
         response = provider.chat(
-            state.messages, tools, temperature=config.temperature, seed=seed, max_tokens=config.max_tokens
+            state.messages, tools, temperature=temperature, seed=seed, max_tokens=config.max_tokens
         )
         state.agent_calls += 1
         problem = format_problem(response)
@@ -179,7 +183,12 @@ def agent_turn(
             if rescued is not None:  # run it as if it had been a proper call; still counted as a format error
                 calls, problem = (rescued,), None
                 state.format_errors += 1
-        if not problem and not calls and config.guard == "G1" and stall_retries < config.max_stall_retries:
+        if (
+            not problem
+            and not calls
+            and config.guard in ("G1", "G2")
+            and stall_retries < config.max_stall_retries
+        ):
             if is_stall(response.text):
                 problem = "stall"
         usage = response.usage
