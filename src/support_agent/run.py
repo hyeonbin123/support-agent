@@ -136,6 +136,12 @@ def main() -> None:
     parser.add_argument("--user-model", default=None, help="simulator model (default: same as --model)")
     parser.add_argument("--policy", choices=["P0", "P1"], default="P0")
     parser.add_argument("--reasoning", choices=["R0", "R1"], default="R0", help="R2 arrives in stage 2")
+    parser.add_argument(
+        "--guard", choices=["G0", "G1"], default="G0", help="G1: hold back replies that only promise"
+    )
+    parser.add_argument(
+        "--rescue", choices=["F0", "F1"], default="F0", help="F1: run tool calls leaked into text"
+    )
     parser.add_argument("--num-ctx", type=int, default=RunConfig.num_ctx)
     parser.add_argument("--label", default="", help="short name added to the run id")
     parser.add_argument("--official", action="store_true", help="write to reports/ (needs a clean tree)")
@@ -157,6 +163,8 @@ def main() -> None:
         user_model=args.user_model or args.model,
         policy=args.policy,
         reasoning=args.reasoning,
+        guard=args.guard,
+        rescue=args.rescue,
         num_ctx=args.num_ctx,
     )
     tasks = load_tasks(args.tasks)
@@ -198,6 +206,8 @@ def main() -> None:
             safe_name(config.model),
             config.policy,
             config.reasoning,
+            config.guard,
+            config.rescue,
             safe_name(args.label),
         ]
         if p

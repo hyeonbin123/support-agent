@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -10,7 +11,7 @@ from datetime import datetime
 from importlib.resources import files
 from typing import Any
 
-from support_agent.chat import ChatProvider, ChatResponse, Message
+from support_agent.chat import ChatProvider, ChatResponse, Message, ToolCall
 from support_agent.clock import to_kst
 from support_agent.config import (
     FIRST_AGENT_MESSAGE,
@@ -23,6 +24,11 @@ from support_agent.config import (
 from support_agent.records import LLMCallLog, ToolCallLog
 from support_agent.toolkit import Registry, ToolResult
 
+STALL_NOTICE = (
+    "[시스템 안내] 방금 응답은 고객에게 전달되지 않았습니다. "
+    "하겠다는 말만 보내면 고객은 기다릴 수밖에 없습니다. "
+    "지금 필요한 도구를 바로 호출하거나, 고객에게 물어볼 것이 있으면 그것을 물어보세요."
+)
 CUT_OFF_NOTICE = (
     "[시스템 안내] 방금 응답은 너무 길어 중간에 끊겼고 고객에게 전달되지 않았습니다. 더 짧게 다시 답하세요."
 )
@@ -43,6 +49,7 @@ class AgentState:
     tool_errors: int = 0
     format_errors: int = 0
     dropped_calls: int = 0
+    stalls: int = 0  # replies held back by the stall guard (G1)
     tool_log: list[ToolCallLog] = field(default_factory=list)
     llm_log: list[LLMCallLog] = field(default_factory=list)
 
@@ -53,6 +60,7 @@ class AgentState:
             "tool_errors": self.tool_errors,
             "format_errors": self.format_errors,
             "dropped_calls": self.dropped_calls,
+            "stalls": self.stalls,
         }
 
 
@@ -100,6 +108,33 @@ def _looks_like_tool_call(text: str) -> bool:
     return isinstance(data, dict) and "name" in data and ("arguments" in data or "parameters" in data)
 
 
+def leaked_tool_call(text: str) -> ToolCall | None:
+    """The tool call that the model wrote into its message, if the text holds exactly such a JSON object."""
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start : end + 1])
+    except ValueError:
+        return None
+    if not (isinstance(data, dict) and isinstance(data.get("name"), str)):
+        return None
+    arguments = data.get("arguments", data.get("parameters"))
+    return ToolCall(data["name"], arguments) if isinstance(arguments, dict) else None
+
+
+_PROMISE = re.compile(
+    r"(확인|조회|처리|접수|진행|발급|변경|취소|연결|검토)\s*(해|하)\s*(보|드리)?\s*겠습니다|잠시만|기다려\s*주"
+)
+_ASKS = re.compile(r"[?？]|알려\s*주|말씀해\s*주|불러\s*주|입력해\s*주")
+
+
+def is_stall(text: str) -> bool:
+    """A reply that only promises to do something ("확인해 보겠습니다, 잠시만 기다려 주세요") and asks the
+    customer nothing. Delivered as it is, the customer can only say "네" and the turn is wasted."""
+    return bool(_PROMISE.search(text)) and not _ASKS.search(text)
+
+
 def format_problem(response: ChatResponse) -> str | None:
     """Why a reply cannot be used as it is: empty | leaked_tool_call | cut_off, or None."""
     text = response.text.strip()
@@ -129,6 +164,7 @@ def agent_turn(
     state.messages.append(Message("user", user_text))
     tools = visible_tools(registry, config)
     retries = 0  # format retries are counted per turn
+    stall_retries = 0
     while state.agent_calls < config.max_agent_calls:
         index = state.agent_calls
         seed = derive_seed(config.base_seed, task_id, trial, "agent", index)
@@ -138,6 +174,14 @@ def agent_turn(
         state.agent_calls += 1
         problem = format_problem(response)
         calls = response.tool_calls
+        if problem == "leaked_tool_call" and config.rescue == "F1":
+            rescued = leaked_tool_call(response.text)
+            if rescued is not None:  # run it as if it had been a proper call; still counted as a format error
+                calls, problem = (rescued,), None
+                state.format_errors += 1
+        if not problem and not calls and config.guard == "G1" and stall_retries < config.max_stall_retries:
+            if is_stall(response.text):
+                problem = "stall"
         usage = response.usage
         state.llm_log.append(
             LLMCallLog(
@@ -146,7 +190,7 @@ def agent_turn(
                 seed=seed,
                 text=response.text,
                 tool_calls=[{"name": c.name, "arguments": c.arguments, "id": c.id} for c in calls],
-                format_error=problem,
+                format_error=problem or ("rescued_tool_call" if calls and not response.tool_calls else None),
                 dropped_text=response.text if calls and not problem else "",
                 dropped_calls=max(len(calls) - 1, 0) if not problem else 0,
                 finish_reason=response.finish_reason,
@@ -162,6 +206,13 @@ def agent_turn(
         if usage.prompt_tokens > 0.95 * config.num_ctx:
             return TurnResult(None, "context_limit")
 
+        if problem == "stall":
+            # Not a format error: the reply is well formed, it just does nothing. Same remedy, own budget.
+            stall_retries += 1
+            state.stalls += 1
+            state.messages.append(Message("assistant", response.text, delivered=False))
+            state.messages.append(Message("user", STALL_NOTICE, harness=True))
+            continue
         if problem:
             state.format_errors += 1
             state.messages.append(Message("assistant", response.text, delivered=False))

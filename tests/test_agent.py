@@ -331,4 +331,11 @@ def test_new_state_and_to_dict_are_json_serialisable(tiny_engine):
     assert data["messages"][3]["delivered"] is False
     assert data["messages"][4]["harness"] is True
     assert data["messages"][5]["tool_calls"][0]["name"] == "toy_get_order"
-    assert set(data) == {"messages", "agent_calls", "tool_errors", "format_errors", "dropped_calls"}
+    assert set(data) == {
+        "messages",
+        "agent_calls",
+        "tool_errors",
+        "format_errors",
+        "dropped_calls",
+        "stalls",
+    }

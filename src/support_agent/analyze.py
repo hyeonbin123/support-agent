@@ -2,6 +2,7 @@
 
 Usage:
     uv run python -m support_agent.analyze table outputs/runs/<run_id> [more run dirs ...]
+    uv run python -m support_agent.analyze compare reports/<baseline> reports/<candidate> [...]
     uv run python -m support_agent.analyze misses outputs/runs/<run_id>
     uv run python -m support_agent.analyze sample outputs/runs/<run_id> --n 20
 
@@ -82,6 +83,40 @@ def bootstrap_interval(by_task: dict[str, list[bool]], k: int) -> tuple[float, f
     return means[int(0.025 * BOOTSTRAP_ROUNDS)], means[int(0.975 * BOOTSTRAP_ROUNDS) - 1]
 
 
+def paired_difference(
+    base: dict[str, list[bool]], other: dict[str, list[bool]], k: int
+) -> tuple[float, float, float]:
+    """pass^k of `other` minus `base` with a 95% interval. Tasks are resampled and each task keeps its pair,
+    because the same tasks were run under both settings."""
+    if set(base) != set(other):
+        raise ValueError("both runs must cover the same tasks")
+    diffs = [
+        pass_hat_k(len(other[t]), sum(other[t]), k) - pass_hat_k(len(base[t]), sum(base[t]), k)
+        for t in sorted(base)
+    ]
+    rng = random.Random(BOOTSTRAP_SEED)
+    means = sorted(sum(rng.choice(diffs) for _ in diffs) / len(diffs) for _ in range(BOOTSTRAP_ROUNDS))
+    low, high = means[int(0.025 * BOOTSTRAP_ROUNDS)], means[int(0.975 * BOOTSTRAP_ROUNDS) - 1]
+    return sum(diffs) / len(diffs), low, high
+
+
+def compare(base_dir: Path, other_dirs: list[Path]) -> str:
+    base = successes_by_task(load_episodes(base_dir))
+    lines = [
+        "| 실행 | pass^1 | 기준과의 차이 [95% 구간] | pass^4 | 차이 [95% 구간] |",
+        "|---|---|---|---|---|",
+    ]
+    lines.append(f"| {base_dir.name} (기준) | {pass_k(base, 1):.1%} | | {pass_k(base, 4):.1%} | |")
+    for run_dir in other_dirs:
+        other = successes_by_task(load_episodes(run_dir))
+        cells = []
+        for k in (1, 4):
+            diff, low, high = paired_difference(base, other, k)
+            cells += [f"{pass_k(other, k):.1%}", f"{diff:+.1%}p [{low:+.1%}, {high:+.1%}]"]
+        lines.append(f"| {run_dir.name} | " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
 def cell(by_task: dict[str, list[bool]], k: int) -> str:
     low, high = bootstrap_interval(by_task, k)
     return f"{pass_k(by_task, k):.1%} [{low:.1%}, {high:.1%}]"
@@ -144,7 +179,7 @@ def table(run_dirs: list[Path]) -> str:
             f"| {sum(len(e['verdict']['policy_violations']) for e in judged)} "
             f"| {sum(len(e['verdict']['policy_blocks']) for e in judged)} "
             f"| {sum(e['verdict']['auth_blocks'] for e in judged)} "
-            f"| {sum(c['format_error'] is not None for c in agent_calls)} "
+            f"| {sum(c['format_error'] not in (None, 'stall') for c in agent_calls)} "
             f"| {sum(c['dropped_calls'] for c in agent_calls)} "
             f"| {sum(seconds) / len(seconds) if seconds else 0:.1f} |"
         )
@@ -193,6 +228,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("table").add_argument("run_dirs", nargs="+", type=Path)
+    comparer = commands.add_parser("compare")
+    comparer.add_argument("base_dir", type=Path)
+    comparer.add_argument("run_dirs", nargs="+", type=Path)
     commands.add_parser("misses").add_argument("run_dir", type=Path)
     sampler = commands.add_parser("sample")
     sampler.add_argument("run_dir", type=Path)
@@ -202,6 +240,8 @@ def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8")  # Korean on a Windows console
     if args.command == "table":
         print(table(args.run_dirs))
+    elif args.command == "compare":
+        print(compare(args.base_dir, args.run_dirs))
     elif args.command == "misses":
         print(misses(args.run_dir))
     else:
