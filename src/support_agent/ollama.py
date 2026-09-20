@@ -102,6 +102,7 @@ class OllamaProvider(ChatProvider):
         num_ctx: int = 16384,
         keep_alive: str | int = "60m",
         think: bool | None = None,
+        num_gpu: int | None = None,
         base_url: str | None = None,
         timeout_s: float = 600.0,
         transport: httpx.BaseTransport | None = None,
@@ -111,6 +112,7 @@ class OllamaProvider(ChatProvider):
         self.num_ctx = num_ctx
         self.keep_alive = keep_alive
         self.think = think
+        self.num_gpu = num_gpu  # 0 keeps every layer on the CPU; None lets the server decide
         self.base_url = (base_url or os.environ.get("OLLAMA_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
         # The first request may have to load the model from a slow disk, hence the long read timeout.
         self._http = httpx.Client(
@@ -120,6 +122,10 @@ class OllamaProvider(ChatProvider):
         )
         self._digest: Any = _UNSET
         self._version: Any = _UNSET
+
+    def _runner_options(self) -> dict[str, Any]:
+        # Must be equal in preload() and chat(): a different runner option reloads the model.
+        return {} if self.num_gpu is None else {"num_gpu": self.num_gpu}
 
     def close(self) -> None:
         self._http.close()
@@ -163,6 +169,7 @@ class OllamaProvider(ChatProvider):
             "num_ctx": self.num_ctx,
             "temperature": temperature,
             "num_predict": max_tokens,
+            **self._runner_options(),
         }
         if seed is not None:
             options["seed"] = seed
@@ -219,7 +226,7 @@ class OllamaProvider(ChatProvider):
             "messages": [],
             "stream": False,
             "keep_alive": self.keep_alive,
-            "options": {"num_ctx": self.num_ctx},
+            "options": {"num_ctx": self.num_ctx, **self._runner_options()},
         }
         started = time.perf_counter()
         self._request("POST", "/api/chat", body)
@@ -267,6 +274,7 @@ class OllamaProvider(ChatProvider):
             "num_ctx": self.num_ctx,
             "keep_alive": self.keep_alive,
             "think": self.think,
+            "num_gpu": self.num_gpu,
             "digest": None if self._digest is _UNSET else self._digest,
             "ollama_version": None if self._version is _UNSET else self._version,
         }

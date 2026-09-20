@@ -133,7 +133,7 @@ def main() -> None:
     parser.add_argument("--task-id", action="append", help="run only these task ids (repeatable)")
     parser.add_argument("--trials", type=int, default=1)
     parser.add_argument("--model", default=RunConfig.model)
-    parser.add_argument("--user-model", default=None, help="simulator model (default: same as --model)")
+    parser.add_argument("--user-model", default=None, help="simulator model (default: qwen2.5:7b-instruct)")
     parser.add_argument("--policy", choices=["P0", "P1"], default="P0")
     parser.add_argument("--reasoning", choices=["R0", "R1"], default="R0", help="R2 arrives in stage 2")
     parser.add_argument(
@@ -141,6 +141,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--rescue", choices=["F0", "F1"], default="F0", help="F1: run tool calls leaked into text"
+    )
+    parser.add_argument(
+        "--user-on-cpu",
+        action="store_true",
+        help="run the simulator model on the CPU (when the agent model leaves no GPU memory for it)",
     )
     parser.add_argument("--num-ctx", type=int, default=RunConfig.num_ctx)
     parser.add_argument("--label", default="", help="short name added to the run id")
@@ -161,7 +166,7 @@ def main() -> None:
 
     config = RunConfig(
         model=args.model,
-        user_model=args.user_model or args.model,
+        user_model=args.user_model or RunConfig.user_model,
         policy=args.policy,
         reasoning=args.reasoning,
         guard=args.guard,
@@ -179,8 +184,14 @@ def main() -> None:
 
     provider = OllamaProvider(config.model, num_ctx=config.num_ctx)
     # One provider object when both roles use the same model: equal runner options, so no reload.
-    same = config.user_model == config.model
-    user_provider = provider if same else OllamaProvider(config.user_model, num_ctx=config.num_ctx)
+    same = config.user_model == config.model and not args.user_on_cpu
+    user_provider = (
+        provider
+        if same
+        else OllamaProvider(
+            config.user_model, num_ctx=config.num_ctx, num_gpu=0 if args.user_on_cpu else None
+        )
+    )
 
     others = gpu_used_by_others_mib(provider)
     if others is not None and others > OTHER_GPU_USE_LIMIT_MIB and not args.force:

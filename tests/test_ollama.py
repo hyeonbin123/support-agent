@@ -360,6 +360,7 @@ def test_describe_with_server():
         "num_ctx": 8192,
         "keep_alive": "60m",
         "think": False,
+        "num_gpu": None,
         "digest": f"sha-{MODEL}",
         "ollama_version": "0.34.1",
     }
@@ -481,3 +482,12 @@ def test_close_and_context_manager():
         provider.chat([Message("user", "hi")])
     with pytest.raises(RuntimeError):
         provider.chat([Message("user", "hi")])
+
+
+def test_num_gpu_is_sent_with_every_request_so_that_the_model_is_not_reloaded():
+    server = Server()
+    provider = make(server, num_gpu=0)
+    provider.preload()
+    provider.chat([Message("user", "hi")])
+    assert [body["options"]["num_gpu"] for body in server.bodies()] == [0, 0]
+    assert provider.describe()["num_gpu"] == 0
