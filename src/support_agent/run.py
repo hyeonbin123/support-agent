@@ -152,7 +152,8 @@ def main() -> None:
     if "test" in Path(args.tasks).stem and not args.allow_test:
         parser.error("test tasks are measured once per stage; pass --allow-test when the stage is done")
     commit = _git("rev-parse", "HEAD")
-    dirty = bool(_git("status", "--porcelain"))
+    # Records of earlier official runs wait in reports/ until they are committed; they are not code.
+    dirty = bool(_git("status", "--porcelain", "--", ".", ":(exclude)reports"))
     if args.official and (dirty or not commit):
         parser.error(
             "--official needs git and a clean working tree, so that the commit describes the code that ran"
