@@ -1,0 +1,42 @@
+# The chat service and its database. The model runs in Ollama on the host (it needs the GPU):
+#   ollama pull qwen2.5:7b-instruct
+#   docker compose up --build
+# Chat: http://127.0.0.1:8062   Admin: http://127.0.0.1:8062/admin (token: ADMIN_TOKEN, default "local-admin")
+# Both ports listen on 127.0.0.1 only. The defaults below are for a local demo; set your own in .env.
+name: support-agent
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: support
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-support-local}
+      POSTGRES_DB: support
+    ports:
+      - "127.0.0.1:${DB_PORT:-55462}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U support -d support"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SUPPORT_AGENT_DATABASE_URL: postgresql+psycopg://support:${POSTGRES_PASSWORD:-support-local}@db:5432/support
+      SUPPORT_AGENT_OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      SUPPORT_AGENT_MODEL: ${MODEL:-qwen2.5:7b-instruct}
+      SUPPORT_AGENT_ADMIN_TOKEN: ${ADMIN_TOKEN:-local-admin}
+      SUPPORT_AGENT_APPROVAL_REFUND_WON: ${APPROVAL_REFUND_WON:-100000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:${APP_PORT:-8062}:8000"
+
+volumes:
+  pgdata:

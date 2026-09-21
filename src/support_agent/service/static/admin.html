@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>상담 관리</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/admin.js" defer></script>
+</head>
+<body class="page-admin">
+  <header class="topbar">
+    <h1>상담 관리</h1>
+    <button type="button" id="logout" class="btn" hidden>로그아웃</button>
+  </header>
+
+  <main class="admin">
+    <section id="login" class="panel login" aria-labelledby="login-title">
+      <h2 id="login-title">관리자 확인</h2>
+      <form id="login-form" autocomplete="off">
+        <label for="token">관리자 토큰</label>
+        <div class="row">
+          <input type="password" id="token" autocomplete="off" required>
+          <button type="submit" class="btn btn-primary">확인</button>
+        </div>
+      </form>
+      <p id="login-message" class="error-line" role="alert" hidden></p>
+    </section>
+
+    <div id="app" hidden>
+      <div class="tabs" role="tablist" aria-label="관리 메뉴">
+        <button type="button" role="tab" id="tab-approvals" class="tab" aria-controls="panel-approvals" aria-selected="true">
+          승인 대기열 <span id="pending-count" class="count" hidden></span>
+        </button>
+        <button type="button" role="tab" id="tab-sessions" class="tab" aria-controls="panel-sessions" aria-selected="false" tabindex="-1">
+          상담 기록
+        </button>
+      </div>
+
+      <section id="panel-approvals" role="tabpanel" aria-labelledby="tab-approvals" tabindex="0">
+        <div class="toolbar">
+          <div class="field">
+            <label for="by">담당자</label>
+            <input type="text" id="by" maxlength="64" placeholder="admin" autocomplete="off">
+          </div>
+          <div class="check">
+            <input type="checkbox" id="show-decided">
+            <label for="show-decided">처리된 항목도 보기</label>
+          </div>
+          <span id="approvals-updated" class="muted"></span>
+        </div>
+        <p id="approvals-result" class="flash" role="status" hidden></p>
+        <p id="approvals-error" class="error-line" role="alert" hidden></p>
+        <p id="approvals-empty" class="empty" hidden>승인을 기다리는 요청이 없습니다.</p>
+        <div id="approvals" class="cards"></div>
+      </section>
+
+      <section id="panel-sessions" role="tabpanel" aria-labelledby="tab-sessions" tabindex="0" hidden>
+        <div class="toolbar">
+          <button type="button" id="sessions-refresh" class="btn">새로 고침</button>
+          <span class="muted">최근 상담 50건</span>
+        </div>
+        <p id="sessions-error" class="error-line" role="alert" hidden></p>
+        <div class="split">
+          <div>
+            <p id="sessions-empty" class="empty" hidden>상담 기록이 없습니다.</p>
+            <ul id="sessions" class="session-list"></ul>
+          </div>
+          <div id="detail" class="detail" hidden>
+            <h2 id="detail-title"></h2>
+            <p id="detail-meta" class="muted"></p>
+            <h3>대화</h3>
+            <div id="detail-messages" class="messages"></div>
+            <ul id="detail-chips" class="chips"></ul>
+            <h3>감사 로그</h3>
+            <div class="table-wrap">
+              <table class="audit">
+                <thead>
+                  <tr><th scope="col">시각</th><th scope="col">종류</th><th scope="col">내용</th></tr>
+                </thead>
+                <tbody id="audit"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

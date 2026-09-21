@@ -44,6 +44,22 @@ class Message:
             out["harness"] = True
         return out
 
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> Message:
+        """The inverse of to_dict (the service keeps a conversation as JSON between requests)."""
+        calls = tuple(
+            ToolCall(c["name"], c["arguments"], c.get("id", "")) for c in data.get("tool_calls", ())
+        )
+        return Message(
+            data["role"],
+            data.get("content", ""),
+            calls,
+            data.get("tool_name"),
+            data.get("tool_call_id"),
+            data.get("delivered", True),
+            data.get("harness", False),
+        )
+
 
 @dataclass(frozen=True)
 class Usage:
