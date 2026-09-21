@@ -9,7 +9,7 @@
 - 규정을 프롬프트에만 적는 것과 도구 안에서도 막는 것은 얼마나 다른가
 - 로컬에서 도는 7~14B 모델로 어디까지 되는가
 
-계획은 [docs/plan.md](docs/plan.md), 설계는 [docs/design.md](docs/design.md), 측정 규칙과 결과는 [docs/experiments.md](docs/experiments.md).
+계획은 [docs/plan.md](docs/plan.md), 설계는 [docs/design.md](docs/design.md), 측정 규칙과 결과는 [docs/experiments.md](docs/experiments.md), 서비스·MCP 서버·음성 채널은 [docs/service.md](docs/service.md)·[docs/mcp.md](docs/mcp.md)·[docs/voice.md](docs/voice.md).
 
 ## 평가 방식
 
@@ -30,6 +30,7 @@
 | 2. 개선 실험 | 규정 적용 방식, 추론 절차, 멈춤 가드, 모델 크기 | 완료. 판정: 개선 없음 (아래) |
 | 3. 서비스 | 웹 채팅(SSE), 세션·감사 로그(PostgreSQL), 큰 환불의 사람 승인 대기열, 관리 화면, Docker Compose | 완료. [docs/service.md](docs/service.md) |
 | 4. MCP 서버 | 같은 도구 등록부를 MCP로 노출 (stdio·HTTP, 읽기/쓰기 범위) | 완료. [docs/mcp.md](docs/mcp.md) |
+| 5. 음성 채널 | 고객의 말이 음성 합성 → 음성 인식을 거쳐 들어올 때 성공률이 얼마나 떨어지는지, 규칙 기반 정규화로 얼마나 되찾는지. 서비스의 음성 입출력 | 코드와 측정 규칙 완료, 측정 전. [docs/voice.md](docs/voice.md) |
 
 ### 측정 결과 (2단계)
 
@@ -97,6 +98,7 @@ src/support_agent/
   analyze.py          기록에서 표와 짝지은 부트스트랩 구간을 다시 계산
   service/            FastAPI 채팅, 감사 로그, 승인 대기열, Alembic 마이그레이션, 화면
   mcp_server.py       도구 등록부를 MCP 서버로
+  voice/              말로 풀어 쓰기, 음성 합성·인식 래퍼, 음성 채널, 채널 지표 (선택 의존성 `voice`)
 tasks/                과제 파일 (YAML): smoke 5, dev 24, test 40
 reports/              공식 측정의 에피소드 기록 (대화, 도구 호출, DB 변경분, 판정)
 ```
