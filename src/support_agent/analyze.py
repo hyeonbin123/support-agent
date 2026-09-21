@@ -5,6 +5,8 @@ Usage:
     uv run python -m support_agent.analyze compare reports/<baseline> reports/<candidate> [...]
     uv run python -m support_agent.analyze misses outputs/runs/<run_id>
     uv run python -m support_agent.analyze sample outputs/runs/<run_id> --n 20
+    uv run python -m support_agent.analyze voice reports/<text run> reports/<voice run> [...]
+    uv run python -m support_agent.analyze voice-worst reports/<voice run on the development tasks>
 
 `table` prints the markdown tables that go into docs/experiments.md. `misses` lists episodes whose database
 matched but whose required value was not found, so that a person can check the value matcher. `sample` draws
@@ -23,6 +25,7 @@ from typing import Any
 
 from support_agent.config import JUDGED
 from support_agent.judge import pass_hat_k
+from support_agent.voice import metrics as voice_metrics
 
 BOOTSTRAP_ROUNDS = 10_000
 BOOTSTRAP_SEED = 20260919
@@ -235,6 +238,8 @@ def main() -> None:
     sampler = commands.add_parser("sample")
     sampler.add_argument("run_dir", type=Path)
     sampler.add_argument("--n", type=int, default=20)
+    commands.add_parser("voice").add_argument("run_dirs", nargs="+", type=Path)
+    commands.add_parser("voice-worst").add_argument("run_dir", type=Path)
     args = parser.parse_args()
 
     sys.stdout.reconfigure(encoding="utf-8")  # Korean on a Windows console
@@ -244,6 +249,10 @@ def main() -> None:
         print(compare(args.base_dir, args.run_dirs))
     elif args.command == "misses":
         print(misses(args.run_dir))
+    elif args.command == "voice":
+        print(voice_metrics.voice_table({d.name: load_episodes(d) for d in args.run_dirs}))
+    elif args.command == "voice-worst":
+        print(voice_metrics.worst(load_episodes(args.run_dir)))
     else:
         print(sample(args.run_dir, args.n))
 
