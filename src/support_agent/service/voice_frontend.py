@@ -39,6 +39,8 @@ class VoiceFrontEnd:
 
 def load_voice_front_end(tts_device: str, stt_device: str, max_audio_seconds: float) -> VoiceFrontEnd:
     from support_agent.voice.speech import MeloSpeaker, WhisperListener
+    from support_agent.voice.spoken import spoken_to_written
 
     listener = WhisperListener(device=stt_device, max_seconds=max_audio_seconds, vad_filter=True)
-    return VoiceFrontEnd(MeloSpeaker(device=tts_device), listener)
+    # A person's phone number comes back from the recogniser as words; the tools need digits.
+    return VoiceFrontEnd(MeloSpeaker(device=tts_device), listener, normalizer=spoken_to_written)

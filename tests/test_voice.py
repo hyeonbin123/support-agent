@@ -22,6 +22,7 @@ from support_agent.voice import metrics
 from support_agent.voice.channel import SpeechChannel
 from support_agent.voice.normalize import normalize_heard
 from support_agent.voice.speech import Audio, wav_bytes
+from support_agent.voice.spoken import spoken_to_written
 from support_agent.voice.verbalize import native, sino, verbalize
 
 # -------------------------------------------------------------------- spoken forms
@@ -322,3 +323,30 @@ def test_the_normaliser_leaves_the_rest_alone(heard):
 def test_the_normaliser_is_idempotent_on_its_own_output():
     once = normalize_heard("junghon.byun.example.com입니다. 5-91019죠. 010, 0000, 9103")
     assert normalize_heard(once) == once
+
+
+# -------------------------------------------------------------------- a real microphone: numbers read aloud
+
+
+@pytest.mark.parametrize(
+    ("heard", "written"),
+    [
+        ("강정월구 공일공 공공공공 육일팔구입니다", "강정월구 010-0000-6189입니다"),  # from the live test
+        (
+            "전화는 공일공공공공공육일팔구이고요",
+            "전화는 010-0000-6189이고요",
+        ),  # "이고" is a particle, not a 2
+        ("010 공공공공 6189요", "010-0000-6189요"),
+        ("주문은 오 다시 구일공일공이에요", "주문은 O-91010이에요"),
+        ("주문번호는 O-91010입니다", "주문번호는 O-91010입니다"),
+        ("공일공 공공공공 육일팔", "공일공 공공공공 육일팔"),  # a digit short: not a number to write down
+        ("이사 오고 일이 많아서 구이를 먹었어요", "이사 오고 일이 많아서 구이를 먹었어요"),
+    ],
+)
+def test_numbers_read_aloud_are_written_down(heard, written):
+    assert spoken_to_written(heard) == written
+
+
+@pytest.mark.parametrize("written", ["010-0000-6189", "010-1234-5678", "O-91010", "O-10097"])
+def test_what_verbalize_spells_out_comes_back(written):
+    assert spoken_to_written(verbalize(written)) == written

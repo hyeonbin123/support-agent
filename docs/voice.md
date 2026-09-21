@@ -31,6 +31,7 @@ uv run --group voice uvicorn support_agent.service.app:create_app --factory --po
 - `POST /api/sessions/{id}/voice`: 본문은 브라우저가 녹음한 음성 그대로(webm, ogg, wav, mp4. 5 MB까지). 인식된 문장을 `heard` 이벤트로 먼저 보내고, 그 뒤는 글로 보낸 메시지와 같은 길을 간다. 인식된 것이 없으면 턴을 쓰지 않고 다시 말해 달라고 한다
 - `POST /api/sessions/{id}/speech`: 글을 말로 풀어 쓴 뒤 합성한 WAV. 에이전트의 답을 읽어 주는 데 쓴다 (600자까지). 세션에 묶어서 아무나 쓰는 음성 합성 서비스가 되지 않게 했다
 - 음성으로 들어온 메시지는 감사 로그에 인식 원문과 함께 남는다 (`customer_message.via`)
+- 사람이 부른 번호를 숫자로 되돌린다 (`voice/spoken.py`). 실제 마이크로 해 보니 전화번호가 "공일공 공공공공 육일팔구입니다"처럼 한글로 적혔다. 합성 음성에서는 `010-0000-9103`으로 적히던 것이다. 휴대전화 번호(010과 여덟 자리)와 주문 번호("오 다시"와 다섯 자리)만 되돌리고, 뒤에 붙은 조사 "이고"를 숫자 2로 읽지 않도록 자릿수를 정확히 센다. 이 변환은 측정한 V2 정규화와 별개다 (V2는 개발용 기록에서, 이것은 실제 마이크 시험에서 나왔다)
 - 서비스의 인식기는 말이 없는 구간을 먼저 걸러 낸다 (faster-whisper의 VAD). 실제 마이크로 해 보니, 말없이 버튼만 눌렀다 뗀 녹음을 Whisper가 "다음 영상에서 만나요."로 적었다. 영상 자막에서 배운 상투 문장이다. 측정용 채널은 합성 음성이라 무음이 없으므로 이 옵션을 끈 채로 둔다 (규칙에 적은 설정 그대로)
 - 음성을 켜면 응답 헤더가 두 군데 달라진다: `Permissions-Policy`의 `microphone=(self)`, CSP의 `media-src 'self' blob:`
 - `SUPPORT_AGENT_TTS_DEVICE`, `SUPPORT_AGENT_STT_DEVICE`로 모델을 CPU에 둘 수 있다
@@ -43,6 +44,7 @@ uv run --group voice uvicorn support_agent.service.app:create_app --factory --po
 | `voice/speech.py` | MeloTTS(합성)와 faster-whisper(인식) 래퍼. 라이브러리는 생성자 안에서만 불러온다 |
 | `voice/channel.py` | 풀어 쓰기 → 합성 → 인식 → (정규화). 같은 입력의 결과는 캐시한다 |
 | `voice/normalize.py` | V2: 인식된 글의 표기를 고치는 규칙 (주문 번호의 O, 이메일의 골뱅이와 도메인, 전화번호 구분, 만 단위 금액). 개발용 V1 기록만 보고 만들었다 |
+| `voice/spoken.py` | 사람이 읽은 전화번호·주문 번호를 숫자로 (서비스용, 측정과 무관) |
 | `voice/metrics.py` | 글자 오류율, 엔티티 생존율, 본인 확인 성공률과 짝지은 부트스트랩 구간 |
 | `service/voice_frontend.py` | 서비스 앞단: 녹음을 글로, 답을 소리로. 모델 호출은 한 번에 하나 |
 
