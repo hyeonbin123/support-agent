@@ -15,7 +15,7 @@ from importlib.resources import files
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import Engine
@@ -31,6 +31,7 @@ from support_agent.service.core import (
     SessionNotFoundError,
 )
 from support_agent.service.settings import Settings
+from support_agent.service.voice_frontend import VoiceFrontEnd, load_voice_front_end
 
 STATIC = files("support_agent.service") / "static"
 SECURITY_HEADERS = {
@@ -49,6 +50,10 @@ class MessageIn(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
 
 
+class SpeakIn(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
 class DecisionIn(BaseModel):
     approve: bool
     by: str = Field(default="admin", min_length=1, max_length=64)
@@ -64,8 +69,14 @@ def create_app(
     *,
     provider: ChatProvider | None = None,
     engine: Engine | None = None,
+    voice: VoiceFrontEnd | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
+    headers = dict(SECURITY_HEADERS)
+    if settings.voice or voice:
+        headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=()"
+        # Replies read aloud are fetched as WAV and played from a blob: URL.
+        headers["Content-Security-Policy"] += "; media-src 'self' blob:"
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -74,6 +85,9 @@ def create_app(
             settings.model, num_ctx=settings.num_ctx, base_url=settings.ollama_url
         )
         app.state.service = ChatService(settings, own_engine, own_provider)
+        app.state.voice = voice
+        if settings.voice and voice is None:  # several seconds to minutes: the models load here
+            app.state.voice = load_voice_front_end(settings.tts_device, settings.stt_device)
         yield
         if provider is None:
             own_provider.close()
@@ -85,7 +99,7 @@ def create_app(
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
         response = await call_next(request)
-        for name, value in SECURITY_HEADERS.items():
+        for name, value in headers.items():
             response.headers.setdefault(name, value)
         if request.url.path.startswith("/api/"):
             response.headers.setdefault("Cache-Control", "no-store")
@@ -112,7 +126,12 @@ def create_app(
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
-        return {"ok": True, "model": settings.model, "policy": settings.policy}
+        return {
+            "ok": True,
+            "model": settings.model,
+            "policy": settings.policy,
+            "voice": getattr(app.state, "voice", None) is not None,
+        }
 
     # ------------------------------------------------------------ chat
 
@@ -127,11 +146,7 @@ def create_app(
         except SessionNotFoundError:
             raise HTTPException(404, "no such session") from None
 
-    @app.post("/api/sessions/{session_id}/messages")
-    def post_message(session_id: str, body: MessageIn, svc: ChatService = Depends(service)):
-        text = body.text.strip()
-        if not text or len(text) > settings.max_message_chars:
-            raise HTTPException(422, f"the message must have 1 to {settings.max_message_chars} characters")
+    def open_session(svc: ChatService, session_id: str) -> None:
         try:
             status = svc.transcript(session_id)["status"]
         except SessionNotFoundError:
@@ -139,13 +154,26 @@ def create_app(
         if status != "open":
             raise HTTPException(409, f"the session is {status}")
 
+    def turn_stream(
+        svc: ChatService, session_id: str, read_message, first_stage: str = "thinking"
+    ) -> StreamingResponse:
+        """Run one turn in a worker thread and stream its events. `read_message(emit)` gives the
+        customer's text and how it arrived, or None when there is nothing to answer."""
         events: queue.Queue[tuple[str, dict[str, Any]] | None] = queue.Queue()
+
+        def emit(event: str, data: dict[str, Any]) -> None:
+            events.put((event, data))
 
         def work() -> None:
             # The turn runs to its end even when the browser goes away: what the tools wrote must be
             # recorded together with the conversation that led to it.
             try:
-                svc.handle(session_id, text, lambda event, data: events.put((event, data)))
+                message = read_message(emit)
+                if message is None:
+                    events.put(("end", {"status": "open"}))
+                    return
+                text, via = message
+                svc.handle(session_id, text, emit, via=via)
             except BusyError:
                 events.put(("error", {"message": "앞선 메시지에 답하는 중입니다. 잠시 후 다시 보내 주세요."}))
                 events.put(("end", {"status": "open"}))
@@ -159,7 +187,7 @@ def create_app(
 
         def stream() -> Iterator[str]:
             threading.Thread(target=work, daemon=True).start()
-            yield sse("status", {"stage": "thinking"})
+            yield sse("status", {"stage": first_stage})
             while (item := events.get()) is not None:
                 yield sse(*item)
 
@@ -168,6 +196,69 @@ def create_app(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
+
+    @app.post("/api/sessions/{session_id}/messages")
+    def post_message(session_id: str, body: MessageIn, svc: ChatService = Depends(service)):
+        text = body.text.strip()
+        if not text or len(text) > settings.max_message_chars:
+            raise HTTPException(422, f"the message must have 1 to {settings.max_message_chars} characters")
+        open_session(svc, session_id)
+        return turn_stream(svc, session_id, lambda _emit: (text, None))
+
+    # ------------------------------------------------------------ voice
+
+    def voice_front_end(request: Request) -> VoiceFrontEnd:
+        front_end = getattr(request.app.state, "voice", None)
+        if front_end is None:
+            raise HTTPException(503, "voice is not enabled (SUPPORT_AGENT_VOICE)")
+        return front_end
+
+    @app.post("/api/sessions/{session_id}/voice")
+    async def post_voice(session_id: str, request: Request, svc: ChatService = Depends(service)):
+        """The body is one recorded utterance (whatever the browser records: webm, ogg, wav, mp4)."""
+        front_end = voice_front_end(request)
+        open_session(svc, session_id)
+        audio = bytearray()
+        async for chunk in request.stream():  # stop reading as soon as the limit is passed
+            audio += chunk
+            if len(audio) > settings.max_audio_bytes:
+                raise HTTPException(413, f"at most {settings.max_audio_bytes} bytes of audio")
+        if not audio:
+            raise HTTPException(422, "the body is empty")
+
+        def read_message(emit):
+            try:
+                heard, text = front_end.listen(bytes(audio))
+            except Exception:  # noqa: BLE001 - undecodable audio or a model failure
+                emit("error", {"message": "음성을 처리하지 못했습니다. 다시 말씀해 주세요."})
+                return None
+            text = text.strip()[: settings.max_message_chars]
+            emit("heard", {"text": text})
+            if not text:
+                emit("error", {"message": "잘 들리지 않았습니다. 다시 말씀해 주세요."})
+                return None
+            return text, {"voice": True, "heard": heard, "audio_bytes": len(audio)}
+
+        return turn_stream(svc, session_id, read_message, first_stage="listening")
+
+    @app.post("/api/sessions/{session_id}/speech")
+    def speak(session_id: str, body: SpeakIn, request: Request, svc: ChatService = Depends(service)):
+        """A reply of this session read aloud (WAV). Only what the agent said here is synthesised, in
+        whole or in part, so the endpoint is not a speech service for arbitrary text."""
+        front_end = voice_front_end(request)
+        try:
+            said = [m["text"] for m in svc.transcript(session_id)["messages"] if m["role"] == "agent"]
+        except SessionNotFoundError:
+            raise HTTPException(404, "no such session") from None
+        if len(body.text) > settings.max_tts_chars:
+            raise HTTPException(422, f"at most {settings.max_tts_chars} characters")
+        wanted = "".join(body.text.split())
+        if not wanted or not any(wanted in "".join(text.split()) for text in said):
+            raise HTTPException(403, "only replies of this session are read aloud")
+        wav = front_end.speak(body.text)
+        if not wav:
+            return Response(status_code=204)
+        return Response(wav, media_type="audio/wav")
 
     # ------------------------------------------------------------ admin
 

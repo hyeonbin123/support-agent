@@ -38,6 +38,7 @@ _MONTHS = {6: "유", 10: "시"}  # 유월, 시월
 _EMAIL = re.compile(r"[A-Za-z0-9._+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
 _PHONE = re.compile(r"(?<!\d)(01\d)[- .]?(\d{3,4})[- .]?(\d{4})(?!\d)")
 _IDENT = re.compile(r"(?<![A-Za-z])[A-Za-z]{1,3}(?:-[A-Za-z0-9]+)+")
+_ISO_DATE = re.compile(r"(?<![\d-])(\d{4})-(\d{1,2})-(\d{1,2})(?![\d-])")
 _DATE = re.compile(r"(?<!\d)(\d{1,2})월(\s*)(\d{1,2})일")
 _MONTH = re.compile(r"(?<!\d)(\d{1,2})월")
 _CLOCK = re.compile(r"(?<!\d)(\d{1,2}):(\d{2})(?!\d)")
@@ -139,6 +140,7 @@ def verbalize(text: str) -> str:
     text = _EMAIL.sub(_email, text)
     text = _PHONE.sub(lambda m: " " + ", ".join(digits(g) for g in m.groups()) + " ", text)
     text = _IDENT.sub(_identifier, text)
+    text = _ISO_DATE.sub(lambda m: f"{m[1]}년 {int(m[2])}월 {int(m[3])}일", text)  # the tools write dates so
     text = _DATE.sub(lambda m: f"{_MONTHS.get(int(m[1]), sino(int(m[1])))}월 {sino(int(m[3]))}일", text)
     text = _MONTH.sub(lambda m: f"{_MONTHS.get(int(m[1]), sino(int(m[1])))}월", text)
     text = _CLOCK.sub(

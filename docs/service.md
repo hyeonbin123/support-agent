@@ -23,7 +23,7 @@ Docker 없이 SQLite 파일로도 돈다.
 uv run uvicorn support_agent.service.app:create_app --factory --port 8062
 ```
 
-설정은 환경 변수로 한다 (`SUPPORT_AGENT_` 접두사, `service/settings.py`): `DATABASE_URL`, `OLLAMA_URL`, `MODEL`, `POLICY`, `NOW`, `APPROVAL_REFUND_WON`, `ADMIN_TOKEN`, `MAX_MESSAGE_CHARS`, `MAX_AGENT_CALLS_PER_TURN`, `MAX_TURNS_PER_SESSION`.
+설정은 환경 변수로 한다 (`SUPPORT_AGENT_` 접두사, `service/settings.py`): `DATABASE_URL`, `OLLAMA_URL`, `MODEL`, `POLICY`, `NOW`, `APPROVAL_REFUND_WON`, `ADMIN_TOKEN`, `MAX_MESSAGE_CHARS`, `MAX_AGENT_CALLS_PER_TURN`, `MAX_TURNS_PER_SESSION`, `VOICE`, `TTS_DEVICE`, `STT_DEVICE`, `MAX_AUDIO_BYTES`, `MAX_TTS_CHARS`.
 
 ## 구성
 
@@ -58,6 +58,10 @@ uv run uvicorn support_agent.service.app:create_app --factory --port 8062
 - **고정 시계.** 생성 데이터는 2026-09-14 10:00(KST) 무렵에 맞춰져 있다. 실제 시계를 쓰면 곧 모든 주문이 반품 기간을 넘기므로 시연은 이 시각에 고정한다. `SUPPORT_AGENT_NOW=real`이면 실제 시계를 쓴다. 고정되는 것은 도구와 규정이 보는 "쇼핑몰의 지금"뿐이고, 세션·감사 로그·승인 기록의 시각은 항상 실제 시각이다.
 - **한 세션은 한 번에 메시지 하나.** 프로세스 안의 세션별 잠금으로 막는다. 그래서 앱은 프로세스 하나로 띄운다. 여러 프로세스로 늘리려면 이 잠금을 DB 행 잠금으로 바꿔야 한다.
 - **한도.** 메시지 1,000자, 턴당 LLM 호출 12번, 세션당 40턴. 컨텍스트가 차거나 40턴이 되면 세션을 닫고 새 상담을 권한다.
+
+## 음성
+
+선택 기능이다. `SUPPORT_AGENT_VOICE=1`이면 마이크로 말하고 답을 소리로 들을 수 있다. 인식된 문장은 글로 보낸 메시지와 같은 길을 가므로 규정 검사, 사람 승인, 감사 로그가 그대로 적용된다. 설치와 끝점은 [voice.md](voice.md).
 
 ## 하지 않은 것
 

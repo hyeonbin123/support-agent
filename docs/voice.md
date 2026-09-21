@@ -18,6 +18,22 @@ uv run python -m support_agent.analyze voice-worst reports/<개발용 음성 실
 - `--tts-device cpu`, `--stt-device cpu`로 모델을 CPU에 둘 수 있다 (GPU 메모리가 모자랄 때)
 - 기록(`episodes.jsonl`)의 `voice` 항목에 발화마다 고객이 쓴 글(`said`), 말로 푼 글(`spoken`), 인식된 글(`heard`), 에이전트가 받은 글(`text`), 음성 길이와 합성·인식 시간이 남는다. 음성 파일은 남기지 않는다
 
+## 채팅 서비스에서 말로 상담하기
+
+`SUPPORT_AGENT_VOICE=1`로 서비스를 띄우면 채팅 화면에 마이크 버튼이 생긴다. 음성 모델이 필요하므로 Docker가 아니라 호스트에서 띄운다.
+
+```bash
+uv sync --group voice
+export SUPPORT_AGENT_VOICE=1 SUPPORT_AGENT_ADMIN_TOKEN=local-admin    # PowerShell: $env:SUPPORT_AGENT_VOICE = "1"
+uv run --group voice uvicorn support_agent.service.app:create_app --factory --port 8062
+```
+
+- `POST /api/sessions/{id}/voice`: 본문은 브라우저가 녹음한 음성 그대로(webm, ogg, wav, mp4. 5 MB까지). 인식된 문장을 `heard` 이벤트로 먼저 보내고, 그 뒤는 글로 보낸 메시지와 같은 길을 간다. 인식된 것이 없으면 턴을 쓰지 않고 다시 말해 달라고 한다
+- `POST /api/sessions/{id}/speech`: 글을 말로 풀어 쓴 뒤 합성한 WAV. 에이전트의 답을 읽어 주는 데 쓴다 (600자까지). 세션에 묶어서 아무나 쓰는 음성 합성 서비스가 되지 않게 했다
+- 음성으로 들어온 메시지는 감사 로그에 인식 원문과 함께 남는다 (`customer_message.via`)
+- 음성을 켜면 응답 헤더가 두 군데 달라진다: `Permissions-Policy`의 `microphone=(self)`, CSP의 `media-src 'self' blob:`
+- `SUPPORT_AGENT_TTS_DEVICE`, `SUPPORT_AGENT_STT_DEVICE`로 모델을 CPU에 둘 수 있다
+
 ## 구성
 
 | 파일 | 하는 일 |
@@ -26,6 +42,7 @@ uv run python -m support_agent.analyze voice-worst reports/<개발용 음성 실
 | `voice/speech.py` | MeloTTS(합성)와 faster-whisper(인식) 래퍼. 라이브러리는 생성자 안에서만 불러온다 |
 | `voice/channel.py` | 풀어 쓰기 → 합성 → 인식 → (정규화). 같은 입력의 결과는 캐시한다 |
 | `voice/metrics.py` | 글자 오류율, 엔티티 생존율, 본인 확인 성공률과 짝지은 부트스트랩 구간 |
+| `service/voice_frontend.py` | 서비스 앞단: 녹음을 글로, 답을 소리로. 모델 호출은 한 번에 하나 |
 
 ## 말로 풀어 쓰기
 

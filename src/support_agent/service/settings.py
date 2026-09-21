@@ -29,6 +29,11 @@ class Settings(BaseModel):
     max_agent_calls_per_turn: int = 12
     max_turns_per_session: int = 40
     load_seed: bool = True  # fill an empty shop database with the generated data
+    voice: bool = False  # speech in and out (needs the `voice` dependency group)
+    tts_device: Literal["cuda", "cpu"] = "cuda"
+    stt_device: Literal["cuda", "cpu"] = "cuda"
+    max_audio_bytes: int = 5_000_000  # about five minutes of browser-recorded speech
+    max_tts_chars: int = 600
 
     def clock(self) -> datetime:
         return datetime.now(UTC) if self.now == "real" else self.now

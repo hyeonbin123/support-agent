@@ -329,7 +329,8 @@ label {
   font-size: 0.875rem;
 }
 
-.progress::before {
+.progress::before,
+.rec-status.live::before {
   content: "";
   display: inline-block;
   width: 8px;
@@ -347,7 +348,8 @@ label {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .progress::before {
+  .progress::before,
+  .rec-status.live::before {
     animation: none;
   }
 }
@@ -402,6 +404,76 @@ label {
 .counter.over {
   color: var(--danger);
   font-weight: 600;
+}
+
+.composer-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+/* Voice: the bar and the microphone button stay hidden unless the server has speech (see chat.js). */
+
+.voice-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 12px;
+  padding: 2px 16px 0;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.voice-bar:not([hidden]) + .composer {
+  padding-top: 2px;
+  border-top: 0;
+}
+
+.btn-small {
+  min-height: 32px;
+  padding: 3px 10px;
+  font-size: 0.875rem;
+}
+
+.rec-panel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  margin-left: auto;
+}
+
+.rec-status {
+  color: var(--muted);
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.rec-status.live::before {
+  background: var(--danger);
+}
+
+@media (max-width: 560px) {
+  /* On a phone the recording status takes the place of the listening toggle, so the bar keeps its height. */
+  .voice-bar.recording .check {
+    display: none;
+  }
+
+  /* The microphone button does not fit beside the text box: the buttons go below it. */
+  .voice-bar:not([hidden]) + .composer {
+    flex-wrap: wrap;
+  }
+
+  .voice-bar:not([hidden]) + .composer textarea {
+    flex-basis: 100%;
+  }
+
+  .voice-bar:not([hidden]) + .composer .composer-side {
+    flex: 1;
+    flex-flow: row wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px 8px;
+  }
 }
 
 /* ---------------------------------------------------------------- admin page */

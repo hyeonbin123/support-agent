@@ -171,8 +171,9 @@ class ChatService:
 
     # ---------------------------------------------------------------- one turn
 
-    def handle(self, session_id: str, text: str, emit: Emit) -> None:
-        """Answer one customer message. Progress goes to `emit(event, data)`; the last event is `end`."""
+    def handle(self, session_id: str, text: str, emit: Emit, *, via: dict[str, Any] | None = None) -> None:
+        """Answer one customer message. Progress goes to `emit(event, data)`; the last event is `end`.
+        `via` says how the message arrived when it was not typed (kept in the audit log)."""
         text = text.strip()
         if not text or len(text) > self.settings.max_message_chars:
             raise ValueError("the message is empty or too long")
@@ -180,11 +181,13 @@ class ChatService:
         if not lock.acquire(blocking=False):
             raise BusyError(session_id)
         try:
-            self._handle_locked(session_id, text, emit)
+            self._handle_locked(session_id, text, emit, via)
         finally:
             lock.release()
 
-    def _handle_locked(self, session_id: str, text: str, emit: Emit) -> None:
+    def _handle_locked(
+        self, session_id: str, text: str, emit: Emit, via: dict[str, Any] | None = None
+    ) -> None:
         with Session(self.engine) as db_session:
             row = self._row(db_session, session_id)
             if row.status != SessionStatus.OPEN.value:
@@ -192,7 +195,7 @@ class ChatService:
             state = _state_from(row.state)
             customer_id, turns = row.verified_customer_id, row.turns
 
-        self._audit(session_id, "customer_message", {"text": text})
+        self._audit(session_id, "customer_message", {"text": text, **({"via": via} if via else {})})
         ctx = ToolContext(
             now=self.settings.clock(),
             enforce_policy=self.config.enforce_policy,
