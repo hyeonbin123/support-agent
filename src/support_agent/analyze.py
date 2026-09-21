@@ -7,6 +7,7 @@ Usage:
     uv run python -m support_agent.analyze sample outputs/runs/<run_id> --n 20
     uv run python -m support_agent.analyze voice reports/<text run> reports/<voice run> [...]
     uv run python -m support_agent.analyze voice-worst reports/<voice run on the development tasks>
+    uv run python -m support_agent.analyze claims reports/<run> [more run dirs ...]
     uv run python -m support_agent.analyze same-setup reports/<run> reports/<run to pair it with>
 
 `table` prints the markdown tables that go into docs/experiments.md. `misses` lists episodes whose database
@@ -40,6 +41,8 @@ _COUNT_COLUMNS = (
     "버린 호출",
     "에피소드당 초",
 )
+# Replies held back by a guard are well formed; they are counted on their own.
+_NOT_A_FORMAT_ERROR = (None, "stall", "unbacked_claim")
 
 
 def load_episodes(run_dir: Path) -> list[dict[str, Any]]:
@@ -188,7 +191,7 @@ def table(run_dirs: list[Path]) -> str:
             f"| {sum(len(e['verdict']['policy_violations']) for e in judged)} "
             f"| {sum(len(e['verdict']['policy_blocks']) for e in judged)} "
             f"| {sum(e['verdict']['auth_blocks'] for e in judged)} "
-            f"| {sum(c['format_error'] not in (None, 'stall') for c in agent_calls)} "
+            f"| {sum(c['format_error'] not in _NOT_A_FORMAT_ERROR for c in agent_calls)} "
             f"| {sum(c['dropped_calls'] for c in agent_calls)} "
             f"| {sum(seconds) / len(seconds) if seconds else 0:.1f} |"
         )
@@ -231,6 +234,68 @@ def sample(run_dir: Path, n: int) -> str:
                 out.append(f"- 상담원: {m['content']}")
         out.append("")
     return "\n".join(out)
+
+
+def delivered_claims(episode: dict[str, Any]) -> list[str]:
+    """Sentences that reached the customer saying work was done which no earlier tool result showed.
+    The detector is code, so it reads the records of any run, also of one that ran without the guard."""
+    from support_agent.chat import Message
+    from support_agent.claims import unbacked_claim
+
+    messages = [Message.from_dict(m) for m in episode["messages"]]
+    found = []
+    for i, m in enumerate(messages):
+        if m.role == "assistant" and m.content and m.delivered and not m.tool_calls:
+            claim = unbacked_claim(m.content, messages[:i])
+            if claim:
+                found.append(claim.sentence)
+    return found
+
+
+def after_a_held_claim(episode: dict[str, Any]) -> list[str]:
+    """What the agent's next LLM call was after each reply the claim guard held back:
+    write | write_failed | read | claim_again | reply | format_error | nothing (the episode ended)."""
+    calls = [c for c in episode["llm_calls"] if c["who"] == "agent"]
+    tools = {t["agent_call"]: t for t in episode["tool_calls"]}
+    out = []
+    for position, call in enumerate(calls):
+        if call["format_error"] != "unbacked_claim":
+            continue
+        following = calls[position + 1] if position + 1 < len(calls) else None
+        if following is None:
+            out.append("nothing")
+        elif following["format_error"] == "unbacked_claim":
+            out.append("claim_again")
+        elif following["index"] in tools:
+            tool = tools[following["index"]]
+            out.append(("write" if tool["ok"] else "write_failed") if tool["write"] else "read")
+        elif following["format_error"] in (None, "stall"):
+            out.append("reply")
+        else:
+            out.append("format_error")
+    return out
+
+
+def claims_table(run_dirs: list[Path]) -> str:
+    header = (
+        "| 실행 | 에피소드 | 거짓 완료가 전달된 에피소드 | 그중 성공 | 전달된 거짓 완료 응답 "
+        "| 가드가 돌려보낸 응답 | 그 뒤: 쓰기 성공 | 쓰기 실패 | 조회 | 같은 주장 | 다른 말 "
+        "| 형식 오류 | 끝 | 가드로 끝난 에피소드 |"
+    )
+    lines = [header, "|---|" + "---|" * (header.count("|") - 2)]
+    for run_dir in run_dirs:
+        episodes = [e for e in load_episodes(run_dir) if e["status"] != "infra_error"]
+        told = [(e, delivered_claims(e)) for e in episodes]
+        after = Counter(step for e in episodes for step in after_a_held_claim(e))
+        held = sum(c["format_error"] == "unbacked_claim" for e in episodes for c in e["llm_calls"])
+        lines.append(
+            f"| {run_dir.name} | {len(episodes)} | {sum(bool(s) for _, s in told)} "
+            f"| {sum(bool(s) and is_success(e) for e, s in told)} | {sum(len(s) for _, s in told)} | {held} "
+            f"| {after['write']} | {after['write_failed']} | {after['read']} | {after['claim_again']} "
+            f"| {after['reply']} | {after['format_error']} | {after['nothing']} "
+            f"| {sum(e['termination'] == 'unbacked_claim' for e in episodes)} |"
+        )
+    return "\n".join(lines)
 
 
 def load_manifest(run_dir: Path) -> dict[str, Any]:
@@ -294,6 +359,7 @@ def main() -> None:
     sampler.add_argument("--n", type=int, default=20)
     commands.add_parser("voice").add_argument("run_dirs", nargs="+", type=Path)
     commands.add_parser("voice-worst").add_argument("run_dir", type=Path)
+    commands.add_parser("claims").add_argument("run_dirs", nargs="+", type=Path)
     pairing = commands.add_parser("same-setup")
     pairing.add_argument("run_a", type=Path)
     pairing.add_argument("run_b", type=Path)
@@ -313,6 +379,8 @@ def main() -> None:
         if is_test_run(args.run_dir):
             sys.exit("voice-worst is for the development tasks: nothing is built from test records")
         print(voice_metrics.worst(load_episodes(args.run_dir)))
+    elif args.command == "claims":
+        print(claims_table(args.run_dirs))
     elif args.command == "same-setup":
         differences = setup_differences(args.run_a, args.run_b, tuple(args.ignore))
         print("\n".join(differences) or "same setup")

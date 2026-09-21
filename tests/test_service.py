@@ -503,3 +503,59 @@ def test_the_service_repairs_what_was_heard_before_the_agent_reads_it(engine):
         assert (
             message["via"]["heard"] == "정예준이고 공일공 공공공공 구공공오입니다"
         )  # the raw transcript is kept
+
+
+# -------------------------------------------------------------------- the claim guard
+
+DONE = "주문 O-90005의 취소가 완료되었습니다. 89,100원이 환불됩니다."
+VERIFY_SMALL, CANCEL_SMALL = verify_and_cancel(SMALL)
+
+
+def test_a_claim_that_no_tool_result_shows_is_not_delivered_and_the_retry_does_the_work(engine):
+    with make_client(engine, [VERIFY_SMALL, DONE, CANCEL_SMALL, DONE], claims="C1") as client:
+        session_id = client.post("/api/sessions").json()["session_id"]
+        events = say(client, session_id, "정예준이고 01000009005입니다. O-90005 취소해 주세요.")
+        assert [d["text"] for n, d in events if n == "reply"] == [DONE]  # said once, after the write
+        assert order_status(engine, "O-90005") == "cancelled"
+        audit = client.get(f"/api/admin/sessions/{session_id}", headers=ADMIN).json()["audit"]
+        held = [e["payload"]["format_error"] for e in audit if e["kind"] == "llm_call"]
+        assert held == [None, "unbacked_claim", None, None]
+
+
+def test_when_the_model_insists_the_customer_hears_that_nothing_was_done(engine):
+    with make_client(engine, [VERIFY_SMALL, DONE, DONE, DONE, "무엇을 도와드릴까요?"], claims="C1") as client:
+        session_id = client.post("/api/sessions").json()["session_id"]
+        events = say(client, session_id, "정예준이고 01000009005입니다. O-90005 취소해 주세요.")
+        assert [n for n, _ in events][-3:] == ["error", "reply", "end"]
+        assert dict(events)["reply"]["text"] == FALLBACK_REPLY and events[-1][1] == {"status": "open"}
+        assert order_status(engine, "O-90005") == "preparing"
+        transcript = client.get(f"/api/sessions/{session_id}").json()
+        assert DONE not in [m["text"] for m in transcript["messages"]]
+        audit = client.get(f"/api/admin/sessions/{session_id}", headers=ADMIN).json()["audit"]
+        assert next(e["payload"]["error"] for e in audit if e["kind"] == "error") == "unbacked_claim"
+        assert dict(say(client, session_id, "여보세요?"))["reply"]["text"] == "무엇을 도와드릴까요?"
+
+
+def test_without_the_guard_the_same_claim_reaches_the_customer(engine):
+    with make_client(engine, [VERIFY_SMALL, DONE], claims="C0") as client:
+        session_id = client.post("/api/sessions").json()["session_id"]
+        events = say(client, session_id, "정예준이고 01000009005입니다. O-90005 취소해 주세요.")
+        assert dict(events)["reply"]["text"] == DONE and order_status(engine, "O-90005") == "preparing"
+
+
+def test_a_write_that_waits_for_a_person_is_not_done_until_it_was_carried_out(engine):
+    done = "주문 O-10097의 취소가 완료되었습니다."
+    waiting = "아직 담당자 확인을 기다리고 있습니다."
+    script = [*verify_and_cancel(BIG), "담당자 확인 후 처리됩니다.", done, waiting, done]
+    with make_client(engine, script, claims="C1") as client:
+        session_id, _ = ask_for_big_cancel(client)
+        assert dict(say(client, session_id, "취소됐나요?"))["reply"]["text"] == waiting  # `done` was held
+
+        client.post("/api/admin/approvals/1/decision", headers=ADMIN, json={"approve": True})
+        with Session(engine) as session:
+            kept = session.get(store.ChatSession, session_id).state["messages"][-3:]
+        assert kept[0]["tool_calls"][0]["name"] == "cancel_order" and kept[1]["tool_name"] == "cancel_order"
+        assert json.loads(kept[1]["content"])["status"] == "cancelled" and "108,200원" in kept[2]["content"]
+        assert dict(say(client, session_id, "이제 취소됐나요?"))["reply"]["text"] == done  # now it is shown
+        shown = [m["text"] for m in client.get(f"/api/sessions/{session_id}").json()["messages"]]
+        assert not any(text.startswith("{") for text in shown)  # the tool result stays out of the chat

@@ -31,7 +31,9 @@ class LLMCallLog:
     seed: int | None
     text: str
     tool_calls: list[dict[str, Any]]
-    format_error: str | None  # empty | leaked_tool_call | cut_off, None when the reply was well formed
+    # Why the reply was not used as it came: empty | leaked_tool_call | cut_off | rescued_tool_call |
+    # wrong_language | stall (G1) | unbacked_claim (C1). None when it was.
+    format_error: str | None
     dropped_text: str  # text that came with a tool call and was not delivered
     dropped_calls: int  # tool calls after the first one
     finish_reason: str | None

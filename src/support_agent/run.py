@@ -115,6 +115,7 @@ def summarise(results: list[EpisodeResult]) -> dict[str, Any]:
         "policy_blocks": sum(len(r.verdict.policy_blocks) for r in counted if r.verdict),
         "auth_blocks": sum(r.verdict.auth_blocks for r in counted if r.verdict),
         "format_errors": sum(c.format_error is not None for c in agent_calls),
+        "held_claims": sum(c.format_error == "unbacked_claim" for c in agent_calls),
         "dropped_calls": sum(c.dropped_calls for c in agent_calls),
         "seconds_per_episode": mean([r.wall_seconds for r in counted]),
         "agent_calls_per_episode": mean([float(sum(c.who == "agent" for c in r.llm_calls)) for r in counted]),
@@ -163,6 +164,12 @@ def main() -> None:
         "--rescue", choices=["F0", "F1"], default="F0", help="F1: run tool calls leaked into text"
     )
     parser.add_argument(
+        "--claims",
+        choices=["C0", "C1", "C2"],
+        default="C0",
+        help="C1: hold back a reply that says work is done which no tool result shows; C2: sampled retry",
+    )
+    parser.add_argument(
         "--user-on-cpu",
         action="store_true",
         help="run the simulator model on the CPU (when the agent model leaves no GPU memory for it)",
@@ -200,6 +207,7 @@ def main() -> None:
         guard=args.guard,
         rescue=args.rescue,
         voice=args.voice,
+        claims=args.claims,
         num_ctx=args.num_ctx,
     )
     tasks = load_tasks(args.tasks)
@@ -251,6 +259,7 @@ def main() -> None:
             config.guard,
             config.rescue,
             config.voice if channel else "",
+            config.claims if config.claims != "C0" else "",
             safe_name(args.label),
         ]
         if p

@@ -22,6 +22,9 @@ class Settings(BaseModel):
     # The service refuses what the rules forbid (P1). Whether that raises the success rate is a question of
     # docs/experiments.md; here a wrong refund costs money, so the tools check whatever code can check.
     policy: Literal["P0", "P1"] = "P1"
+    # C1: a reply that says work is done which no tool result of the conversation shows is never delivered
+    # (docs/experiments.md, stage 7, also says why this default is what it is).
+    claims: Literal["C0", "C1", "C2"] = "C0"
     now: AwareDatetime | Literal["real"] = Field(default_factory=lambda: datetime.fromisoformat(DEMO_NOW))
     approval_refund_won: int = 100_000  # refunds from this amount wait for a person
     admin_token: str = ""  # "" disables the admin API

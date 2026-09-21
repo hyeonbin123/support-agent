@@ -23,7 +23,7 @@ Docker 없이 SQLite 파일로도 돈다.
 uv run uvicorn support_agent.service.app:create_app --factory --port 8062
 ```
 
-설정은 환경 변수로 한다 (`SUPPORT_AGENT_` 접두사, `service/settings.py`): `DATABASE_URL`, `OLLAMA_URL`, `MODEL`, `POLICY`, `NOW`, `APPROVAL_REFUND_WON`, `ADMIN_TOKEN`, `MAX_MESSAGE_CHARS`, `MAX_AGENT_CALLS_PER_TURN`, `MAX_TURNS_PER_SESSION`, `VOICE`, `TTS_DEVICE`, `STT_DEVICE`, `MAX_AUDIO_BYTES`, `MAX_TTS_CHARS`.
+설정은 환경 변수로 한다 (`SUPPORT_AGENT_` 접두사, `service/settings.py`): `DATABASE_URL`, `OLLAMA_URL`, `MODEL`, `POLICY`, `CLAIMS`, `NOW`, `APPROVAL_REFUND_WON`, `ADMIN_TOKEN`, `MAX_MESSAGE_CHARS`, `MAX_AGENT_CALLS_PER_TURN`, `MAX_TURNS_PER_SESSION`, `VOICE`, `TTS_DEVICE`, `STT_DEVICE`, `MAX_AUDIO_BYTES`, `MAX_TTS_CHARS`.
 
 ## 구성
 

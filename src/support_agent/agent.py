@@ -12,6 +12,7 @@ from importlib.resources import files
 from typing import Any
 
 from support_agent.chat import ChatProvider, ChatResponse, Message, ToolCall
+from support_agent.claims import unbacked_claim
 from support_agent.clock import to_kst
 from support_agent.config import (
     FIRST_AGENT_MESSAGE,
@@ -40,6 +41,11 @@ LANGUAGE_NOTICE = (
     "[시스템 안내] 방금 응답은 한국어가 아니어서 고객에게 전달되지 않았습니다. "
     "같은 내용을 한국어로만 다시 답하세요."
 )
+CLAIM_NOTICE = (
+    "[시스템 안내] 방금 응답은 고객에게 전달되지 않았습니다. {label}에 대해 이미 끝난 것처럼 말했지만, "
+    "이 대화의 도구 결과에는 그것을 보여 주는 기록이 없습니다. 지금 필요한 도구를 호출해 실제로 처리하거나 "
+    "조회하세요. 처리하지 않았거나 처리할 수 없는 일이면 끝났다고 말하지 말고 사실대로 안내하세요."
+)
 _WEEKDAYS = "월화수목금토일"
 
 # The loop never sees the DB or the ToolContext; the caller passes a closure over toolkit.execute.
@@ -54,6 +60,7 @@ class AgentState:
     format_errors: int = 0
     dropped_calls: int = 0
     stalls: int = 0  # replies held back by the stall guard (G1)
+    held_claims: int = 0  # replies held back by the claim guard (C1)
     tool_log: list[ToolCallLog] = field(default_factory=list)
     llm_log: list[LLMCallLog] = field(default_factory=list)
 
@@ -65,6 +72,7 @@ class AgentState:
             "format_errors": self.format_errors,
             "dropped_calls": self.dropped_calls,
             "stalls": self.stalls,
+            "held_claims": self.held_claims,
         }
 
 
@@ -178,13 +186,17 @@ def agent_turn(
     tools = visible_tools(registry, config)
     retries = 0  # format retries are counted per turn
     stall_retries = 0
+    claim_retries = 0
     while state.agent_calls < config.max_agent_calls:
         index = state.agent_calls
         seed = derive_seed(config.base_seed, task_id, trial, "agent", index)
         # G2: a retry after a held-back stall is sampled, because at temperature 0 the model tends to
-        # answer the notice with the very same sentence.
-        retrying_stall = config.guard == "G2" and stall_retries > 0
-        temperature = config.stall_retry_temperature if retrying_stall else config.temperature
+        # answer the notice with the very same sentence. C2 does the same after a held-back claim.
+        temperature = config.temperature
+        if config.guard == "G2" and stall_retries > 0:
+            temperature = config.stall_retry_temperature
+        if config.claims == "C2" and claim_retries > 0:
+            temperature = config.claim_retry_temperature
         response = provider.chat(
             state.messages, tools, temperature=temperature, seed=seed, max_tokens=config.max_tokens
         )
@@ -198,6 +210,11 @@ def agent_turn(
                 state.format_errors += 1
         if not problem and not calls and config.language == "L1" and in_another_language(response.text):
             problem = "wrong_language"
+        claim = None
+        if not problem and not calls and config.claims in ("C1", "C2"):
+            claim = unbacked_claim(response.text, state.messages)
+            if claim:
+                problem = "unbacked_claim"
         if (
             not problem
             and not calls
@@ -236,6 +253,16 @@ def agent_turn(
             state.stalls += 1
             state.messages.append(Message("assistant", response.text, delivered=False))
             state.messages.append(Message("user", STALL_NOTICE, harness=True))
+            continue
+        if claim:
+            # Not a format error either. Unlike a stall it is never delivered: when the model keeps saying
+            # it, the episode ends, because a customer who hears "취소되었습니다" stops asking.
+            state.held_claims += 1
+            state.messages.append(Message("assistant", response.text, delivered=False))
+            if claim_retries >= config.max_claim_retries:
+                return TurnResult(None, "unbacked_claim")
+            claim_retries += 1
+            state.messages.append(Message("user", CLAIM_NOTICE.format(label=claim.label), harness=True))
             continue
         if problem:
             state.format_errors += 1

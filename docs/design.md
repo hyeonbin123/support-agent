@@ -19,6 +19,7 @@ src/support_agent/
   tools.py      도구 14개, build_registry()
   ollama.py     OllamaProvider (httpx, /api/chat)
   agent.py      AgentState, agent_turn()  ← 에이전트 루프
+  claims.py     응답의 "끝났습니다"에 도구 결과의 근거가 있는지 (7단계의 완료 주장 가드)
   user_sim.py   LLMUser, ScriptedUser
   judge.py      정답 재실행, 판정, pass^k
   episode.py    run_episode()
@@ -125,6 +126,7 @@ tasks/smoke.yaml, dev.yaml, test.yaml
 | 텍스트와 도구 호출이 함께 옴 | 도구 호출을 따르고 텍스트는 고객에게 보내지 않는다. 기록에서도 뺀다 (`dropped_text`로 로그). 제공자와 무관하게 루프가 처리 |
 | 도구 호출이 여러 개 | 첫 번째만 실행하고 나머지는 `dropped_calls`로 센다 |
 | 형식 오류: 빈 응답, 본문에 샌 도구 호출(`<tool_call>` 태그, 또는 본문 안의 `name`과 `arguments`/`parameters`를 가진 JSON 객체), 길이 제한으로 잘림 | 고객에게 보내지 않는다. 그 응답(`delivered=False`)과 하니스 안내문(`harness=True`인 user 메시지)을 기록에 넣고 다시 호출한다. 한 턴에 `max_format_retries`(2)번까지, 넘으면 `agent_format_error`로 끝 |
+| 근거 없는 완료 안내 (C1·C2일 때만. `claims.py`) | "취소가 완료되었습니다"처럼 끝났다고 말하는데 그 대화의 성공한 도구 결과에 그 상태가 없으면 고객에게 보내지 않고 안내문을 넣어 다시 호출한다. 한 턴에 `max_claim_retries`(2)번까지, 넘으면 전달하지 않고 `unbacked_claim`으로 끝. 형식 오류로 세지 않는다 (`experiments.md` 7단계) |
 | 도구 오류 누적 | `max_tool_errors`(10)에 닿으면 `too_many_tool_errors`로 끝 |
 | 이관 성공 | 고정 안내문(`HANDOFF_MESSAGE`)을 고객에게 전달한 것으로 치고 `handoff`로 끝 |
 | 한도 | 에이전트 LLM 호출 30, 고객 턴 20 |

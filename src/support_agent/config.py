@@ -22,6 +22,7 @@ Termination = Literal[
     "max_user_turns",
     "too_many_tool_errors",
     "agent_format_error",
+    "unbacked_claim",  # C1/C2: the agent kept saying that work was done which no tool result shows
     "context_limit",
     "infra_error",
 ]
@@ -45,6 +46,9 @@ class RunConfig:
     # L1: a reply written in Chinese or Japanese script is not delivered but sent back, like a format
     # error. The service turns it on; it has not been measured, so the evaluation default is L0.
     language: Literal["L0", "L1"] = "L0"
+    # C1: a reply that says some work is done ("취소가 완료되었습니다") while no tool result of the
+    # conversation shows it is sent back, not delivered. C2: and the retry is sampled.
+    claims: Literal["C0", "C1", "C2"] = "C0"
     temperature: float = 0.0
     user_temperature: float = 0.3
     base_seed: int = 1000
@@ -55,6 +59,8 @@ class RunConfig:
     max_tool_errors: int = 10
     stall_retry_temperature: float = 0.7  # G2 only
     max_stall_retries: int = 2  # per agent turn (G1); after that the reply is delivered as it is
+    claim_retry_temperature: float = 0.7  # C2 only
+    max_claim_retries: int = 2  # per agent turn (C1); after that the episode ends, nothing is delivered
     max_format_retries: int = 2  # per agent turn; 0 reproduces the strict "one malformed reply fails" rule
 
     @property

@@ -338,4 +338,5 @@ def test_new_state_and_to_dict_are_json_serialisable(tiny_engine):
         "format_errors",
         "dropped_calls",
         "stalls",
+        "held_claims",
     }

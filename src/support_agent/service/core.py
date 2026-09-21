@@ -15,7 +15,7 @@ from sqlalchemy import Engine, select, update
 from sqlalchemy.orm import Session
 
 from support_agent.agent import AgentState, agent_turn, build_system_prompt, load_policy, new_state
-from support_agent.chat import ChatProvider, Message, ProviderError
+from support_agent.chat import ChatProvider, Message, ProviderError, ToolCall
 from support_agent.config import RunConfig
 from support_agent.service.settings import Settings
 from support_agent.service.store import (
@@ -92,6 +92,7 @@ def _state_from(data: dict[str, Any]) -> AgentState:
         format_errors=data.get("format_errors", 0),
         dropped_calls=data.get("dropped_calls", 0),
         stalls=data.get("stalls", 0),
+        held_claims=data.get("held_claims", 0),
     )
 
 
@@ -127,6 +128,7 @@ class ChatService:
             num_ctx=settings.num_ctx,
             max_agent_calls=settings.max_agent_calls_per_turn,
             language="L1",  # never show a customer a reply that drifted into Chinese
+            claims=settings.claims,
         )
         # One process serves the chat (see docs/design.md): a lock per session is enough.
         self._locks: dict[str, threading.Lock] = {}
@@ -480,6 +482,13 @@ class ChatService:
                 approval.result = result.content
             row = self._row(db_session, session_id)
             state = copy.deepcopy(row.state)
+            if status is ApprovalStatus.APPROVED and state["messages"]:  # an MCP session has no conversation
+                # The conversation keeps the write like any other tool call: the model reads what was done,
+                # and the claim guard finds the evidence when the agent later says that it is done.
+                state["messages"] += [
+                    Message("assistant", "", (ToolCall(tool, args),)).to_dict(),
+                    Message("tool", result.content, tool_name=tool).to_dict(),
+                ]
             state["messages"].append(Message("assistant", text).to_dict())
             row.state = state
             row.updated_at = now
