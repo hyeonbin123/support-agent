@@ -1,6 +1,6 @@
-# 설계 (0단계)
+# 설계
 
-`plan.md`가 "무엇을 왜"라면 이 문서는 "어떻게"다. 코드와 어긋나면 코드가 맞고, 이 문서를 고친다.
+`plan.md`가 "무엇을 왜"라면 이 문서는 "어떻게"다. 코드와 어긋나면 코드가 맞고, 이 문서를 고친다. 이 문서는 평가 환경(0~2단계)을 다룬다. 서비스는 [service.md](service.md), MCP 서버는 [mcp.md](mcp.md)에 따로 적었다.
 
 ## 모듈
 
@@ -23,8 +23,12 @@ src/support_agent/
   judge.py      정답 재실행, 판정, pass^k
   episode.py    run_episode()
   run.py        CLI
+  analyze.py    기록에서 표, 짝지은 부트스트랩 구간, 점검용 표본을 다시 계산
+  fixtures_dev.py, fixtures_test.py   개발용·시험용 과제가 가리키는 고정 행
+  service/      웹 채팅 서비스 (service.md)
+  mcp_server.py MCP 서버 (mcp.md)
   prompts/      policy.md, agent.md, user_sim.md (패키지 데이터)
-tasks/smoke.yaml
+tasks/smoke.yaml, dev.yaml, test.yaml
 ```
 
 ## 실행 경로 하나
