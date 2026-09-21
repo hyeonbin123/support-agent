@@ -139,12 +139,16 @@ class WhisperListener:
         compute_type: str | None = None,
         beam_size: int = 5,
         max_seconds: float | None = None,
+        vad_filter: bool = False,
     ):
         add_cuda_dll_dirs()
         from faster_whisper import WhisperModel
 
         self.model, self.device, self.beam_size = model, device, beam_size
         self.max_seconds = max_seconds  # None: no limit (the evaluation synthesises its own audio)
+        # Off for the measurements (synthesised speech has no silence). On for a real microphone: given a
+        # recording without speech, Whisper writes stock phrases of video subtitles instead of nothing.
+        self.vad_filter = vad_filter
         self.compute_type = compute_type or ("float16" if device == "cuda" else "int8")
         self._model = WhisperModel(model, device=device, compute_type=self.compute_type)
 
@@ -154,6 +158,7 @@ class WhisperListener:
             "device": self.device,
             "compute_type": self.compute_type,
             "beam_size": self.beam_size,
+            "vad_filter": self.vad_filter,
             "stt_versions": versions("faster-whisper", "ctranslate2"),
         }
 
@@ -169,6 +174,7 @@ class WhisperListener:
             beam_size=self.beam_size,
             temperature=0.0,
             condition_on_previous_text=False,
+            vad_filter=self.vad_filter,
         )
         return " ".join(segment.text.strip() for segment in segments).strip()
 
