@@ -8,6 +8,7 @@ import secrets
 import threading
 import traceback
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import Engine, select
@@ -61,6 +62,11 @@ FALLBACK_REPLY = (
 CLOSED_REPLY = "대화가 길어져 이 상담은 여기서 마칩니다. 이어서 도움이 필요하시면 새 상담을 시작해 주세요."
 
 Emit = Callable[[str, dict[str, Any]], None]
+
+
+def wall_clock() -> datetime:
+    """When something was recorded. `Settings.clock()` is the shop's clock and may be fixed for the demo."""
+    return datetime.now(UTC)
 
 
 class SessionNotFoundError(LookupError):
@@ -129,8 +135,8 @@ class ChatService:
 
     def new_session(self, kind: str = "chat") -> dict[str, Any]:
         """`kind` "mcp" is a session without a conversation: an MCP client calls the tools itself."""
-        now = self.settings.clock()
-        state = new_state(build_system_prompt(self.policy_text, now))
+        now = wall_clock()
+        state = new_state(build_system_prompt(self.policy_text, self.settings.clock()))
         if kind != "chat":
             state.messages.clear()
         session_id = ("" if kind == "chat" else f"{kind}-") + secrets.token_urlsafe(24)
@@ -252,7 +258,7 @@ class ChatService:
             row.turns = turns + 1
             row.status = status.value
             row.verified_customer_id = ctx.state.verified_customer_id
-            row.updated_at = self.settings.clock()
+            row.updated_at = wall_clock()
             db_session.commit()
         if error:
             emit("error", {"message": "처리 중 문제가 생겼습니다."})
@@ -312,7 +318,7 @@ class ChatService:
                 row = self._row(db_session, session_id)
                 row.verified_customer_id = ctx.state.verified_customer_id
                 row.turns += 1
-                row.updated_at = self.settings.clock()
+                row.updated_at = wall_clock()
                 db_session.commit()
             return result
         finally:
@@ -352,7 +358,7 @@ class ChatService:
             if approval is None:
                 approval = Approval(
                     session_id=session_id,
-                    created_at=ctx.now,
+                    created_at=wall_clock(),
                     tool=spec.name,
                     args=clean,
                     customer_id=ctx.state.verified_customer_id,
@@ -392,7 +398,7 @@ class ChatService:
             lock.release()
 
     def _decide_locked(self, approval_id: int, *, approve: bool, by: str, note: str) -> dict[str, Any]:
-        now = self.settings.clock()
+        now = wall_clock()
         with Session(self.engine) as db_session:
             approval = db_session.get(Approval, approval_id)
             if approval is None or approval.status != ApprovalStatus.PENDING.value:
@@ -404,7 +410,7 @@ class ChatService:
         result: ToolResult | None = None
         if approve:
             ctx = ToolContext(
-                now=now,
+                now=self.settings.clock(),
                 enforce_policy=self.config.enforce_policy,
                 state=ConversationState(verified_customer_id=customer_id),
             )
@@ -512,9 +518,7 @@ class ChatService:
 
     def _audit(self, session_id: str, kind: str, payload: dict[str, Any]) -> None:
         with Session(self.engine) as db_session:
-            db_session.add(
-                AuditEvent(session_id=session_id, at=self.settings.clock(), kind=kind, payload=payload)
-            )
+            db_session.add(AuditEvent(session_id=session_id, at=wall_clock(), kind=kind, payload=payload))
             db_session.commit()
 
 

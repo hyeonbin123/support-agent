@@ -3,6 +3,8 @@
 #   docker compose up --build
 # Chat: http://127.0.0.1:8062   Admin: http://127.0.0.1:8062/admin (token: ADMIN_TOKEN, default "local-admin")
 # Both ports listen on 127.0.0.1 only. The defaults below are for a local demo; set your own in .env.
+name: support-agent
+
 services:
   db:
     image: postgres:16-alpine
