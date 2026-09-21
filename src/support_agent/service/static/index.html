@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>고객센터 상담</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/chat.js" defer></script>
+</head>
+<body class="page-chat">
+  <header class="topbar">
+    <h1>고객센터 상담</h1>
+    <button type="button" id="new-session" class="btn">새 상담</button>
+  </header>
+
+  <main class="chat">
+    <div id="scroll" class="chat-scroll">
+      <details class="hint" open>
+        <summary>체험 안내</summary>
+        <p>
+          이 쇼핑몰과 고객·주문 정보는 모두 만들어 낸 가상 데이터입니다.
+          상담 속 현재 시각은 2026-09-14 10:00(KST)로 고정되어 있습니다.
+        </p>
+        <p id="demo-hints-intro" hidden>아래 가상 고객 정보로 본인 확인을 해 볼 수 있습니다.</p>
+        <ul id="demo-hints"></ul>
+      </details>
+
+      <div id="messages" class="messages" role="log" aria-live="polite" aria-label="대화 내용"></div>
+      <p id="progress" class="progress" role="status" hidden></p>
+      <ul id="chips" class="chips" aria-label="승인 대기 중인 요청"></ul>
+    </div>
+
+    <div id="notice" class="notice" hidden>
+      <span id="notice-text"></span>
+      <button type="button" id="notice-new" class="btn btn-primary">새 상담 시작</button>
+    </div>
+    <p id="error" class="error-line" role="alert" hidden></p>
+
+    <form id="composer" class="composer" autocomplete="off">
+      <label for="input" class="sr-only">메시지 입력</label>
+      <textarea id="input" rows="2" placeholder="메시지를 입력하세요 (Enter 전송, Shift+Enter 줄바꿈)" disabled></textarea>
+      <div class="composer-side">
+        <span id="counter" class="counter" aria-live="polite" hidden></span>
+        <button type="submit" id="send" class="btn btn-primary" disabled>보내기</button>
+      </div>
+    </form>
+  </main>
+</body>
+</html>
