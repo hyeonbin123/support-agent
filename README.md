@@ -49,6 +49,29 @@
 - 도구에서 규정을 막는 것은 성공률은 못 올렸지만 규정을 어긴 쓰기를 12건에서 0건으로 줄였다. 서비스(3단계)는 이 방식을 쓴다
 - "확인해 보겠습니다"만 하고 멈추는 응답을 정확히 잡아 다시 시켜도 7B는 행동으로 옮기지 못했다. 멈춤은 출력 형식이 아니라 다음에 할 일을 모르는 문제로 보인다
 
+## 한계
+
+- 과제, 규정, 에이전트를 같은 쪽이 만들었다. 실제 고객 대화가 아니고, 고객 역할은 LLM 시뮬레이터다. 시뮬레이터는 한 번 점검해서 고쳤지만(첫 점검에서 20개 중 7개에 결과를 바꿀 만한 잘못이 있었다) 잡음은 남아 있다
+- 과제 수가 적다 (개발용 24개, 시험용 40개). 차이의 95% 구간 폭이 ±10%p를 넘으므로 그보다 작은 차이는 구분하지 못한다. 같은 설정을 두 번 쟀을 때 pass^1은 20.8%와 19.8%로 같았지만 pass^4는 12.5%와 4.2%로 달랐다
+- 기준 모델(7B)의 성공률이 바닥에 가깝다. 나빠질 여지가 작아서 악화는 눌려 보이고, 개선 후보들이 실패한 이유가 후보에 있는지 모델에 있는지 가르기 어렵다
+- 한 대의 PC에서 GPU 한 장으로 쟀고, 다른 프로그램이 GPU를 함께 쓴 실행이 있다. 그런 실행의 시간 수치는 쓰지 않았고 어느 실행인지는 `docs/experiments.md`에 적었다. 성공 여부에는 영향이 없다
+- 음성 채널은 합성 음성으로 쟀다. 또박또박하고 잡음이 없어 실제 통화보다 쉬운 조건이다. 실제 마이크로 해 보면 다른 오류가 나온다 (전화번호가 숫자가 아니라 한글로 적히고, 말 없는 녹음에서 없는 문장이 나온다)
+- 서비스는 시연 수준이다: 프로세스 하나, 관리자 인증은 공유 토큰, 요청 빈도 제한 없음. `docs/service.md`의 "하지 않은 것"
+
+## 다시 재는 방법
+
+```bash
+ollama pull qwen2.5:7b-instruct
+uv run python -m support_agent.run --tasks dev --trials 4 --label again          # 기준 (35분쯤, RTX 2080 Ti)
+uv run python -m support_agent.analyze table outputs/runs/<run_id>
+uv run python -m support_agent.analyze compare reports/<기준 실행> outputs/runs/<run_id>
+```
+
+- 발화와 도구 호출의 seed는 (기본 seed, 과제, 시도, 역할, 호출 순번)에서 나오므로 같은 명령은 같은 seed로 돈다. 그래도 GPU 연산 순서 때문에 에피소드가 글자 단위로 같지는 않다
+- 실행마다 `manifest.json`에 커밋, 설정, 모델 digest, Ollama 버전, 프롬프트·과제·seed DB의 해시가 남는다. 두 실행을 짝지어도 되는지는 `analyze same-setup <실행 A> <실행 B>`가 확인한다
+- 이 저장소의 수치는 모두 `reports/`의 기록에서 다시 계산된다: `analyze table`, `compare`, `voice`. 모델 없이 된다
+- 후보별 옵션: `--policy P1`, `--reasoning R1`, `--guard G1|G2`, `--rescue F1`, `--model qwen2.5:14b-instruct --user-on-cpu --num-ctx 8192`, `--voice V1|V2`(`uv sync --group voice` 필요). 시험용 과제는 `--tasks test --allow-test`이고 단계마다 한 번만 잰다
+
 ## 실행
 
 Python 3.11과 [uv](https://docs.astral.sh/uv/)가 필요하다. 테스트는 GPU와 모델 없이 돈다.
