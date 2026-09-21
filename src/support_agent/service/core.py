@@ -127,17 +127,22 @@ class ChatService:
 
     # ---------------------------------------------------------------- sessions
 
-    def new_session(self) -> dict[str, Any]:
+    def new_session(self, kind: str = "chat") -> dict[str, Any]:
+        """`kind` "mcp" is a session without a conversation: an MCP client calls the tools itself."""
         now = self.settings.clock()
         state = new_state(build_system_prompt(self.policy_text, now))
-        session_id = secrets.token_urlsafe(24)
+        if kind != "chat":
+            state.messages.clear()
+        session_id = ("" if kind == "chat" else f"{kind}-") + secrets.token_urlsafe(24)
         with Session(self.engine) as db_session:
             db_session.add(
                 ChatSession(id=session_id, created_at=now, updated_at=now, turns=0, state=state.to_dict())
             )
             db_session.commit()
         self._audit(
-            session_id, "session_started", {"model": self.settings.model, "policy": self.settings.policy}
+            session_id,
+            "session_started",
+            {"kind": kind, "model": self.settings.model, "policy": self.settings.policy},
         )
         return self.transcript(session_id)
 
@@ -189,34 +194,7 @@ class ChatService:
         )
 
         def run_tool(name: str, arguments: dict) -> ToolResult:
-            emit("tool", {"name": name, "label": TOOL_LABELS.get(name, name)})
-            result = execute(
-                self.registry,
-                self.engine,
-                ctx,
-                name,
-                arguments,
-                before_write=lambda spec, clean: self._approval_gate(session_id, ctx, spec, clean, emit),
-            )
-            spec = self.registry.get(name)
-            self._audit(
-                session_id,
-                "tool_call",
-                {
-                    "name": name,
-                    "arguments": arguments,
-                    "args": result.args,
-                    "write": bool(spec and spec.write),
-                    "ok": result.ok,
-                    "error_code": result.error_code,
-                    "policy_blocked": result.policy_blocked,
-                    "violations": list(result.violations),
-                    "content": result.content,
-                    "customer_id": ctx.state.verified_customer_id,
-                },
-            )
-            emit("tool_result", {"name": name, "ok": result.ok, "error_code": result.error_code})
-            return result
+            return self._run_tool(session_id, ctx, name, arguments, emit)
 
         status, reply, error, closing = SessionStatus.OPEN, None, "", ""
         try:
@@ -282,6 +260,63 @@ class ChatService:
             if reply_text:
                 emit("reply", {"text": reply_text})
         emit("end", {"status": status.value})
+
+    def _run_tool(
+        self, session_id: str, ctx: ToolContext, name: str, arguments: dict[str, Any], emit: Emit
+    ) -> ToolResult:
+        """The one way a tool runs in the service: approval gate, execute, audit row."""
+        emit("tool", {"name": name, "label": TOOL_LABELS.get(name, name)})
+        result = execute(
+            self.registry,
+            self.engine,
+            ctx,
+            name,
+            arguments,
+            before_write=lambda spec, clean: self._approval_gate(session_id, ctx, spec, clean, emit),
+        )
+        spec = self.registry.get(name)
+        self._audit(
+            session_id,
+            "tool_call",
+            {
+                "name": name,
+                "arguments": arguments,
+                "args": result.args,
+                "write": bool(spec and spec.write),
+                "ok": result.ok,
+                "error_code": result.error_code,
+                "policy_blocked": result.policy_blocked,
+                "violations": list(result.violations),
+                "content": result.content,
+                "customer_id": ctx.state.verified_customer_id,
+            },
+        )
+        emit("tool_result", {"name": name, "ok": result.ok, "error_code": result.error_code})
+        return result
+
+    def call_tool(self, session_id: str, name: str, arguments: dict[str, Any]) -> ToolResult:
+        """A tool call that comes from outside the agent loop (the MCP server). Same gate, same audit."""
+        lock = self._lock(session_id)
+        if not lock.acquire(timeout=30):
+            raise BusyError(session_id)
+        try:
+            with Session(self.engine) as db_session:
+                customer_id = self._row(db_session, session_id).verified_customer_id
+            ctx = ToolContext(
+                now=self.settings.clock(),
+                enforce_policy=self.config.enforce_policy,
+                state=ConversationState(verified_customer_id=customer_id),
+            )
+            result = self._run_tool(session_id, ctx, name, arguments, lambda _event, _data: None)
+            with Session(self.engine) as db_session:
+                row = self._row(db_session, session_id)
+                row.verified_customer_id = ctx.state.verified_customer_id
+                row.turns += 1
+                row.updated_at = self.settings.clock()
+                db_session.commit()
+            return result
+        finally:
+            lock.release()
 
     # ---------------------------------------------------------------- approvals
 
