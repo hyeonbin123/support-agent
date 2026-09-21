@@ -45,6 +45,11 @@ uv run uvicorn support_agent.service.app:create_app --factory --port 8062
 | `service/app.py` | FastAPI: SSE 채팅, 관리자 API, 정적 화면 |
 | `service/migrations/` | Alembic. 테스트가 "마이그레이션 결과 = 선언한 테이블"을 확인한다 |
 
+## 테스트
+
+- `tests/test_service.py`, `tests/test_review_t7.py`: 마이그레이션한 SQLite 파일과 대본대로 답하는 가짜 모델로 채팅, 승인, 감사 로그, 음성 끝점을 확인한다
+- `tests/test_postgres.py`: PostgreSQL에서만 달라지는 곳을 확인한다. 마이그레이션 결과가 선언한 테이블과 같은지, 복사한 쇼핑몰 데이터가 생성 데이터와 시각까지 같은지, 감사 행을 쓰지 못하면 주문도 바뀌지 않는지, 두 프로세스가 같은 승인을 동시에 결정하면 한쪽만 실행하는지. `SUPPORT_AGENT_TEST_PG_URL`이 있을 때만 돌고(`docker compose up -d db` 뒤 `postgresql+psycopg://support:support-local@127.0.0.1:55462/support`), 그 서버에 `support_agent_test` 데이터베이스를 따로 만들어 쓴다. CI는 PostgreSQL 서비스 컨테이너를 띄워 이 테스트까지 돌린다
+
 ## 정한 것과 이유
 
 - **도구가 규정을 막는다 (P1).** 2단계 측정에서 P1은 성공률을 올리지 못했지만 통과된 규정 위반을 12건에서 0건으로 줄였다. 서비스에서 잘못된 환불은 돈이 나가는 일이라, 코드로 확인할 수 있는 규정은 모델을 믿지 않고 도구에서 막는다.
