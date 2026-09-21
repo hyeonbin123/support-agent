@@ -43,8 +43,8 @@ LANGUAGE_NOTICE = (
 )
 CLAIM_NOTICE = (
     "[시스템 안내] 방금 응답은 고객에게 전달되지 않았습니다. {label}에 대해 이미 끝난 것처럼 말했지만, "
-    "이 대화의 도구 결과에는 그것을 보여 주는 기록이 없습니다. 지금 필요한 도구를 호출해 실제로 처리하거나 "
-    "조회하세요. 처리하지 않았거나 처리할 수 없는 일이면 끝났다고 말하지 말고 사실대로 안내하세요."
+    "이 대화의 도구 결과에는 그것을 보여 주는 기록이 없습니다. 실제로 처리하려면 지금 {tools} 도구를 "
+    "호출하세요. 처리하지 않았거나 처리할 수 없는 일이면 끝났다고 말하지 말고 사실대로 안내하세요."
 )
 _WEEKDAYS = "월화수목금토일"
 
@@ -262,7 +262,8 @@ def agent_turn(
             if claim_retries >= config.max_claim_retries:
                 return TurnResult(None, "unbacked_claim")
             claim_retries += 1
-            state.messages.append(Message("user", CLAIM_NOTICE.format(label=claim.label), harness=True))
+            notice = CLAIM_NOTICE.format(label=claim.label, tools=claim.tools)
+            state.messages.append(Message("user", notice, harness=True))
             continue
         if problem:
             state.format_errors += 1

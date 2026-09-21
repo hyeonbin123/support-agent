@@ -106,7 +106,7 @@ def test_one_kind_with_evidence_is_enough_and_the_first_bare_sentence_is_reporte
     text = "본인 확인이 완료되었습니다. 교환 접수를 완료했습니다. 취소도 했습니다."
     claim = unbacked_claim(text, cancelled)
     assert (claim.sentence, claim.kinds) == ("교환 접수를 완료했습니다.", ("exchange",))
-    assert claim.label == "교환 접수"
+    assert (claim.label, claim.tools) == ("교환 접수", "request_exchange")
 
 
 # ------------------------------------------------------------------------------------------ in the loop
@@ -138,7 +138,8 @@ def test_c1_holds_the_claim_back_and_the_retry_does_the_work(tiny_engine):
     assert (state.held_claims, state.format_errors, state.stalls) == (1, 0, 0)
     held, notice = state.messages[3], state.messages[4]
     assert (held.content, held.delivered) == (CLAIM, False)
-    assert (notice.harness, notice.content) == (True, CLAIM_NOTICE.format(label="주문 취소"))
+    expected = CLAIM_NOTICE.format(label="주문 취소", tools="cancel_order")
+    assert (notice.harness, notice.content) == (True, expected)
     assert [log.format_error for log in state.llm_log] == ["unbacked_claim", None, None]
     assert db.dump_db(engine)["orders"][0]["status"] == "cancelled"
 

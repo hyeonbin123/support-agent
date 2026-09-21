@@ -19,27 +19,55 @@ from support_agent.toolkit import ERROR_PREFIX
 class ClaimKind:
     name: str
     label: str  # how the notice names it
+    tools: str  # the write tool(s) that would really do it, named in the notice
     said: re.Pattern[str]  # the sentence is about this kind of work
     shown: re.Pattern[str]  # a successful tool result ("<tool name>\n<content>") that shows it
 
 
 # The patterns of `shown` read the JSON that tools.py writes (json.dumps, default separators).
 KINDS: tuple[ClaimKind, ...] = (
-    ClaimKind("cancel", "주문 취소", re.compile(r"취소"), re.compile(r'"status": "cancelled"')),
-    ClaimKind("return", "반품 접수", re.compile(r"반품"), re.compile(r'"request_id": "RT-|"kind": "return"')),
     ClaimKind(
-        "exchange", "교환 접수", re.compile(r"교환"), re.compile(r'"request_id": "EX-|"kind": "exchange"')
+        "cancel", "주문 취소", "cancel_order", re.compile(r"취소"), re.compile(r'"status": "cancelled"')
+    ),
+    ClaimKind(
+        "return",
+        "반품 접수",
+        "request_return",
+        re.compile(r"반품"),
+        re.compile(r'"request_id": "RT-|"kind": "return"'),
+    ),
+    ClaimKind(
+        "exchange",
+        "교환 접수",
+        "request_exchange",
+        re.compile(r"교환"),
+        re.compile(r'"request_id": "EX-|"kind": "exchange"'),
     ),
     # A read shows the address an order ships to, never that it was changed: only the write is evidence.
     ClaimKind(
-        "address", "배송지 변경", re.compile(r"배송지|주소"), re.compile(r"\Achange_shipping_address\n")
+        "address",
+        "배송지 변경",
+        "change_shipping_address",
+        re.compile(r"배송지|주소"),
+        re.compile(r"\Achange_shipping_address\n"),
     ),
-    ClaimKind("coupon", "보상 쿠폰 발급", re.compile(r"쿠폰"), re.compile(r'"coupon_id": "')),
-    ClaimKind("ticket", "상담 티켓 접수", re.compile(r"티켓"), re.compile(r'"ticket_id": "')),
-    ClaimKind("handoff", "상담원 연결", re.compile(r"상담원"), re.compile(r'"handoff_id": "')),
+    ClaimKind(
+        "coupon",
+        "보상 쿠폰 발급",
+        "issue_compensation_coupon",
+        re.compile(r"쿠폰"),
+        re.compile(r'"coupon_id": "'),
+    ),
+    ClaimKind(
+        "ticket", "상담 티켓 접수", "create_ticket", re.compile(r"티켓"), re.compile(r'"ticket_id": "')
+    ),
+    ClaimKind(
+        "handoff", "상담원 연결", "transfer_to_human", re.compile(r"상담원"), re.compile(r'"handoff_id": "')
+    ),
     ClaimKind(
         "refund",
         "환불",
+        "cancel_order 또는 request_return",
         re.compile(r"환불"),
         re.compile(r'"refund_won": [1-9]|"status": "(cancelled|refund_pending|refunded)"'),
     ),
@@ -59,6 +87,7 @@ class Claim:
     sentence: str
     kinds: tuple[str, ...]  # every kind the sentence is about; none of them has evidence
     label: str  # of the first kind
+    tools: str  # of the first kind
 
 
 def shown_results(messages: Iterable[Message]) -> list[str]:
@@ -82,5 +111,5 @@ def unbacked_claim(text: str, messages: Iterable[Message]) -> Claim | None:
         if results is None:
             results = shown_results(messages)
         if not any(kind.shown.search(result) for kind in kinds for result in results):
-            return Claim(sentence, tuple(kind.name for kind in kinds), kinds[0].label)
+            return Claim(sentence, tuple(kind.name for kind in kinds), kinds[0].label, kinds[0].tools)
     return None
