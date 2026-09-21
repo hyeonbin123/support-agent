@@ -28,8 +28,8 @@
 | 0. 기반 | 가상 DB, 도구 14개, 규정 문서, 에이전트 루프, Ollama 연결, 시뮬레이터, 판정, 스모크 과제 5개 | 완료. 실제 모델(qwen2.5 7B)로 에피소드가 끝까지 돌고 판정이 나옴 |
 | 1. 과제와 기준선 | 개발용 24개·시험용 40개 과제, 기준선 측정 | 완료. qwen2.5 7B, 개발용 pass^1 20.8%, pass^4 12.5% |
 | 2. 개선 실험 | 규정 적용 방식, 추론 절차, 멈춤 가드, 모델 크기 | 완료. 판정: 개선 없음 (아래) |
-| 3. 서비스 | 스트리밍 채팅, 감사 로그, 사람 승인 | |
-| 4. MCP 서버 | 같은 도구를 MCP로 노출 | |
+| 3. 서비스 | 웹 채팅(SSE), 세션·감사 로그(PostgreSQL), 큰 환불의 사람 승인 대기열, 관리 화면, Docker Compose | 완료. [docs/service.md](docs/service.md) |
+| 4. MCP 서버 | 같은 도구 등록부를 MCP로 노출 (stdio·HTTP, 읽기/쓰기 범위) | 완료. [docs/mcp.md](docs/mcp.md) |
 
 ### 측정 결과 (2단계)
 
@@ -70,6 +70,17 @@ uv run python -m support_agent.run --tasks smoke --trials 1
 - GPU 메모리를 다른 작업이 쓰고 있으면 시작하지 않는다 (`--force`로 무시)
 - Ollama 주소는 `OLLAMA_BASE_URL`로 바꾼다 (기본 `http://127.0.0.1:11434`)
 
+### 서비스와 MCP 서버
+
+```bash
+ollama pull qwen2.5:7b-instruct
+docker compose up --build        # 채팅 http://127.0.0.1:8062, 관리 화면 /admin (기본 토큰 local-admin)
+```
+
+- 평가와 같은 에이전트 루프와 도구가 PostgreSQL 위에서 돈다. 도구가 규정을 막고, 환불액 10만 원 이상인 취소·반품은 관리 화면에서 사람이 승인해야 실행된다. 고객 메시지, LLM 호출, 도구 호출, 승인 결정은 감사 로그에 남는다
+- Docker 없이: `uv run uvicorn support_agent.service.app:create_app --factory --port 8062` (SQLite 파일)
+- MCP 서버: `uv run python -m support_agent.mcp_server` (읽기 도구만), `--scope write`(쓰기 포함), `--http`(토큰 필요). MCP로 호출해도 규정 검사, 사람 승인, 감사 로그를 똑같이 지난다
+
 ## 구조
 
 ```
@@ -83,12 +94,16 @@ src/support_agent/
   user_sim.py         사용자 시뮬레이터
   judge.py            정답 재실행, 판정, 과제 검증, pass^k
   episode.py, run.py  에피소드 실행과 CLI
-tasks/                과제 파일 (YAML)
+  analyze.py          기록에서 표와 짝지은 부트스트랩 구간을 다시 계산
+  service/            FastAPI 채팅, 감사 로그, 승인 대기열, Alembic 마이그레이션, 화면
+  mcp_server.py       도구 등록부를 MCP 서버로
+tasks/                과제 파일 (YAML): smoke 5, dev 24, test 40
+reports/              공식 측정의 에피소드 기록 (대화, 도구 호출, DB 변경분, 판정)
 ```
 
-- 에이전트 루프, 정답 재실행, 나중의 서비스와 MCP 서버가 모두 같은 `execute()`를 지난다: 인자 검증 → DB 세션 하나 → commit 또는 rollback
+- 에이전트 루프, 정답 재실행, 서비스, MCP 서버가 모두 같은 `execute()`를 지난다: 인자 검증 → DB 세션 하나 → commit 또는 rollback
 - 도구·seed·판정 코드는 현재 시각, uuid, 난수를 쓰지 않는다. 시각은 과제에 적힌 고정 시각뿐이라 "수령 후 7일" 같은 규정이 언제 돌려도 같게 판정된다
-- 평가는 메모리 SQLite를 쓰고, 같은 모델과 도구 코드가 나중에 PostgreSQL 위에서 돈다
+- 평가는 에피소드마다 메모리 SQLite 복사본을 쓰고, 서비스는 같은 테이블 정의와 도구 코드를 PostgreSQL 위에서 돌린다
 
 ## 데이터
 
