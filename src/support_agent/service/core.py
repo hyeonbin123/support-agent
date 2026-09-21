@@ -482,7 +482,9 @@ class ChatService:
                 approval.result = result.content
             row = self._row(db_session, session_id)
             state = copy.deepcopy(row.state)
-            if status is ApprovalStatus.APPROVED and state["messages"]:  # an MCP session has no conversation
+            if status is ApprovalStatus.APPROVED and not session_id.startswith(
+                "mcp-"
+            ):  # MCP: no conversation
                 # The conversation keeps the write like any other tool call: the model reads what was done,
                 # and the claim guard finds the evidence when the agent later says that it is done.
                 state["messages"] += [

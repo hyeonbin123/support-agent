@@ -48,7 +48,7 @@ KINDS: tuple[ClaimKind, ...] = (
         "address",
         "배송지 변경",
         "change_shipping_address",
-        re.compile(r"배송지|주소"),
+        re.compile(r"배송지|(?<!이메일 )(?<!이메일)주소"),
         re.compile(r"\Achange_shipping_address\n"),
     ),
     ClaimKind(
@@ -72,14 +72,28 @@ KINDS: tuple[ClaimKind, ...] = (
         re.compile(r'"refund_won": [1-9]|"status": "(cancelled|refund_pending|refunded)"'),
     ),
 )
+# In the service a cancel or return above the approval threshold is rolled back and queued, and the tool
+# answers with this error. "취소 요청이 접수되었습니다" is then true ("취소되었습니다" is not), so the error
+# is evidence for those kinds when the sentence speaks of receiving or registering the request.
+_QUEUED = re.compile(
+    r"\A(cancel_order|request_return)\n" + re.escape(ERROR_PREFIX) + r": \[approval_required\]"
+)
+_QUEUED_KINDS = frozenset({"cancel", "return", "refund"})
+_RECEIVED = re.compile(r"(접수|신청|등록)\s?(?:[가이를은는도]\s?)?(?:되었|됐|했|하였|해\s?드렸|드렸|마쳤)")
 
 # "…되었습니다 / 했습니다 / 해 드렸습니다": the work is said to be over. Future and conditional forms
 # ("취소해 드리겠습니다", "완료되면", "취소했는지") do not match.
 _DONE = re.compile(
-    r"(?:(?:완료|접수|처리|변경|발급|제출|등록|신청|연결|생성|취소|반품|교환|환불)\s?"
-    r"(?:되었|됐|했|하였|해\s?드렸|드렸|마쳤)|남겼|남겨\s?드렸)(?:습니다|어요|으며|고(?![가-힣]))"
+    r"(?:(?:완료|접수|처리|변경|발급|제출|등록|신청|연결|생성|진행|취소|반품|교환|환불)\s?(?:[가이를은는도]\s?)?"
+    r"(?:되었|됐|했|하였|해\s?드렸|드렸|마쳤)|남겼|남겨\s?드렸|이루어졌)(?:습니다|어요|으며|고(?![가-힣]))"
 )
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
+# Clauses: "본인 확인이 완료되었고, 취소는 가능합니다" says nothing about a cancellation being done. A claim
+# is judged inside its own clause, and the kind must stand before (or be) the verb (Korean word order).
+_CLAUSE_END = re.compile(r"(?<=[고며만데]),?\s+")  # a bare comma is not a boundary ("미르로 210, 새길빌딩")
+_DELIVERY = re.compile(
+    r"배송[이은도]?\s*$"
+)  # "배송이 완료되었습니다" is about the parcel, not about our work
 
 
 @dataclass(frozen=True)
@@ -91,25 +105,50 @@ class Claim:
 
 
 def shown_results(messages: Iterable[Message]) -> list[str]:
-    """The successful tool results of the conversation, each as "<tool name>\\n<content>"."""
-    return [
-        f"{m.tool_name or ''}\n{m.content}"
-        for m in messages
-        if m.role == "tool" and not m.content.startswith(f"{ERROR_PREFIX}: [")
-    ]
+    """The successful tool results of the conversation, each as "<tool name>\\n<content>" (plus the
+    approval_required errors of the service, which record a queued request)."""
+    out = []
+    for m in messages:
+        if m.role != "tool":
+            continue
+        entry = f"{m.tool_name or ''}\n{m.content}"
+        if not m.content.startswith(f"{ERROR_PREFIX}: [") or _QUEUED.match(entry):
+            out.append(entry)
+    return out
 
 
 def unbacked_claim(text: str, messages: Iterable[Message]) -> Claim | None:
     """The first sentence of `text` that says some work is done while no tool result shows it."""
     results: list[str] | None = None
     for sentence in (s.strip() for s in _SENTENCE_END.split(text)):
-        if not sentence or sentence.endswith("?") or not _DONE.search(sentence):
+        if not sentence or sentence.endswith("?"):
             continue
-        kinds = [kind for kind in KINDS if kind.said.search(sentence)]
-        if not kinds:
-            continue
-        if results is None:
-            results = shown_results(messages)
-        if not any(kind.shown.search(result) for kind in kinds for result in results):
-            return Claim(sentence, tuple(kind.name for kind in kinds), kinds[0].label, kinds[0].tools)
+        for clause in _CLAUSE_END.split(sentence):
+            kinds = _claimed_kinds(clause)
+            if not kinds:
+                continue
+            if results is None:
+                results = shown_results(messages)
+            received = bool(_RECEIVED.search(clause))
+            if not any(_shows(kind, result, received) for kind in kinds for result in results):
+                return Claim(sentence, tuple(kind.name for kind in kinds), kinds[0].label, kinds[0].tools)
     return None
+
+
+def _claimed_kinds(clause: str) -> list[ClaimKind]:
+    """The kinds of work a clause says are done: named before the verb ("반품 접수를 완료했습니다") or by
+    the verb itself ("취소되었습니다"). A delivery being complete is not our work."""
+    for done in _DONE.finditer(clause):
+        if _DELIVERY.search(clause[: done.start()]):
+            continue
+        head = clause[: done.end()]
+        kinds = [kind for kind in KINDS if kind.said.search(head)]
+        if kinds:
+            return kinds
+    return []
+
+
+def _shows(kind: ClaimKind, result: str, received: bool) -> bool:
+    if kind.shown.search(result):
+        return True
+    return received and kind.name in _QUEUED_KINDS and bool(_QUEUED.match(result))

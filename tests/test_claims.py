@@ -31,7 +31,12 @@ def refused(tool: str) -> Message:
     ("text", "kinds"),
     [
         ("취소가 완료되었습니다.", ("cancel",)),
-        ("주문 번호 O-91020을 취소하고 결제 금액 전액을 환불 처리했습니다.", ("cancel", "refund")),
+        ("주문 번호 O-91020을 취소하고 결제 금액 전액을 환불 처리했습니다.", ("refund",)),
+        ("주문 취소가 되었습니다.", ("cancel",)),
+        ("취소 처리를 마쳤습니다.", ("cancel",)),
+        ("환불이 이루어졌습니다.", ("refund",)),
+        ("네, 무드등의 주문이 취소되었습니다.", ("cancel",)),
+        ("본인 확인이 완료되었고, 취소 처리도 완료되었습니다.", ("cancel",)),
         ("교환 요청이 접수되었습니다.", ("exchange",)),
         ("주문 번호 O-91019의 청바지 30인치를 32인치로 교환 접수하였습니다.", ("exchange",)),
         ("반품 접수를 완료했습니다.", ("return",)),
@@ -41,7 +46,7 @@ def refused(tool: str) -> Message:
         ("티켓이 제출되었습니다.", ("ticket",)),
         ("담당 부서가 확인하도록 상담 티켓을 남겼습니다.", ("ticket",)),
         ("표준영님, 사람 상담원과 연결되었습니다.", ("handoff",)),
-        ("주문 취소가 완료되었고, 환불은 3-5일 내에 이루어질 것입니다.", ("cancel", "refund")),
+        ("주문 취소가 완료되었고, 환불은 3-5일 내에 이루어질 것입니다.", ("cancel",)),
     ],
 )
 def test_saying_that_work_is_done_with_no_tool_result_is_an_unbacked_claim(text, kinds):
@@ -62,6 +67,13 @@ def test_saying_that_work_is_done_with_no_tool_result_is_an_unbacked_claim(text,
         "수령 후 7일이 지나 반품이 어렵습니다.",
         "주문이 정상적으로 접수되었습니다.",
         "반품 접수하셨다면 접수 번호를 알려 주세요.",
+        "본인 확인이 완료되었고, O-1 주문은 취소가 가능합니다.",
+        "이미 배송이 완료되었으며 취소는 불가능합니다.",
+        "본인 확인이 완료되었으며, 주문 O-1의 배송지는 서울특별시 중구입니다.",
+        "9월 3일에 배송이 완료되었고 반품 기한은 9월 10일까지입니다.",
+        "본인 확인이 완료되었고, 상담원 연결을 원하시면 말씀해 주세요.",
+        "주문하신 상품은 등록된 배송지로 배송이 완료되었습니다.",
+        "이메일 주소로 본인 확인이 완료되었습니다.",
     ],
 )
 def test_promises_questions_refusals_and_other_news_are_not_claims(text):
@@ -98,6 +110,20 @@ def test_a_coupon_that_a_read_lists_may_be_reported():
     listed = shown("get_order", compensation_coupons=[{"coupon_id": "CP-O-1-1", "amount_won": 2000}])
     assert unbacked_claim(text, [listed]) is None
     assert unbacked_claim(text, [shown("get_order", compensation_coupons=[])]) is not None
+
+
+def test_a_request_queued_for_approval_counts_as_received():
+    queued = Message(
+        "tool",
+        "Error: [approval_required] 환불액 108,200원은 담당자 승인이 필요해 승인 대기열에 올렸습니다.",
+        tool_name="cancel_order",
+    )
+    assert unbacked_claim("취소 요청이 접수되었으며 담당자 확인 후 처리됩니다.", [queued]) is None
+    assert unbacked_claim("취소 요청을 접수했습니다. 확인 후 안내드리겠습니다.", [queued]) is None
+    assert unbacked_claim("취소가 완료되었습니다.", [queued]) is not None  # not done, only queued
+    assert unbacked_claim("108,200원이 환불되었습니다.", [queued]) is not None
+    assert unbacked_claim("쿠폰 요청이 접수되었습니다.", [queued]) is not None  # another kind
+    assert unbacked_claim("취소 요청이 접수되었습니다.", [refused("cancel_order")]) is not None
 
 
 def test_one_kind_with_evidence_is_enough_and_the_first_bare_sentence_is_reported():

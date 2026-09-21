@@ -114,7 +114,7 @@ def summarise(results: list[EpisodeResult]) -> dict[str, Any]:
         "policy_violations": sum(len(r.verdict.policy_violations) for r in counted if r.verdict),
         "policy_blocks": sum(len(r.verdict.policy_blocks) for r in counted if r.verdict),
         "auth_blocks": sum(r.verdict.auth_blocks for r in counted if r.verdict),
-        "format_errors": sum(c.format_error is not None for c in agent_calls),
+        "format_errors": sum(c.format_error not in (None, "stall", "unbacked_claim") for c in agent_calls),
         "held_claims": sum(c.format_error == "unbacked_claim" for c in agent_calls),
         "dropped_calls": sum(c.dropped_calls for c in agent_calls),
         "seconds_per_episode": mean([r.wall_seconds for r in counted]),
