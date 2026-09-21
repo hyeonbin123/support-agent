@@ -18,6 +18,7 @@ from support_agent.service import store
 from support_agent.service.app import create_app
 from support_agent.service.bootstrap import copy_seed, prepare_database
 from support_agent.service.core import CLOSED_REPLY, FALLBACK_REPLY, BusyError, ChatService
+from support_agent.service.offline import OfflineProvider, create_offline_app
 from support_agent.service.settings import DEMO_NOW, Settings
 from support_agent.service.voice_frontend import VoiceFrontEnd
 from support_agent.voice.speech import Audio
@@ -441,3 +442,43 @@ def test_without_the_voice_front_end_the_endpoints_say_so(engine):
         session_id = client.post("/api/sessions").json()["session_id"]
         assert client.post(f"/api/sessions/{session_id}/voice", content=b"x").status_code == 503
         assert client.post(f"/api/sessions/{session_id}/speech", json={"text": "네"}).status_code == 503
+
+
+# -------------------------------------------------------------------- without a model
+
+
+def test_the_api_description_is_served_only_on_request(engine):
+    with make_client(engine, []) as client:
+        assert client.get("/openapi.json").status_code == 404
+    with make_client(engine, [], expose_openapi=True) as client:
+        paths = client.get("/openapi.json").json()["paths"]
+        assert "/api/sessions/{session_id}/messages" in paths and "/api/admin/approvals" in paths
+
+
+def test_the_offline_stand_in_drives_the_real_web_layer(engine):
+    settings = Settings(admin_token="test-token")
+    with TestClient(create_app(settings, provider=OfflineProvider(), engine=engine)) as client:
+        session_id = client.post("/api/sessions").json()["session_id"]
+        assert "성함" in dict(say(client, session_id, "안녕하세요"))["reply"]["text"]
+        events = say(client, session_id, "정예준이고 010-0000-9005입니다.")
+        assert [d["name"] for n, d in events if n == "tool"] == ["find_customer"]
+        events = say(client, session_id, "O-90005 주문 취소해 주세요.")
+        assert [(d["name"], d["ok"]) for n, d in events if n == "tool_result"] == [("cancel_order", True)]
+        assert order_status(engine, "O-90005") == "cancelled"
+        events = say(client, session_id, "O-10097 주문은요?")  # somebody else's order: the tool refuses
+        assert [(d["name"], d["ok"]) for n, d in events if n == "tool_result"] == [("get_order", False)]
+
+
+def test_the_offline_app_answers_the_voice_endpoints_without_speech_models(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUPPORT_AGENT_DATABASE_URL", f"sqlite:///{(tmp_path / 'offline.db').as_posix()}")
+    monkeypatch.setenv("SUPPORT_AGENT_VOICE", "1")
+    with TestClient(create_offline_app()) as client:
+        assert client.get("/healthz").json()["voice"] is True
+        session_id = client.post("/api/sessions").json()["session_id"]
+        url = f"/api/sessions/{session_id}"
+        events = events_of(client.post(f"{url}/voice", content="안녕하세요".encode()))
+        assert dict(events)["heard"] == {"text": "안녕하세요"} and events[-1][0] == "end"
+        broken = events_of(client.post(f"{url}/voice", content=bytes([255, 254, 0])))  # not UTF-8
+        assert [n for n, _ in broken if n in ("error", "reply")] == ["error"]
+        spoken = client.post(f"{url}/speech", json={"text": "안녕하세요, 고객센터입니다."})
+        assert spoken.status_code == 200 and spoken.content[:4] == b"RIFF"

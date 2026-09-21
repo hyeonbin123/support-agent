@@ -29,6 +29,7 @@ class Settings(BaseModel):
     max_agent_calls_per_turn: int = 12
     max_turns_per_session: int = 40
     load_seed: bool = True  # fill an empty shop database with the generated data
+    expose_openapi: bool = False  # serve /openapi.json (for API scanners and clients; off by default)
     voice: bool = False  # speech in and out (needs the `voice` dependency group)
     tts_device: Literal["cuda", "cpu"] = "cuda"
     stt_device: Literal["cuda", "cpu"] = "cuda"

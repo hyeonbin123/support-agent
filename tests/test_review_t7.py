@@ -316,3 +316,18 @@ def test_the_normaliser_cannot_be_built_from_test_records(tmp_path, monkeypatch,
     monkeypatch.setattr("sys.argv", ["analyze", "voice-worst", str(dev)])
     analyze.main()
     assert "lost : ['O-1']" in capsys.readouterr().out
+
+
+# -------------------------------------------------------------------- found by the security scan (HawkScan)
+
+
+def test_an_approval_number_beyond_the_database_range_is_a_client_error(engine):  # noqa: F811
+    with make_client(engine, []) as client:
+        for approval_id in ("92173292616343605102041285171235936212706764", "0", "-1"):
+            answer = client.post(
+                f"/api/admin/approvals/{approval_id}/decision", headers=ADMIN, json={"approve": False}
+            )
+            assert answer.status_code == 422, approval_id
+        assert (
+            client.post("/api/admin/approvals/2147483647/decision", headers=ADMIN, json={"approve": False})
+        ).status_code == 409  # a valid number that names no approval

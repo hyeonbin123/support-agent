@@ -50,6 +50,33 @@ uv run uvicorn support_agent.service.app:create_app --factory --port 8062
 - `tests/test_service.py`, `tests/test_review_t7.py`: 마이그레이션한 SQLite 파일과 대본대로 답하는 가짜 모델로 채팅, 승인, 감사 로그, 음성 끝점을 확인한다
 - `tests/test_postgres.py`: PostgreSQL에서만 달라지는 곳을 확인한다. 마이그레이션 결과가 선언한 테이블과 같은지, 복사한 쇼핑몰 데이터가 생성 데이터와 시각까지 같은지, 감사 행을 쓰지 못하면 주문도 바뀌지 않는지, 두 프로세스가 같은 승인을 동시에 결정하면 한쪽만 실행하는지. `SUPPORT_AGENT_TEST_PG_URL`이 있을 때만 돌고(`docker compose up -d db` 뒤 `postgresql+psycopg://support:support-local@127.0.0.1:55462/support`), 그 서버에 `support_agent_test` 데이터베이스를 따로 만들어 쓴다. CI는 PostgreSQL 서비스 컨테이너를 띄워 이 테스트까지 돌린다
 
+## 모델 없이 띄우기, 보안 스캔
+
+```bash
+uv run uvicorn support_agent.service.offline:create_offline_app --factory --port 8062
+```
+
+- `service/offline.py`는 모델 자리에 규칙 몇 줄짜리 대역을 넣는다 (이름과 전화번호를 보면 본인 확인, 주문 번호를 보면 조회, "취소"가 있으면 취소). 나머지는 실제 코드 그대로라 화면 작업, 웹 계층의 보안 스캔, 스모크 테스트를 GPU 없이 할 수 있다. `SUPPORT_AGENT_VOICE=1`이면 음성 끝점도 음성 모델 없는 대역으로 응답한다
+- API 설명(`/openapi.json`)은 `SUPPORT_AGENT_EXPOSE_OPENAPI=1`일 때만 내놓는다. 스캐너가 경로와 본문 형태를 정확히 알게 하려는 것이고, 평소에는 꺼 둔다
+- HawkScan(StackHawk) 설정은 `stackhawk.yml`이다. 비밀값은 없고 `APP_ID`, `ADMIN_TOKEN`, `SCAN_SESSION_ID`를 환경 변수로 받는다. 관리자 API는 `X-Admin-Token` 헤더를 미리 넣어 주는 방식으로 인증하고, 스캐너가 지어낸 세션 번호로는 "없는 세션"(404)에서 끝나므로 스캔 전에 만든 실제 세션 번호와 승인 번호를 `customVariables`로 넣어 준다
+
+```bash
+export SUPPORT_AGENT_EXPOSE_OPENAPI=1 SUPPORT_AGENT_VOICE=1 SUPPORT_AGENT_ADMIN_TOKEN=<임의의 토큰>
+uv run uvicorn support_agent.service.offline:create_offline_app --factory --port 8062
+# 다른 창에서: 세션을 하나 만들고(POST /api/sessions) 큰 금액 취소를 요청해 승인 대기를 하나 만든 뒤
+APP_ID=<앱 번호> ADMIN_TOKEN=<같은 토큰> SCAN_SESSION_ID=<세션 번호> hawk scan
+```
+
+스캔 결과 (2026-09-21, HawkScan 6.4.0, 정책 OpenAPI/REST API)
+
+| 스캔 | 대상 | 결과 |
+|---|---|---|
+| 1 | API 설명만 준 첫 스캔 (21개 주소) | High 0, Medium 2종. (1) 관리자 API의 승인 번호에 아주 큰 정수를 넣으면 500이 났다: DB 정수 범위를 넘는 값이 그대로 조회로 내려갔다. 실제 결함이라 고쳤다 (경로 인자에 범위를 두어 422, 회귀 테스트 `test_review_t7.py`). (2) 채팅 화면의 `<form>`에 CSRF 토큰이 없다: 오탐으로 분류했다. 이 서비스는 쿠키를 쓰지 않고, 고객 요청은 sessionStorage에 있는 추측할 수 없는 세션 번호로, 관리자 요청은 사용자 정의 헤더로 식별하며 CORS 허용이 없어서 다른 사이트의 페이지가 번호를 알 수도 헤더를 붙일 수도 없다 |
+| 2 | 고친 서버 + 실제 세션·승인 번호 | 500 없음. 남은 것은 오탐으로 분류한 CSRF 항목뿐 |
+| 3 | 2 + 음성 끝점 응답 | 새 항목 없음, 서버 쪽 예외 0건. 세 번 모두 기준(`failureThreshold`) 통과 |
+
+스캔하지 못한 것: 실제 모델이 붙은 경로(모델의 출력이 도구 인자로 들어가는 길)는 DAST의 대상이 아니라 평가 환경의 몫이다. 음성 끝점은 대역으로만 확인했다 (실제 디코더에 들어가는 조작된 음성 파일은 다루지 못했다).
+
 ## 정한 것과 이유
 
 - **도구가 규정을 막는다 (P1).** 2단계 측정에서 P1은 성공률을 올리지 못했지만 통과된 규정 위반을 12건에서 0건으로 줄였다. 서비스에서 잘못된 환불은 돈이 나가는 일이라, 코드로 확인할 수 있는 규정은 모델을 믿지 않고 도구에서 막는다.

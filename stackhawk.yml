@@ -1,0 +1,45 @@
+# HawkScan (StackHawk) configuration for the chat service. No secrets in this file: values come from the
+# environment. The scan target is the web layer without a model (docs/service.md, "보안 스캔"):
+#
+#   SUPPORT_AGENT_EXPOSE_OPENAPI=1 SUPPORT_AGENT_ADMIN_TOKEN=<token> \
+#     uv run uvicorn support_agent.service.offline:create_offline_app --factory --port 8062
+#   APP_ID=<application id> ADMIN_TOKEN=<token> SCAN_SESSION_ID=<a session id> hawk scan
+app:
+  applicationId: ${APP_ID}
+  env: ${APP_ENV:Development}
+  host: ${APP_HOST:http://127.0.0.1:8062}
+  # FastAPI writes the description of the API itself; the service serves it only when asked to.
+  openApiConf:
+    path: /openapi.json
+    # Generated path parameters only reach "no such session" (404). These pin a session and a waiting
+    # approval that exist in the scanned database, so that the handlers behind them are exercised too.
+    customVariables:
+      - field: session_id
+        path: ^/api/(admin/)?sessions/.*
+        values: ["${SCAN_SESSION_ID:session_id}"]
+      - field: approval_id
+        path: ^/api/admin/approvals/.*
+        values: ["${SCAN_APPROVAL_ID:1}"]
+  # The admin API wants a shared token in a header; there is no login to replay. The customer side has no
+  # credentials at all: the session id in the path is the only key.
+  authentication:
+    external:
+      values:
+        - type: TOKEN
+          value:
+            name: X-Admin-Token
+            val: ${ADMIN_TOKEN}
+    loggedInIndicator: ".*"
+    loggedOutIndicator: "$^"
+    testPath:
+      path: /api/admin/approvals
+      success: ".*200.*"
+tags:
+  - name: _STACKHAWK_AGENT
+    value: ${HAWK_AGENT:none}
+  - name: _STACKHAWK_GIT_COMMIT_SHA
+    value: ${COMMIT_SHA:none}
+  - name: _STACKHAWK_GIT_BRANCH
+    value: ${BRANCH_NAME:none}
+  - name: git_origin
+    value: hyeonbin123/support-agent

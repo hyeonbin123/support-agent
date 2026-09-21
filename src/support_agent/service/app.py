@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from importlib.resources import files
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Path, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -97,7 +97,13 @@ def create_app(
         if engine is None:
             own_engine.dispose()
 
-    app = FastAPI(title="support-agent", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(
+        title="support-agent",
+        lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url="/openapi.json" if settings.expose_openapi else None,
+    )
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -287,7 +293,12 @@ def create_app(
         return svc.approvals(status)
 
     @app.post("/api/admin/approvals/{approval_id}/decision", dependencies=[Depends(admin)])
-    def decide(approval_id: int, body: DecisionIn, svc: ChatService = Depends(service)) -> dict[str, Any]:
+    def decide(
+        body: DecisionIn,
+        # Bounded: an integer beyond the database's range is a client error (422), not a server error.
+        approval_id: int = Path(ge=1, le=2_147_483_647),
+        svc: ChatService = Depends(service),
+    ) -> dict[str, Any]:
         try:
             return svc.decide(approval_id, approve=body.approve, by=body.by, note=body.note)
         except ApprovalStateError as exc:
