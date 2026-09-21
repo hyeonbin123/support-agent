@@ -17,12 +17,17 @@ from support_agent.config import (
     JUDGED,
     RunConfig,
     Termination,
+    derive_seed,
 )
 from support_agent.judge import gold_engine, judge
 from support_agent.records import EpisodeResult
 from support_agent.tasks import Task
 from support_agent.toolkit import Registry, ToolBugError, ToolContext, execute
 from support_agent.user_sim import SimulatorError, User
+from support_agent.voice.channel import SpeechChannel
+
+# What the agent is told when the recogniser heard nothing (a voice front end would say so too).
+NOTHING_HEARD = "(고객의 말이 인식되지 않았습니다)"
 
 
 def gold_dump_of(task: Task, seed_engine: Engine, registry: Registry) -> db.Dump:
@@ -48,13 +53,29 @@ def split_ending(user_text: str) -> tuple[str, Termination | None]:
 
 
 def _converse(
-    state: AgentState, user: User, task: Task, trial: int, config: RunConfig, provider, registry, run_tool
+    state: AgentState,
+    user: User,
+    task: Task,
+    trial: int,
+    config: RunConfig,
+    provider,
+    registry,
+    run_tool,
+    channel: SpeechChannel | None = None,
+    voice_log: list[dict] | None = None,
 ) -> Termination:
     agent_text = FIRST_AGENT_MESSAGE
     for _ in range(config.max_user_turns):
         user_text, ending = split_ending(user.reply(agent_text))
         if ending and not user_text:
             return ending
+        if channel is not None:
+            # Only the agent hears through the channel; the simulator remembers what it meant to say.
+            index = len(voice_log) if voice_log is not None else 0
+            heard = channel.hear(user_text, derive_seed(config.base_seed, task.id, trial, "voice", index))
+            if voice_log is not None:
+                voice_log.append(heard.to_dict())
+            user_text = heard.text or NOTHING_HEARD
         # Text that came with the token ("네, 진행해 주세요 ###STOP###") still gets its answer;
         # otherwise a simulator habit would be counted as the agent's failure.
         turn = agent_turn(
@@ -87,6 +108,7 @@ def run_episode(
     policy_text: str,
     gold_dump: db.Dump | None = None,
     run_id: str = "",
+    channel: SpeechChannel | None = None,
 ) -> EpisodeResult:
     started = time.perf_counter()
     if gold_dump is None:
@@ -100,8 +122,11 @@ def run_episode(
         return execute(registry, engine, ctx, name, arguments)
 
     error = ""
+    voice_log: list[dict] = []
     try:
-        termination = _converse(state, user, task, trial, config, provider, registry, run_tool)
+        termination = _converse(
+            state, user, task, trial, config, provider, registry, run_tool, channel, voice_log
+        )
     except Exception as exc:  # noqa: BLE001
         # The model server, the simulator or our own code failed: nobody's task failure, and one broken
         # episode must not end a run that takes hours. KeyboardInterrupt still stops the run.
@@ -141,4 +166,5 @@ def run_episode(
         final_hash=db.state_hash(final_dump),
         gold_hash=db.state_hash(gold_dump),
         wall_seconds=round(time.perf_counter() - started, 3),
+        voice=voice_log,
     )

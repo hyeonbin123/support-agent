@@ -1,7 +1,8 @@
 """Tool contracts: argument base class, context with the policy checks, the @tool decorator and execute().
 
 execute() is the single path of every caller (agent loop, gold replay, later the service and the MCP server):
-look up -> validate -> before_write hook -> handler in one DB session -> commit or roll back.
+look up -> validate -> before_write hook -> handler and on_success hook in one DB session -> commit or
+roll back.
 """
 
 from __future__ import annotations
@@ -139,6 +140,10 @@ class ToolResult:
 
 Registry = dict[str, ToolSpec]
 BeforeWrite = Callable[[ToolSpec, dict[str, Any]], ToolResult | None]
+# Runs after the handler, inside its transaction: (session, spec, canonical args, the handler's answer).
+# Rows it adds are committed with the tool's changes or not at all; a ToolError it raises rolls the
+# call back like a refusal of the tool itself.
+OnSuccess = Callable[[Session, ToolSpec, dict[str, Any], dict[str, Any]], None]
 
 
 def tool(
@@ -250,6 +255,7 @@ def execute(
     raw_args: dict[str, Any],
     *,
     before_write: BeforeWrite | None = None,
+    on_success: OnSuccess | None = None,
 ) -> ToolResult:
     """Run one tool call. Expected failures come back as ToolResult; a handler bug raises ToolBugError."""
     spec = registry.get(name)
@@ -270,6 +276,8 @@ def execute(
         try:
             result = spec.handler(session, ctx, args)
             content = json.dumps(result, ensure_ascii=False)
+            if on_success is not None:
+                on_success(session, spec, clean, result)
             session.commit()
         except ToolError as error:
             session.rollback()

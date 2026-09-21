@@ -127,6 +127,25 @@ def summarise(results: list[EpisodeResult]) -> dict[str, Any]:
     }
 
 
+def build_channel(config: RunConfig, tts_device: str, stt_device: str):
+    """The speech channel of V1/V2 (needs the `voice` dependency group), or None for text."""
+    if config.voice == "V0":
+        return None
+    from support_agent.voice.channel import SpeechChannel
+    from support_agent.voice.speech import MeloSpeaker, WhisperListener
+
+    normalizer = None
+    if config.voice == "V2":
+        from support_agent.voice.normalize import normalize_heard as normalizer
+    print(f"loading the speech models (tts on {tts_device}, stt on {stt_device}) ...")
+    return SpeechChannel(
+        MeloSpeaker(device=tts_device),
+        WhisperListener(device=stt_device),
+        normalizer=normalizer,
+        cache_path=OUTPUTS / "voice-cache" / "roundtrips.jsonl",
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--tasks", default="smoke", help="task file name in tasks/ (without .yaml) or a path")
@@ -147,6 +166,14 @@ def main() -> None:
         action="store_true",
         help="run the simulator model on the CPU (when the agent model leaves no GPU memory for it)",
     )
+    parser.add_argument(
+        "--voice",
+        choices=["V0", "V1", "V2"],
+        default="V0",
+        help="V1: the customer is heard through speech synthesis and recognition; V2: and a normaliser",
+    )
+    parser.add_argument("--tts-device", choices=["cuda", "cpu"], default="cuda")
+    parser.add_argument("--stt-device", choices=["cuda", "cpu"], default="cuda")
     parser.add_argument("--num-ctx", type=int, default=RunConfig.num_ctx)
     parser.add_argument("--label", default="", help="short name added to the run id")
     parser.add_argument("--official", action="store_true", help="write to reports/ (needs a clean tree)")
@@ -171,6 +198,7 @@ def main() -> None:
         reasoning=args.reasoning,
         guard=args.guard,
         rescue=args.rescue,
+        voice=args.voice,
         num_ctx=args.num_ctx,
     )
     tasks = load_tasks(args.tasks)
@@ -206,6 +234,7 @@ def main() -> None:
     policy_text = load_policy()
     # Everything that can fail without the model fails here, before hours of GPU time are spent.
     gold_dumps = {task.id: gold_dump_of(task, seed_engine, registry) for task in tasks}
+    channel = build_channel(config, args.tts_device, args.stt_device)
     print(f"loading {config.model} ... {provider.preload() / 1000:.1f} s")
     if not same:
         print(f"loading {config.user_model} ... {user_provider.preload() / 1000:.1f} s")
@@ -220,6 +249,7 @@ def main() -> None:
             config.reasoning,
             config.guard,
             config.rescue,
+            config.voice if channel else "",
             safe_name(args.label),
         ]
         if p
@@ -247,9 +277,15 @@ def main() -> None:
         },
         "agent_provider": provider.describe(),
         "user_provider": user_provider.describe(),
+        "voice_channel": channel.describe() if channel else None,
         "gpu_mib_used_by_others_at_start": others,
         "versions": {"python": sys.version.split()[0]}
-        | {name: version(name) for name in ("sqlalchemy", "pydantic", "httpx", "pyyaml")},
+        | {name: version(name) for name in ("sqlalchemy", "pydantic", "httpx", "pyyaml")}
+        | (
+            {name: version(name) for name in ("faster-whisper", "ctranslate2", "melotts", "torch")}
+            if channel
+            else {}
+        ),
     }
     (run_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n"
@@ -276,6 +312,7 @@ def main() -> None:
             policy_text,
             gold_dumps,
             run_id,
+            channel,
         )
     finally:  # also after Ctrl-C or a crash: what was measured so far stays readable
         summary = summarise(results)
@@ -298,6 +335,7 @@ def _run_all(
     policy_text,
     gold_dumps,
     run_id,
+    channel=None,
 ) -> None:
     infra_streak = 0
     with (run_dir / "episodes.jsonl").open("a", encoding="utf-8", newline="\n") as out:
@@ -315,6 +353,7 @@ def _run_all(
                     policy_text=policy_text,
                     gold_dump=gold_dump,
                     run_id=run_id,
+                    channel=channel,
                 )
                 results.append(result)
                 out.write(result.to_json_line() + "\n")

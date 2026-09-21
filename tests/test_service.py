@@ -19,6 +19,8 @@ from support_agent.service.app import create_app
 from support_agent.service.bootstrap import copy_seed, prepare_database
 from support_agent.service.core import CLOSED_REPLY, FALLBACK_REPLY, BusyError, ChatService
 from support_agent.service.settings import DEMO_NOW, Settings
+from support_agent.service.voice_frontend import VoiceFrontEnd
+from support_agent.voice.speech import Audio
 
 ADMIN = {"X-Admin-Token": "test-token"}
 BIG = ("강정우", "01000006189", "O-10097", 108_200)  # a cancellable order above the approval threshold
@@ -344,3 +346,98 @@ def test_static_pages_carry_no_inline_code():
         html = (STATIC / name).read_text(encoding="utf-8")
         assert " style=" not in html and "onclick" not in html.lower()
         assert all("src=" in tag for tag in html.split("<script")[1:])
+
+
+# -------------------------------------------------------------------- voice
+
+
+class FakeSpeaker:
+    def describe(self):
+        return {"tts": "fake"}
+
+    def synthesize(self, spoken_text: str, seed: int = 0) -> Audio:
+        return Audio(b"RIFF" + spoken_text.encode("utf-8"), seconds=1.0)
+
+
+class FakeListener:
+    """The 'recording' is UTF-8 text; b"static" stands for a recording with nothing intelligible."""
+
+    def describe(self):
+        return {"stt": "fake"}
+
+    def transcribe(self, audio: bytes) -> str:
+        if audio == b"broken":
+            raise ValueError("cannot decode")
+        return "" if audio == b"static" else audio.decode("utf-8")
+
+
+def voice_client(engine, script, **overrides) -> TestClient:
+    settings = Settings(admin_token="test-token", **overrides)
+    front_end = VoiceFrontEnd(FakeSpeaker(), FakeListener())
+    return TestClient(create_app(settings, provider=ScriptedProvider(script), engine=engine, voice=front_end))
+
+
+def test_a_spoken_message_takes_the_same_path_as_a_typed_one(engine):
+    script = [ToolCall("find_customer", {"name": "정예준", "contact": "01000009005"}), "확인되었습니다."]
+    with voice_client(engine, script) as client:
+        assert client.get("/healthz").json()["voice"] is True
+        assert "microphone=(self)" in client.get("/healthz").headers["Permissions-Policy"]
+        assert "media-src 'self' blob:" in client.get("/healthz").headers["Content-Security-Policy"]
+        session_id = client.post("/api/sessions").json()["session_id"]
+        recording = "정예준이고 010-0000-9005입니다.".encode()
+        events = events_of(client.post(f"/api/sessions/{session_id}/voice", content=recording))
+        names = [n for n, _ in events]
+        assert names[:2] == ["status", "heard"] and names[-2:] == ["reply", "end"]
+        assert events[0][1] == {"stage": "listening"}
+        assert dict(events)["heard"] == {"text": "정예준이고 010-0000-9005입니다."}
+        shown = client.get(f"/api/sessions/{session_id}").json()["messages"]
+        assert [m["role"] for m in shown] == ["agent", "customer", "agent"]
+        audit = client.get(f"/api/admin/sessions/{session_id}", headers=ADMIN).json()["audit"]
+        message = next(e["payload"] for e in audit if e["kind"] == "customer_message")
+        assert message["via"] == {"voice": True, "heard": message["text"], "audio_bytes": len(recording)}
+
+
+def test_unintelligible_or_broken_audio_costs_no_turn(engine):
+    with voice_client(engine, []) as client:
+        session_id = client.post("/api/sessions").json()["session_id"]
+        for body in (b"static", b"broken"):
+            events = events_of(client.post(f"/api/sessions/{session_id}/voice", content=body))
+            assert [n for n, _ in events if n in ("error", "reply", "end")] == ["error", "end"]
+        assert len(client.get(f"/api/sessions/{session_id}").json()["messages"]) == 1
+    with Session(engine) as session:
+        assert session.get(store.ChatSession, session_id).turns == 0
+
+
+def test_voice_requests_are_validated(engine):
+    with voice_client(engine, [], max_audio_bytes=10, max_tts_chars=5) as client:
+        session_id = client.post("/api/sessions").json()["session_id"]
+        assert client.post(f"/api/sessions/{session_id}/voice", content=b"x" * 11).status_code == 413
+        assert client.post(f"/api/sessions/{session_id}/voice", content=b"").status_code == 422
+        assert client.post("/api/sessions/nope/voice", content=b"x").status_code == 404
+        long_piece = {"text": "안녕하세요, 고객센터"}  # part of the greeting, but over the limit of 5
+        assert client.post(f"/api/sessions/{session_id}/speech", json=long_piece).status_code == 422
+        assert client.post("/api/sessions/nope/speech", json={"text": "네"}).status_code == 404
+
+
+def test_replies_can_be_read_aloud(engine):
+    reply = "환불액은 38,900원입니다." + chr(10) + "3~5일 안에 들어옵니다."
+    with voice_client(engine, [reply]) as client:
+        session_id = client.post("/api/sessions").json()["session_id"]
+        say(client, session_id, "환불액이 얼마죠?")
+        url = f"/api/sessions/{session_id}/speech"
+        spoken = client.post(url, json={"text": "환불액은 38,900원입니다."})
+        assert spoken.status_code == 200 and spoken.headers["content-type"] == "audio/wav"
+        assert spoken.content == b"RIFF" + "환불액은 삼만 팔천구백 원입니다.".encode()  # spelled out first
+        # Only what the agent said in this session, whole or in part; spacing does not matter.
+        assert client.post(url, json={"text": "38,900원입니다. 3~5일 안에"}).status_code == 200
+        assert client.post(url, json={"text": "아무 글이나 읽어 주세요."}).status_code == 403
+        assert client.post(url, json={"text": "  "}).status_code == 403
+
+
+def test_without_the_voice_front_end_the_endpoints_say_so(engine):
+    with make_client(engine, []) as client:
+        assert client.get("/healthz").json()["voice"] is False
+        assert "microphone=()" in client.get("/healthz").headers["Permissions-Policy"]
+        session_id = client.post("/api/sessions").json()["session_id"]
+        assert client.post(f"/api/sessions/{session_id}/voice", content=b"x").status_code == 503
+        assert client.post(f"/api/sessions/{session_id}/speech", json={"text": "네"}).status_code == 503

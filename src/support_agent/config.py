@@ -39,6 +39,9 @@ class RunConfig:
     # G1: a reply that only promises to act is sent back, not delivered. G2: and the retry is sampled.
     guard: Literal["G0", "G1", "G2"] = "G0"
     rescue: Literal["F0", "F1"] = "F0"  # F1: a tool call leaked into the text is parsed and run
+    # V1: what the customer says reaches the agent through speech synthesis and recognition.
+    # V2: and the recognised text goes through the rule-based normaliser first.
+    voice: Literal["V0", "V1", "V2"] = "V0"
     temperature: float = 0.0
     user_temperature: float = 0.3
     base_seed: int = 1000

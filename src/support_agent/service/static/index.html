@@ -37,12 +37,28 @@
     </div>
     <p id="error" class="error-line" role="alert" hidden></p>
 
+    <!-- Voice: chat.js shows this bar and the microphone button only when /healthz reports voice. -->
+    <div id="voice-bar" class="voice-bar" role="group" aria-label="음성" hidden>
+      <span class="check">
+        <input type="checkbox" id="speak-replies" autocomplete="off">
+        <label for="speak-replies">답변을 음성으로 듣기</label>
+      </span>
+      <button type="button" id="speak-stop" class="btn btn-small" aria-label="음성 재생 멈춤" hidden>■ 멈춤</button>
+      <span class="rec-panel">
+        <span id="rec-status" class="rec-status" hidden></span>
+        <button type="button" id="rec-cancel" class="btn btn-small" hidden>취소 (Esc)</button>
+      </span>
+    </div>
+
     <form id="composer" class="composer" autocomplete="off">
       <label for="input" class="sr-only">메시지 입력</label>
       <textarea id="input" rows="2" placeholder="메시지를 입력하세요 (Enter 전송, Shift+Enter 줄바꿈)" disabled></textarea>
       <div class="composer-side">
         <span id="counter" class="counter" aria-live="polite" hidden></span>
-        <button type="submit" id="send" class="btn btn-primary" disabled>보내기</button>
+        <div class="composer-buttons">
+          <button type="button" id="mic" class="btn" aria-label="음성으로 말하기" hidden disabled>말하기</button>
+          <button type="submit" id="send" class="btn btn-primary" disabled>보내기</button>
+        </div>
       </div>
     </form>
   </main>

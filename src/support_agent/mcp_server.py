@@ -17,6 +17,7 @@ server is for one operator per token.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import secrets
 import sys
@@ -44,6 +45,8 @@ from support_agent.service.settings import PREFIX, Settings
 from support_agent.toolkit import ToolSpec
 
 Scope = Literal["read", "write"]
+MAX_ARGUMENT_BYTES = 20_000  # of one call's arguments as JSON; the tools' free-text fields have no limit
+MAX_HTTP_BODY_BYTES = 262_144
 NEW_CONVERSATION = Tool(
     name="new_conversation",
     title="새 상담 시작",
@@ -107,11 +110,17 @@ def build_server(service: ChatService, scope: Scope = "read") -> Server:
             hidden = name in service.registry and name != THINK_TOOL
             reason = "쓰기 권한(--scope write)이 없습니다" if hidden else "그런 도구는 없습니다"
             return _text(f"Error: [not_allowed] {name}: {reason}.", is_error=True)
+        if len(json.dumps(arguments, ensure_ascii=False).encode()) > MAX_ARGUMENT_BYTES:
+            return _text(
+                f"Error: [invalid_arguments] 인자가 너무 큽니다 ({MAX_ARGUMENT_BYTES}바이트까지).",
+                is_error=True,
+            )
         with guard:
             if not session_id:
                 session_id.append(service.new_session("mcp")["session_id"])
+            current = session_id[0]  # new_conversation may clear the list right after the lock
         try:
-            result = service.call_tool(session_id[0], name, arguments)
+            result = service.call_tool(current, name, arguments)
         except BusyError:
             return _text("Error: [busy] 앞선 호출이 끝나지 않았습니다.", is_error=True)
         return _text(result.content, is_error=not result.ok)
@@ -177,7 +186,8 @@ def main() -> None:
         )
     import uvicorn
 
-    app = BearerToken(server.streamable_http_app(host=args.host), token)
+    http_app = server.streamable_http_app(host=args.host, max_request_body_size=MAX_HTTP_BODY_BYTES)
+    app = BearerToken(http_app, token)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 

@@ -77,6 +77,8 @@ class EpisodeResult:
     final_hash: str
     gold_hash: str
     wall_seconds: float
+    # V1/V2 only: one entry per customer utterance (said, spoken, heard, text, timings)
+    voice: list[dict[str, Any]] = field(default_factory=list)
 
     def to_json_line(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
