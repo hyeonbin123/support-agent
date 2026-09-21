@@ -25,7 +25,7 @@ class Settings(BaseModel):
     now: AwareDatetime | Literal["real"] = Field(default_factory=lambda: datetime.fromisoformat(DEMO_NOW))
     approval_refund_won: int = 100_000  # refunds from this amount wait for a person
     admin_token: str = ""  # "" disables the admin API
-    max_message_chars: int = 1000
+    max_message_chars: int = Field(default=1000, ge=1, le=4000)  # the request model stops at 4000
     max_agent_calls_per_turn: int = 12
     max_turns_per_session: int = 40
     load_seed: bool = True  # fill an empty shop database with the generated data
@@ -33,7 +33,9 @@ class Settings(BaseModel):
     tts_device: Literal["cuda", "cpu"] = "cuda"
     stt_device: Literal["cuda", "cpu"] = "cuda"
     max_audio_bytes: int = 5_000_000  # about five minutes of browser-recorded speech
-    max_tts_chars: int = 600
+    max_tts_chars: int = Field(default=600, ge=1, le=4000)
+    max_audio_seconds: int = 60  # a small file can hold hours of low-bitrate speech
+    max_concurrent_turns: int = 4  # turns (and recognitions) running at once, over all sessions
 
     def clock(self) -> datetime:
         return datetime.now(UTC) if self.now == "real" else self.now

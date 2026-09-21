@@ -53,14 +53,23 @@ def entities(said: str) -> list[tuple[str, str]]:
 
 
 def survived(kind: str, entity: str, text: str) -> bool:
-    """True when the agent can read the entity in `text` exactly as the tools need it."""
-    if kind == "phone":
-        return re.sub(r"\D", "", entity) in re.sub(r"[- .]", "", text)
+    """True when the agent can read the entity in `text` as the tools need it, and not as a part of a
+    longer one ("O-12" inside "O-123", "1,000원" inside "11,000원")."""
+    if kind == "phone":  # any grouping of the same digits
+        wanted = r"[- .]?".join(re.sub(r"\D", "", entity))
+        return re.search(rf"(?<!\d){wanted}(?!\d)", text) is not None
     if kind == "amount":
-        return re.sub(r"[,\s]", "", entity) in re.sub(r"[,\s]", "", text)
+        wanted = re.sub(r"[,\s]", "", entity)
+        return (
+            re.search(rf"(?<![\d,]){re.escape(wanted)}", re.sub(r"(?<=\d),(?=\d)|\s", "", text)) is not None
+        )
     if kind == "date":
-        return re.sub(r"\s", "", entity) in re.sub(r"\s", "", text)
-    return entity.lower() in text.lower()  # email, id: the very string
+        wanted = re.escape(re.sub(r"\s", "", entity))
+        return re.search(rf"(?<!\d){wanted}", re.sub(r"\s", "", text)) is not None
+    # email, id: the very string, not inside a longer one
+    return (
+        re.search(rf"(?<![0-9A-Za-z._-]){re.escape(entity)}(?![0-9A-Za-z])", text, re.IGNORECASE) is not None
+    )
 
 
 def utterances(episodes: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:

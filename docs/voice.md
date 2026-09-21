@@ -65,5 +65,5 @@ uv run --group voice uvicorn support_agent.service.app:create_app --factory --po
 
 - **음성 모델은 옆 프로젝트에서 이미 잰 것을 쓴다.** 한국어 합성은 MeloTTS(재인식 CER 5.5%로 사람 녹음 5.4%와 비슷했다), 인식은 faster-whisper `large-v3-turbo`다. MeloTTS는 transformers 4.27을 고정하고 Windows에서 우회 세 개가 필요하다 (`speech.py`의 `_prepare_melo_on_windows`). 본체는 transformers를 쓰지 않아 한 환경에 같이 설치된다. MeloTTS의 시연 화면만 쓰는 gradio는 설치에서 뺐다
 - **고객 → 에이전트 방향만 바꾼다.** 시뮬레이터는 자기가 쓴 글을 기억하고, 에이전트의 답은 글 그대로 시뮬레이터에 간다. 그래서 텍스트 실행과의 차이는 "에이전트가 잘못 들었다"에서만 나온다
-- **같은 입력이면 같은 소리.** 합성의 표본 추출 잡음을 발화마다 정해진 seed로 고정하고, 인식은 temperature 0만 쓴다. 그래서 왕복 결과를 캐시해도 측정값이 달라지지 않는다
+- **같은 입력이면 같은 소리.** 합성의 표본 추출 잡음을 발화마다 정해진 seed로 고정하고, 인식은 temperature 0만 쓴다. 그래서 왕복 결과를 캐시해도 측정값이 달라지지 않는다. 캐시 키에는 말로 푼 글과 seed 말고도 모델 이름, 장치, 옵션, 패키지 버전(melotts, torch, faster-whisper, ctranslate2)이 들어간다. 버전이 바뀌면 예전 결과를 쓰지 않는다
 - **음성 파일을 커밋하지 않는다.** 글과 seed로 다시 만들 수 있다

@@ -32,6 +32,7 @@ from support_agent.service.core import (
 )
 from support_agent.service.settings import Settings
 from support_agent.service.voice_frontend import VoiceFrontEnd, load_voice_front_end
+from support_agent.voice.speech import AudioTooLongError
 
 STATIC = files("support_agent.service") / "static"
 SECURITY_HEADERS = {
@@ -87,7 +88,9 @@ def create_app(
         app.state.service = ChatService(settings, own_engine, own_provider)
         app.state.voice = voice
         if settings.voice and voice is None:  # several seconds to minutes: the models load here
-            app.state.voice = load_voice_front_end(settings.tts_device, settings.stt_device)
+            app.state.voice = load_voice_front_end(
+                settings.tts_device, settings.stt_device, settings.max_audio_seconds
+            )
         yield
         if provider is None:
             own_provider.close()
@@ -154,11 +157,16 @@ def create_app(
         if status != "open":
             raise HTTPException(409, f"the session is {status}")
 
+    # Every turn holds a worker thread until the model has answered; more than this many wait outside.
+    slots = threading.BoundedSemaphore(settings.max_concurrent_turns)
+
     def turn_stream(
         svc: ChatService, session_id: str, read_message, first_stage: str = "thinking"
     ) -> StreamingResponse:
         """Run one turn in a worker thread and stream its events. `read_message(emit)` gives the
         customer's text and how it arrived, or None when there is nothing to answer."""
+        if not slots.acquire(blocking=False):
+            raise HTTPException(503, "too many conversations at once, try again", {"Retry-After": "5"})
         events: queue.Queue[tuple[str, dict[str, Any]] | None] = queue.Queue()
 
         def emit(event: str, data: dict[str, Any]) -> None:
@@ -183,10 +191,13 @@ def create_app(
                 events.put(("error", {"message": "처리 중 문제가 생겼습니다."}))
                 events.put(("end", {"status": "open"}))
             finally:
+                slots.release()
                 events.put(None)
 
+        # Started here, not when the response is first read: the slot is given back in any case.
+        threading.Thread(target=work, daemon=True).start()
+
         def stream() -> Iterator[str]:
-            threading.Thread(target=work, daemon=True).start()
             yield sse("status", {"stage": first_stage})
             while (item := events.get()) is not None:
                 yield sse(*item)
@@ -229,10 +240,17 @@ def create_app(
         def read_message(emit):
             try:
                 heard, text = front_end.listen(bytes(audio))
+            except AudioTooLongError:
+                emit("error", {"message": "녹음이 너무 깁니다. 짧게 나누어 다시 말씀해 주세요."})
+                return None
             except Exception:  # noqa: BLE001 - undecodable audio or a model failure
                 emit("error", {"message": "음성을 처리하지 못했습니다. 다시 말씀해 주세요."})
                 return None
-            text = text.strip()[: settings.max_message_chars]
+            text = text.strip()
+            if len(text) > settings.max_message_chars:
+                # Never cut it: the end of a sentence can turn its meaning around ("... 취소하지 마세요").
+                emit("error", {"message": "말씀이 너무 깁니다. 짧게 나누어 다시 말씀해 주세요."})
+                return None
             emit("heard", {"text": text})
             if not text:
                 emit("error", {"message": "잘 들리지 않았습니다. 다시 말씀해 주세요."})

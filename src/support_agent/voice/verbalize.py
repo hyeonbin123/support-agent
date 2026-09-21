@@ -35,10 +35,12 @@ NATIVE_COUNTERS = (
 _SINO_ONLY = {"개월"}  # listed above only so that "개" does not match the front of "개월"
 _MONTHS = {6: "유", 10: "시"}  # 유월, 시월
 
-_EMAIL = re.compile(r"[A-Za-z0-9._+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
-_PHONE = re.compile(r"(?<!\d)(01\d)[- .]?(\d{3,4})[- .]?(\d{4})(?!\d)")
+_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+# 010-1234-5678, 01012345678, (010) 1234-5678, +82 10-1234-5678: the forms find_customer accepts
+_PHONE = re.compile(r"(?<!\d)(?:\+82[- ]?|\(?0)(1\d)\)?[- .]?(\d{3,4})[- .]?(\d{4})(?!\d)")
 _IDENT = re.compile(r"(?<![A-Za-z])[A-Za-z]{1,3}(?:-[A-Za-z0-9]+)+")
-_ISO_DATE = re.compile(r"(?<![\d-])(\d{4})-(\d{1,2})-(\d{1,2})(?![\d-])")
+_ISO_DATE = re.compile(r"(?<![\d./-])(\d{4})([-./])(\d{1,2})\2(\d{1,2})(?![\d/-])")
+_MINUS = re.compile(r"(?<![\w가-힣)])-(?=\d)")
 _DATE = re.compile(r"(?<!\d)(\d{1,2})월(\s*)(\d{1,2})일")
 _MONTH = re.compile(r"(?<!\d)(\d{1,2})월")
 _CLOCK = re.compile(r"(?<!\d)(\d{1,2}):(\d{2})(?!\d)")
@@ -93,13 +95,13 @@ def _email(match: re.Match[str]) -> str:
 
     def spell(part: str) -> str:
         out = []
-        for piece in re.findall(r"[A-Za-z]+|\d+|[._+-]", part):
+        for piece in re.findall(r"[A-Za-z]+|\d+|[._%+-]", part):
             if piece.isdigit():
                 out.append(digits(piece))
             elif piece.isalpha():
                 out.append(" ".join(LETTER_NAMES[ch] for ch in piece.lower()))
             else:
-                out.append({".": "점", "_": "언더바", "+": "플러스", "-": "다시"}[piece])
+                out.append({".": "점", "_": "언더바", "+": "플러스", "-": "다시", "%": "퍼센트"}[piece])
         return " ".join(out)
 
     names = " 점 ".join(letters(label) for label in domain.split(".")).replace(" 점 컴", " 닷컴")
@@ -110,7 +112,12 @@ def _identifier(match: re.Match[str]) -> str:
     parts = []
     for part in match.group().split("-"):
         pieces = re.findall(r"[A-Za-z]+|\d+", part)
-        parts.append(" ".join(digits(p) if p.isdigit() else letters(p) for p in pieces))
+        # Letter by letter: in an identifier "G" is a letter, not grams.
+        parts.append(
+            " ".join(
+                digits(p) if p.isdigit() else " ".join(LETTER_NAMES[c] for c in p.lower()) for p in pieces
+            )
+        )
     return " " + " 다시 ".join(parts) + " "  # "-" is said "다시"
 
 
@@ -118,6 +125,8 @@ def _number(match: re.Match[str]) -> str:
     whole, fraction, gap, unit = match.groups()
     plain = whole.replace(",", "")
     unit = unit or ""
+    if len(plain) > 16:  # beyond 조 there is no unit here: read the digits
+        return f" {digits(plain)} {unit}"
     if fraction:
         return f"{sino(int(plain))} 점 {digits(fraction)}{gap}{'퍼센트' if unit == '%' else unit}"
     if unit == "%":
@@ -138,15 +147,16 @@ def verbalize(text: str) -> str:
     """The spoken form of `text`: Hangul, spaces and `.,?!~` only."""
     text = unicodedata.normalize("NFKC", text)
     text = _EMAIL.sub(_email, text)
-    text = _PHONE.sub(lambda m: " " + ", ".join(digits(g) for g in m.groups()) + " ", text)
+    text = _PHONE.sub(lambda m: " " + ", ".join((digits("0" + m[1]), digits(m[2]), digits(m[3]))) + " ", text)
     text = _IDENT.sub(_identifier, text)
-    text = _ISO_DATE.sub(lambda m: f"{m[1]}년 {int(m[2])}월 {int(m[3])}일", text)  # the tools write dates so
+    text = _ISO_DATE.sub(lambda m: f"{m[1]}년 {int(m[3])}월 {int(m[4])}일", text)  # the tools write dates so
     text = _DATE.sub(lambda m: f"{_MONTHS.get(int(m[1]), sino(int(m[1])))}월 {sino(int(m[3]))}일", text)
     text = _MONTH.sub(lambda m: f"{_MONTHS.get(int(m[1]), sino(int(m[1])))}월", text)
     text = _CLOCK.sub(
         lambda m: f"{native(int(m[1]))} 시" + (f" {sino(int(m[2]))} 분" if int(m[2]) else ""), text
     )
     text = _RANGE.sub(lambda m: f"{sino(int(m[1]))}에서 {m[2]}", text)
+    text = _MINUS.sub("마이너스 ", text)
     text = _NUMBER.sub(_number, text)
     text = _LATIN.sub(lambda m: " " + letters(m.group()) + " ", text)
     text = _KEEP.sub(" ", text)  # quotes, brackets and other symbols are not spoken

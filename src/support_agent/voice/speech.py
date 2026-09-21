@@ -15,10 +15,27 @@ import time
 import types
 import wave
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 from importlib.util import find_spec
 from typing import Any
 
 SAMPLE_WIDTH = 2  # 16-bit PCM
+LISTEN_RATE = 16_000  # what Whisper hears
+
+
+class AudioTooLongError(ValueError):
+    """The recording is longer than the listener accepts."""
+
+
+def versions(*packages: str) -> dict[str, str]:
+    """Installed versions: part of what a cached round trip depends on."""
+    out = {}
+    for package in packages:
+        try:
+            out[package] = version(package)
+        except PackageNotFoundError:
+            out[package] = "?"
+    return out
 
 
 @dataclass(frozen=True)
@@ -99,7 +116,12 @@ class MeloSpeaker:
         self.sample_rate = self._model.hps.data.sampling_rate
 
     def describe(self) -> dict[str, Any]:
-        return {"tts": "melotts/KR", "device": self.device, "speed": self.speed}
+        return {
+            "tts": "melotts/KR",
+            "device": self.device,
+            "speed": self.speed,
+            "tts_versions": versions("melotts", "torch"),
+        }
 
     def synthesize(self, spoken_text: str, seed: int = 0) -> Audio:
         self._torch.manual_seed(seed)
@@ -116,11 +138,13 @@ class WhisperListener:
         device: str = "cuda",
         compute_type: str | None = None,
         beam_size: int = 5,
+        max_seconds: float | None = None,
     ):
         add_cuda_dll_dirs()
         from faster_whisper import WhisperModel
 
         self.model, self.device, self.beam_size = model, device, beam_size
+        self.max_seconds = max_seconds  # None: no limit (the evaluation synthesises its own audio)
         self.compute_type = compute_type or ("float16" if device == "cuda" else "int8")
         self._model = WhisperModel(model, device=device, compute_type=self.compute_type)
 
@@ -130,11 +154,17 @@ class WhisperListener:
             "device": self.device,
             "compute_type": self.compute_type,
             "beam_size": self.beam_size,
+            "stt_versions": versions("faster-whisper", "ctranslate2"),
         }
 
     def transcribe(self, audio: bytes) -> str:
+        from faster_whisper.audio import decode_audio
+
+        samples = decode_audio(io.BytesIO(audio), sampling_rate=LISTEN_RATE)
+        if self.max_seconds is not None and len(samples) > self.max_seconds * LISTEN_RATE:
+            raise AudioTooLongError(f"{len(samples) / LISTEN_RATE:.0f} s of audio")
         segments, _info = self._model.transcribe(
-            io.BytesIO(audio),
+            samples,
             language="ko",
             beam_size=self.beam_size,
             temperature=0.0,

@@ -7,6 +7,7 @@ Usage:
     uv run python -m support_agent.analyze sample outputs/runs/<run_id> --n 20
     uv run python -m support_agent.analyze voice reports/<text run> reports/<voice run> [...]
     uv run python -m support_agent.analyze voice-worst reports/<voice run on the development tasks>
+    uv run python -m support_agent.analyze same-setup reports/<run> reports/<run to pair it with>
 
 `table` prints the markdown tables that go into docs/experiments.md. `misses` lists episodes whose database
 matched but whose required value was not found, so that a person can check the value matcher. `sample` draws
@@ -23,7 +24,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from support_agent.config import JUDGED
+from support_agent.config import JUDGED, RunConfig
 from support_agent.judge import pass_hat_k
 from support_agent.voice import metrics as voice_metrics
 
@@ -227,6 +228,54 @@ def sample(run_dir: Path, n: int) -> str:
     return "\n".join(out)
 
 
+def load_manifest(run_dir: Path) -> dict[str, Any]:
+    return json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+
+
+def is_test_run(run_dir: Path) -> bool:
+    """True when the run is on the test tasks: those records are not for building anything from."""
+    manifest = load_manifest(run_dir)
+    return "test" in Path(str(manifest.get("tasks_file", ""))).stem or any(
+        task_id.startswith("test-") for task_id in manifest.get("task_sha256", {})
+    )
+
+
+def setup_differences(run_a: Path, run_b: Path, ignore: tuple[str, ...] = ("voice",)) -> list[str]:
+    """Why two runs may not be paired as "the same setup but for `ignore`". Empty when they may.
+
+    Compared: every config field but the ignored axes (a field an older manifest lacks counts as its default),
+    trials, task hashes, seed hash, prompt hashes, both providers (model digest, server version, options), and
+    per task the trials that were judged.
+    """
+    a, b = load_manifest(run_a), load_manifest(run_b)
+    defaults = RunConfig().to_dict()
+    out = []
+    for key in sorted((set(a["config"]) | set(b["config"]) | set(defaults)) - set(ignore)):
+        left, right = a["config"].get(key, defaults.get(key)), b["config"].get(key, defaults.get(key))
+        if left != right:
+            out.append(f"config.{key}: {left!r} != {right!r}")
+    for key in ("trials", "task_sha256", "seed_hash", "prompt_sha256", "agent_provider", "user_provider"):
+        if a.get(key) != b.get(key):
+            detail = ""
+            if isinstance(a.get(key), dict) and isinstance(b.get(key), dict):
+                changed = sorted(k for k in set(a[key]) | set(b[key]) if a[key].get(k) != b[key].get(k))
+                detail = f" ({', '.join(changed[:6])})"
+            out.append(f"{key} differs{detail}")
+
+    def judged_trials(run_dir: Path) -> dict[str, list[int]]:
+        trials: dict[str, list[int]] = {}
+        for e in load_episodes(run_dir):
+            if e["status"] != "infra_error":
+                trials.setdefault(e["task_id"], []).append(e["trial"])
+        return {task: sorted(v) for task, v in trials.items()}
+
+    left, right = judged_trials(run_a), judged_trials(run_b)
+    for task in sorted(set(left) | set(right)):
+        if left.get(task) != right.get(task):
+            out.append(f"judged trials of {task}: {left.get(task)} != {right.get(task)}")
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -240,6 +289,10 @@ def main() -> None:
     sampler.add_argument("--n", type=int, default=20)
     commands.add_parser("voice").add_argument("run_dirs", nargs="+", type=Path)
     commands.add_parser("voice-worst").add_argument("run_dir", type=Path)
+    pairing = commands.add_parser("same-setup")
+    pairing.add_argument("run_a", type=Path)
+    pairing.add_argument("run_b", type=Path)
+    pairing.add_argument("--ignore", nargs="*", default=["voice"], help="config axes that may differ")
     args = parser.parse_args()
 
     sys.stdout.reconfigure(encoding="utf-8")  # Korean on a Windows console
@@ -252,7 +305,14 @@ def main() -> None:
     elif args.command == "voice":
         print(voice_metrics.voice_table({d.name: load_episodes(d) for d in args.run_dirs}))
     elif args.command == "voice-worst":
+        if is_test_run(args.run_dir):
+            sys.exit("voice-worst is for the development tasks: nothing is built from test records")
         print(voice_metrics.worst(load_episodes(args.run_dir)))
+    elif args.command == "same-setup":
+        differences = setup_differences(args.run_a, args.run_b, tuple(args.ignore))
+        print("\n".join(differences) or "same setup")
+        if differences:
+            sys.exit(1)
     else:
         print(sample(args.run_dir, args.n))
 

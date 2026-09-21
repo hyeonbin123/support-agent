@@ -11,7 +11,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, select, update
 from sqlalchemy.orm import Session
 
 from support_agent.agent import AgentState, agent_turn, build_system_prompt, load_policy, new_state
@@ -37,8 +37,8 @@ from support_agent.toolkit import (
 )
 from support_agent.tools import build_registry
 
-# Writes whose answer carries `refund_won`. The amount is known only after the tool's own rules ran, so the
-# hook runs the handler once in a transaction that is rolled back and reads the amount from its answer.
+# Writes whose answer carries `refund_won`. The amount is known only after the tool's own rules ran, so it
+# is read from the handler's answer inside the transaction, which is rolled back when a person must decide.
 APPROVAL_TOOLS = {"cancel_order": "취소", "request_return": "반품"}
 TOOL_LABELS = {
     "find_customer": "본인 확인",
@@ -129,6 +129,7 @@ class ChatService:
         )
         # One process serves the chat (see docs/design.md): a lock per session is enough.
         self._locks: dict[str, threading.Lock] = {}
+        self._decisions = threading.Lock()
         self._locks_guard = threading.Lock()
 
     # ---------------------------------------------------------------- sessions
@@ -271,35 +272,76 @@ class ChatService:
         emit("end", {"status": status.value})
 
     def _run_tool(
-        self, session_id: str, ctx: ToolContext, name: str, arguments: dict[str, Any], emit: Emit
+        self,
+        session_id: str,
+        ctx: ToolContext,
+        name: str,
+        arguments: dict[str, Any],
+        emit: Emit,
+        *,
+        approval_id: int | None = None,
     ) -> ToolResult:
-        """The one way a tool runs in the service: approval gate, execute, audit row."""
+        """The one way a tool runs in the service.
+
+        Inside the tool's own transaction (toolkit's on_success hook): the refund the handler really computed
+        is held against the approval threshold, the audit row is written, and an approval that is being
+        carried out is marked as done. So a change of the shop data never exists without its audit row, and
+        no amount above the threshold is committed without a person. `approval_id` is set when that person
+        has decided.
+        """
         emit("tool", {"name": name, "label": TOOL_LABELS.get(name, name)})
-        result = execute(
-            self.registry,
-            self.engine,
-            ctx,
-            name,
-            arguments,
-            before_write=lambda spec, clean: self._approval_gate(session_id, ctx, spec, clean, emit),
-        )
-        spec = self.registry.get(name)
-        self._audit(
-            session_id,
-            "tool_call",
-            {
+        held: dict[str, Any] = {}
+        seen = len(ctx.violations)
+
+        def payload(args, ok, content, error_code=None, policy_blocked=False) -> dict[str, Any]:
+            spec = self.registry.get(name)
+            return {
                 "name": name,
                 "arguments": arguments,
-                "args": result.args,
+                "args": args,
                 "write": bool(spec and spec.write),
-                "ok": result.ok,
-                "error_code": result.error_code,
-                "policy_blocked": result.policy_blocked,
-                "violations": list(result.violations),
-                "content": result.content,
+                "ok": ok,
+                "error_code": error_code,
+                "policy_blocked": policy_blocked,
+                "violations": list(ctx.violations[seen:]) if ok else [],
+                "content": content,
                 "customer_id": ctx.state.verified_customer_id,
-            },
-        )
+                **({"approval": approval_code(approval_id)} if approval_id is not None else {}),
+            }
+
+        def in_transaction(db_session: Session, spec: ToolSpec, clean: dict[str, Any], answer: dict) -> None:
+            refund = answer.get("refund_won")
+            if (
+                approval_id is None
+                and spec.name in APPROVAL_TOOLS
+                and isinstance(refund, int)
+                and refund >= self.settings.approval_refund_won
+            ):
+                held.update(refund=refund, args=clean)
+                raise ToolError("approval_required", "held for approval")  # rolls the call back
+            content = json.dumps(answer, ensure_ascii=False)
+            db_session.add(
+                AuditEvent(
+                    session_id=session_id,
+                    at=wall_clock(),
+                    kind="tool_call",
+                    payload=payload(clean, True, content),
+                )
+            )
+            if approval_id is not None:
+                approval = db_session.get(Approval, approval_id)
+                approval.status = ApprovalStatus.APPROVED.value
+                approval.result = content
+
+        result = execute(self.registry, self.engine, ctx, name, arguments, on_success=in_transaction)
+        if held:
+            result = self._queue_approval(session_id, ctx, name, held["args"], held["refund"], emit)
+        if not result.ok:  # nothing was changed, so this row may stand alone
+            self._audit(
+                session_id,
+                "tool_call",
+                payload(result.args, False, result.content, result.error_code, result.policy_blocked),
+            )
         emit("tool_result", {"name": name, "ok": result.ok, "error_code": result.error_code})
         return result
 
@@ -329,31 +371,15 @@ class ChatService:
 
     # ---------------------------------------------------------------- approvals
 
-    def _preview_refund(self, ctx: ToolContext, spec: ToolSpec, clean: dict[str, Any]) -> int | None:
-        probe = ToolContext(now=ctx.now, enforce_policy=ctx.enforce_policy, state=copy.copy(ctx.state))
-        with Session(self.engine) as db_session:
-            try:
-                answer = spec.handler(db_session, probe, spec.args_model.model_validate(clean))
-            except ToolError:
-                return None  # the real call refuses for the same reason
-            finally:
-                db_session.rollback()
-        refund = answer.get("refund_won")
-        return refund if isinstance(refund, int) else None
-
-    def _approval_gate(
-        self, session_id: str, ctx: ToolContext, spec: ToolSpec, clean: dict[str, Any], emit: Emit
-    ) -> ToolResult | None:
-        if spec.name not in APPROVAL_TOOLS:
-            return None
-        refund = self._preview_refund(ctx, spec, clean)
-        if refund is None or refund < self.settings.approval_refund_won:
-            return None
+    def _queue_approval(
+        self, session_id: str, ctx: ToolContext, tool: str, clean: dict[str, Any], refund: int, emit: Emit
+    ) -> ToolResult:
+        """Put the write that was just rolled back into the queue (once per session and arguments)."""
         with Session(self.engine) as db_session:
             pending = db_session.scalars(
                 select(Approval).where(
                     Approval.session_id == session_id,
-                    Approval.tool == spec.name,
+                    Approval.tool == tool,
                     Approval.status == ApprovalStatus.PENDING.value,
                 )
             ).all()
@@ -362,21 +388,21 @@ class ChatService:
                 approval = Approval(
                     session_id=session_id,
                     created_at=wall_clock(),
-                    tool=spec.name,
+                    tool=tool,
                     args=clean,
                     customer_id=ctx.state.verified_customer_id,
                     refund_won=refund,
                 )
                 db_session.add(approval)
                 db_session.commit()
-            approval_id = approval.id
-        code = approval_code(approval_id)
+            new_id = approval.id
+        code = approval_code(new_id)
         self._audit(
             session_id,
             "approval_requested",
-            {"code": code, "tool": spec.name, "args": clean, "refund_won": refund},
+            {"code": code, "tool": tool, "args": clean, "refund_won": refund},
         )
-        emit("approval", {"code": code, "tool": spec.name, "refund_won": refund})
+        emit("approval", {"code": code, "tool": tool, "refund_won": refund})
         return ToolResult.error(
             "approval_required",
             f"환불액 {refund:,}원은 담당자 승인이 필요해 아직 처리되지 않았고, 승인 대기열에 올렸습니다"
@@ -392,35 +418,43 @@ class ChatService:
             if approval is None:
                 raise ApprovalStateError("no such approval")
             session_id = approval.session_id
-        lock = self._lock(session_id)
+        lock = self._lock(session_id)  # a running turn of that session would overwrite the conversation
         if not lock.acquire(timeout=30):
             raise BusyError(session_id)
         try:
-            return self._decide_locked(approval_id, approve=approve, by=by, note=note.strip())
+            with self._decisions:  # one approved write at a time, whatever the session
+                return self._decide_locked(approval_id, approve=approve, by=by, note=note.strip())
         finally:
             lock.release()
 
     def _decide_locked(self, approval_id: int, *, approve: bool, by: str, note: str) -> dict[str, Any]:
         now = wall_clock()
+        claimed = ApprovalStatus.EXECUTING if approve else ApprovalStatus.REJECTED
         with Session(self.engine) as db_session:
-            approval = db_session.get(Approval, approval_id)
-            if approval is None or approval.status != ApprovalStatus.PENDING.value:
+            # The claim is one conditional UPDATE: of two deciders, in this process or another, one wins.
+            won = db_session.execute(
+                update(Approval)
+                .where(Approval.id == approval_id, Approval.status == ApprovalStatus.PENDING.value)
+                .values(status=claimed.value, decided_at=now, decided_by=by, note=note)
+            ).rowcount
+            db_session.commit()
+            if won != 1:
                 raise ApprovalStateError("decided already")
+            approval = db_session.get(Approval, approval_id)
             session_id, tool, args = approval.session_id, approval.tool, dict(approval.args)
             customer_id = approval.customer_id
 
         kind, order_id = APPROVAL_TOOLS[tool], args.get("order_id", "")
-        result: ToolResult | None = None
+        status, result = claimed, None
         if approve:
             ctx = ToolContext(
                 now=self.settings.clock(),
                 enforce_policy=self.config.enforce_policy,
                 state=ConversationState(verified_customer_id=customer_id),
             )
-            result = execute(self.registry, self.engine, ctx, tool, args)  # no gate: a person decided
+            # The tool's changes, its audit row and the approval's "approved" are one transaction.
+            result = self._run_tool(session_id, ctx, tool, args, lambda _e, _d: None, approval_id=approval_id)
             status = ApprovalStatus.APPROVED if result.ok else ApprovalStatus.FAILED
-        else:
-            status = ApprovalStatus.REJECTED
 
         if status is ApprovalStatus.APPROVED:
             answer = json.loads(result.content)
@@ -439,12 +473,10 @@ class ChatService:
                 text += f" 사유: {note}"
 
         with Session(self.engine) as db_session:
-            approval = db_session.get(Approval, approval_id)
-            approval.status = status.value
-            approval.decided_at = now
-            approval.decided_by = by
-            approval.note = note
-            approval.result = result.content if result else ""
+            if status is ApprovalStatus.FAILED:
+                approval = db_session.get(Approval, approval_id)
+                approval.status = status.value
+                approval.result = result.content
             row = self._row(db_session, session_id)
             state = copy.deepcopy(row.state)
             state["messages"].append(Message("assistant", text).to_dict())

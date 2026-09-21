@@ -37,7 +37,8 @@ class VoiceFrontEnd:
             return self.speaker.synthesize(spoken, 0).wav
 
 
-def load_voice_front_end(tts_device: str, stt_device: str) -> VoiceFrontEnd:
+def load_voice_front_end(tts_device: str, stt_device: str, max_audio_seconds: float) -> VoiceFrontEnd:
     from support_agent.voice.speech import MeloSpeaker, WhisperListener
 
-    return VoiceFrontEnd(MeloSpeaker(device=tts_device), WhisperListener(device=stt_device))
+    listener = WhisperListener(device=stt_device, max_seconds=max_audio_seconds)
+    return VoiceFrontEnd(MeloSpeaker(device=tts_device), listener)

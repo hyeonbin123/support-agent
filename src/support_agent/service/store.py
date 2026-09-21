@@ -28,6 +28,7 @@ class SessionStatus(enum.StrEnum):
 
 class ApprovalStatus(enum.StrEnum):
     PENDING = "pending"
+    EXECUTING = "executing"  # claimed by one decider; stays so only if the process died meanwhile
     APPROVED = "approved"  # approved and carried out
     REJECTED = "rejected"
     FAILED = "failed"  # approved, but the tool refused by then (the order had moved on)
