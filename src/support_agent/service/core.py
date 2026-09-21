@@ -126,6 +126,7 @@ class ChatService:
             policy=settings.policy,
             num_ctx=settings.num_ctx,
             max_agent_calls=settings.max_agent_calls_per_turn,
+            language="L1",  # never show a customer a reply that drifted into Chinese
         )
         # One process serves the chat (see docs/design.md): a lock per session is enough.
         self._locks: dict[str, threading.Lock] = {}

@@ -36,6 +36,10 @@ FORMAT_NOTICE = (
     "[시스템 안내] 방금 응답은 형식이 잘못되어 고객에게 전달되지 않았습니다. "
     "도구를 쓰려면 정해진 도구 호출 형식으로 호출하고, 아니면 고객에게 보낼 말을 일반 문장으로 답하세요."
 )
+LANGUAGE_NOTICE = (
+    "[시스템 안내] 방금 응답은 한국어가 아니어서 고객에게 전달되지 않았습니다. "
+    "같은 내용을 한국어로만 다시 답하세요."
+)
 _WEEKDAYS = "월화수목금토일"
 
 # The loop never sees the DB or the ToolContext; the caller passes a closure over toolkit.execute.
@@ -135,6 +139,15 @@ def is_stall(text: str) -> bool:
     return bool(_PROMISE.search(text)) and not _ASKS.search(text)
 
 
+_OTHER_SCRIPT = re.compile(r"[\u4e00-\u9fff\u3040-\u30ff]")  # Han characters, kana
+
+
+def in_another_language(text: str) -> bool:
+    """qwen2.5 sometimes drifts into Chinese in the middle of a Korean conversation. One stray character
+    (a name, a symbol) is let through; two or more mean the sentence is not Korean."""
+    return len(_OTHER_SCRIPT.findall(text)) >= 2
+
+
 def format_problem(response: ChatResponse) -> str | None:
     """Why a reply cannot be used as it is: empty | leaked_tool_call | cut_off, or None."""
     text = response.text.strip()
@@ -183,6 +196,8 @@ def agent_turn(
             if rescued is not None:  # run it as if it had been a proper call; still counted as a format error
                 calls, problem = (rescued,), None
                 state.format_errors += 1
+        if not problem and not calls and config.language == "L1" and in_another_language(response.text):
+            problem = "wrong_language"
         if (
             not problem
             and not calls
@@ -228,7 +243,9 @@ def agent_turn(
             if retries >= config.max_format_retries:
                 return TurnResult(None, "agent_format_error")
             retries += 1
-            notice = CUT_OFF_NOTICE if problem == "cut_off" else FORMAT_NOTICE
+            notice = {"cut_off": CUT_OFF_NOTICE, "wrong_language": LANGUAGE_NOTICE}.get(
+                problem, FORMAT_NOTICE
+            )
             state.messages.append(Message("user", notice, harness=True))
             continue
 

@@ -11,6 +11,8 @@ from collections.abc import Callable
 from typing import Any
 
 from support_agent.voice.channel import Listener, Speaker
+from support_agent.voice.normalize import normalize_heard
+from support_agent.voice.spoken import spoken_to_written
 from support_agent.voice.verbalize import verbalize
 
 
@@ -37,10 +39,14 @@ class VoiceFrontEnd:
             return self.speaker.synthesize(spoken, 0).wav
 
 
+def repair_heard(text: str) -> str:
+    """What the agent receives instead of the raw transcript: the notation rules that the measurement
+    adopted (V2, docs/experiments.md stage 5), then the numbers a person read aloud as words."""
+    return spoken_to_written(normalize_heard(text))
+
+
 def load_voice_front_end(tts_device: str, stt_device: str, max_audio_seconds: float) -> VoiceFrontEnd:
     from support_agent.voice.speech import MeloSpeaker, WhisperListener
-    from support_agent.voice.spoken import spoken_to_written
 
     listener = WhisperListener(device=stt_device, max_seconds=max_audio_seconds, vad_filter=True)
-    # A person's phone number comes back from the recogniser as words; the tools need digits.
-    return VoiceFrontEnd(MeloSpeaker(device=tts_device), listener, normalizer=spoken_to_written)
+    return VoiceFrontEnd(MeloSpeaker(device=tts_device), listener, normalizer=repair_heard)

@@ -7,7 +7,15 @@ from conftest import NOW
 from toy_tools import TOY_REGISTRY
 
 from support_agent import analyze, db
-from support_agent.agent import STALL_NOTICE, agent_turn, is_stall, leaked_tool_call, new_state
+from support_agent.agent import (
+    LANGUAGE_NOTICE,
+    STALL_NOTICE,
+    agent_turn,
+    in_another_language,
+    is_stall,
+    leaked_tool_call,
+    new_state,
+)
 from support_agent.chat import ScriptedProvider, ToolCall
 from support_agent.config import RunConfig
 from support_agent.toolkit import ToolContext, execute
@@ -153,3 +161,37 @@ def test_compare_pairs_pass_k_over_the_tasks_that_have_k_trials_in_both_runs(tmp
     table = analyze.compare(base, [other])
     assert "| other | 100.0% | +50.0%p" in table  # pass^1 uses both tasks
     assert "100.0% (1과제)" in table  # pass^4 only the task with four judged trials in both
+
+
+# -------------------------------------------------------------------- the language guard (service only)
+
+CHINESE = "顾客ID为C-9003，您的订单O-90003的状态是已发货。"
+
+
+def test_a_reply_in_chinese_is_held_back_and_asked_again_in_korean(tiny_engine):
+    result, state, _ = turn(tiny_engine, [CHINESE, "주문 O-1은 결제 완료 상태입니다."], language="L1")
+    assert result.reply == "주문 O-1은 결제 완료 상태입니다." and state.format_errors == 1
+    held, notice = state.messages[3], state.messages[4]
+    assert (held.content, held.delivered, notice.harness, notice.content) == (
+        CHINESE,
+        False,
+        True,
+        LANGUAGE_NOTICE,
+    )
+    assert [log.format_error for log in state.llm_log] == ["wrong_language", None]
+
+
+def test_when_it_keeps_answering_in_chinese_nothing_is_delivered(tiny_engine):
+    result, state, _ = turn(tiny_engine, [CHINESE] * 3, language="L1")
+    assert (result.reply, result.stop) == (None, "agent_format_error")
+    assert not [m for m in state.messages if m.role == "assistant" and m.delivered and m.content == CHINESE]
+
+
+def test_the_evaluation_default_delivers_the_reply_as_it_is(tiny_engine):
+    result, state, _ = turn(tiny_engine, [CHINESE])
+    assert result.reply == CHINESE and state.format_errors == 0 and RunConfig().language == "L0"
+
+
+def test_one_stray_character_is_not_another_language():
+    assert not in_another_language("김하준(金) 고객님, 주문 O-1은 결제 완료 상태입니다.")
+    assert in_another_language("ご注文は発送済みです") and in_another_language(CHINESE)

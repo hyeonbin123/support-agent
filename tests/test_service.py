@@ -20,7 +20,7 @@ from support_agent.service.bootstrap import copy_seed, prepare_database
 from support_agent.service.core import CLOSED_REPLY, FALLBACK_REPLY, BusyError, ChatService
 from support_agent.service.offline import OfflineProvider, create_offline_app
 from support_agent.service.settings import DEMO_NOW, Settings
-from support_agent.service.voice_frontend import VoiceFrontEnd
+from support_agent.service.voice_frontend import VoiceFrontEnd, repair_heard
 from support_agent.voice.speech import Audio
 
 ADMIN = {"X-Admin-Token": "test-token"}
@@ -482,3 +482,24 @@ def test_the_offline_app_answers_the_voice_endpoints_without_speech_models(tmp_p
         assert [n for n, _ in broken if n in ("error", "reply")] == ["error"]
         spoken = client.post(f"{url}/speech", json={"text": "안녕하세요, 고객센터입니다."})
         assert spoken.status_code == 200 and spoken.content[:4] == b"RIFF"
+
+
+def test_the_service_repairs_what_was_heard_before_the_agent_reads_it(engine):
+    assert repair_heard("강정월구 공일공 공공공공 육일팔구입니다") == "강정월구 010-0000-6189입니다"
+    assert repair_heard("주문번호는 5-91001이고 메일은 yunseo.heo-example.com입니다.") == (
+        "주문번호는 O-91001이고 메일은 yunseo.heo@example.com입니다."
+    )
+    script = [ToolCall("find_customer", {"name": "정예준", "contact": "010-0000-9005"}), "확인되었습니다."]
+    settings = Settings(admin_token="test-token")
+    front_end = VoiceFrontEnd(FakeSpeaker(), FakeListener(), normalizer=repair_heard)
+    app = create_app(settings, provider=ScriptedProvider(script), engine=engine, voice=front_end)
+    with TestClient(app) as client:
+        session_id = client.post("/api/sessions").json()["session_id"]
+        recording = "정예준이고 공일공 공공공공 구공공오입니다".encode()
+        events = events_of(client.post(f"/api/sessions/{session_id}/voice", content=recording))
+        assert dict(events)["heard"] == {"text": "정예준이고 010-0000-9005입니다"}
+        audit = client.get(f"/api/admin/sessions/{session_id}", headers=ADMIN).json()["audit"]
+        message = next(e["payload"] for e in audit if e["kind"] == "customer_message")
+        assert (
+            message["via"]["heard"] == "정예준이고 공일공 공공공공 구공공오입니다"
+        )  # the raw transcript is kept

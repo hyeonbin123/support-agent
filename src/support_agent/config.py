@@ -42,6 +42,9 @@ class RunConfig:
     # V1: what the customer says reaches the agent through speech synthesis and recognition.
     # V2: and the recognised text goes through the rule-based normaliser first.
     voice: Literal["V0", "V1", "V2"] = "V0"
+    # L1: a reply written in Chinese or Japanese script is not delivered but sent back, like a format
+    # error. The service turns it on; it has not been measured, so the evaluation default is L0.
+    language: Literal["L0", "L1"] = "L0"
     temperature: float = 0.0
     user_temperature: float = 0.3
     base_seed: int = 1000
