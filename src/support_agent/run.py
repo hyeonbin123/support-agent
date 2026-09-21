@@ -34,6 +34,7 @@ from support_agent.seed import build_seed_engine
 from support_agent.tasks import load_tasks
 from support_agent.tools import build_registry
 from support_agent.user_sim import LLMUser, build_user_prompt
+from support_agent.voice.speech import versions as speech_versions
 
 MAX_CONSECUTIVE_INFRA_ERRORS = 3  # the model server is probably down: stop instead of burning the task list
 OTHER_GPU_USE_LIMIT_MIB = 3000  # desktop apps take 1-2 GiB; more than this means another job is running
@@ -281,11 +282,7 @@ def main() -> None:
         "gpu_mib_used_by_others_at_start": others,
         "versions": {"python": sys.version.split()[0]}
         | {name: version(name) for name in ("sqlalchemy", "pydantic", "httpx", "pyyaml")}
-        | (
-            {name: version(name) for name in ("faster-whisper", "ctranslate2", "melotts", "torch")}
-            if channel
-            else {}
-        ),
+        | (speech_versions("faster-whisper", "ctranslate2", "melotts", "torch") if channel else {}),
     }
     (run_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n"

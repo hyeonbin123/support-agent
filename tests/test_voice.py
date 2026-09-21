@@ -161,6 +161,7 @@ def test_nothing_pronounceable_means_nothing_heard():
 
 
 def test_wav_bytes_is_a_wav_file():
+    pytest.importorskip("numpy")  # comes with the `voice` dependency group, like the models that use it
     audio = wav_bytes([0.0, 0.5, -0.5, 1.5], 16_000)
     assert audio.wav[:4] == b"RIFF" and audio.seconds == pytest.approx(4 / 16_000)
     with pytest.raises(RuntimeError):
