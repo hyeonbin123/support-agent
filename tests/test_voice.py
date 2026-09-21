@@ -20,6 +20,7 @@ from support_agent.toolkit import ToolContext, execute
 from support_agent.user_sim import ScriptedUser
 from support_agent.voice import metrics
 from support_agent.voice.channel import SpeechChannel
+from support_agent.voice.normalize import normalize_heard
 from support_agent.voice.speech import Audio, wav_bytes
 from support_agent.voice.verbalize import native, sino, verbalize
 
@@ -278,3 +279,46 @@ def test_importing_the_voice_package_needs_no_speech_library():
     source = Path(metrics.__file__).with_name("speech.py").read_text(encoding="utf-8")
     top_level = [line for line in source.splitlines() if re.match(r"(import|from) ", line)]
     assert not [line for line in top_level if re.search(r"torch|melo|faster_whisper|numpy", line)]
+
+
+# -------------------------------------------------------------------- V2: the normaliser
+
+
+@pytest.mark.parametrize(
+    ("heard", "repaired"),
+    [  # every left-hand side is a transcript from the development run of V1
+        ("주문번호는 5-91001이에요.", "주문번호는 O-91001이에요."),
+        ("주문번호가 5에서 9100이 아니라", "주문번호가 O-9100이 아니라"),
+        ("이메일은 yunseo.heo-example.com입니다.", "이메일은 yunseo.heo@example.com입니다."),
+        ("sunghon.pae골뱅이그젠플.com입니다.", "sunghon.pae@example.com입니다."),
+        ("yunseo.heo-golbenie-example.com입니다.", "yunseo.heo@example.com입니다."),
+        ("minseo.chae-e-example.com입니다.", "minseo.chae@example.com입니다."),
+        ("resunghon.pae 골뱅이 이그젠플 닷컴입니다.", "resunghon.pae@example.com입니다."),
+        ("junghon.byun.example.com입니다. 5-91019죠.", "junghon.byun@example.com입니다. O-91019죠."),
+        ("010, 0000, 9103으로 가입했어요.", "010-0000-9103으로 가입했어요."),
+        ("결제 금액 12만 원을 받아 적었습니다.", "결제 금액 120,000원을 받아 적었습니다."),
+        ("9만 7,600원이 맞나요?", "97,600원이 맞나요?"),
+    ],
+)
+def test_the_normaliser_repairs_notation(heard, repaired):
+    assert normalize_heard(heard) == repaired
+
+
+@pytest.mark.parametrize(
+    "heard",
+    [
+        "네, 진행해 주세요.",
+        "5-5 사이즈로 5개 주문했고 5-10일 안에 받고 싶어요.",  # not an order number
+        "010-0000-921입니다.",  # a digit was lost in the sound: nothing to repair it from
+        "이름은 배성분입니다.",  # a misheard name stays misheard
+        "주문번호는 O-91001이고 38,900원입니다.",  # already in the written form
+        "12만 34,000원",  # not a number anybody says
+    ],
+)
+def test_the_normaliser_leaves_the_rest_alone(heard):
+    assert normalize_heard(heard) == heard
+
+
+def test_the_normaliser_is_idempotent_on_its_own_output():
+    once = normalize_heard("junghon.byun.example.com입니다. 5-91019죠. 010, 0000, 9103")
+    assert normalize_heard(once) == once

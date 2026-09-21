@@ -42,6 +42,7 @@ uv run --group voice uvicorn support_agent.service.app:create_app --factory --po
 | `voice/verbalize.py` | 쓴 글을 사람이 말하는 대로 풀어 쓴다. 모델 없는 순수 함수 |
 | `voice/speech.py` | MeloTTS(합성)와 faster-whisper(인식) 래퍼. 라이브러리는 생성자 안에서만 불러온다 |
 | `voice/channel.py` | 풀어 쓰기 → 합성 → 인식 → (정규화). 같은 입력의 결과는 캐시한다 |
+| `voice/normalize.py` | V2: 인식된 글의 표기를 고치는 규칙 (주문 번호의 O, 이메일의 골뱅이와 도메인, 전화번호 구분, 만 단위 금액). 개발용 V1 기록만 보고 만들었다 |
 | `voice/metrics.py` | 글자 오류율, 엔티티 생존율, 본인 확인 성공률과 짝지은 부트스트랩 구간 |
 | `service/voice_frontend.py` | 서비스 앞단: 녹음을 글로, 답을 소리로. 모델 호출은 한 번에 하나 |
 
