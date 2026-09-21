@@ -124,3 +124,32 @@ def test_g2_samples_the_retry_but_not_the_first_attempt(tiny_engine):
     assert temperatures == [0.0, 0.7, 0.7] and state.stalls == 1
     _, _, _ = turn(tiny_engine, script, guard="G1")
     assert [request["temperature"] for request in turn.provider.requests] == [0.0, 0.0, 0.0]
+
+
+def test_compare_pairs_pass_k_over_the_tasks_that_have_k_trials_in_both_runs(tmp_path):
+    import json
+
+    def write(name, trials_by_task):
+        run_dir = tmp_path / name
+        run_dir.mkdir()
+        lines = [
+            json.dumps(
+                {
+                    "task_id": task,
+                    "trial": i,
+                    "status": "completed",
+                    "termination": "user_stop",
+                    "verdict": {"db_match": ok, "values": {}},
+                }
+            )
+            for task, oks in trials_by_task.items()
+            for i, ok in enumerate(oks)
+        ]
+        (run_dir / "episodes.jsonl").write_text(chr(10).join(lines), encoding="utf-8")
+        return run_dir
+
+    base = write("base", {"a": [True] * 4, "b": [False] * 4})
+    other = write("other", {"a": [True] * 4, "b": [True, True, True]})  # one trial of b was an infra error
+    table = analyze.compare(base, [other])
+    assert "| other | 100.0% | +50.0%p" in table  # pass^1 uses both tasks
+    assert "100.0% (1과제)" in table  # pass^4 only the task with four judged trials in both

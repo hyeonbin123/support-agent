@@ -115,8 +115,13 @@ def compare(base_dir: Path, other_dirs: list[Path]) -> str:
         other = successes_by_task(load_episodes(run_dir))
         cells = []
         for k in (1, 4):
-            diff, low, high = paired_difference(base, other, k)
-            cells += [f"{pass_k(other, k):.1%}", f"{diff:+.1%}p [{low:+.1%}, {high:+.1%}]"]
+            # A trial lost to an infra error leaves a task with fewer than k judged trials: pass^k is then
+            # paired over the tasks that have k in both runs, and the cell says over how many.
+            usable = [t for t in base if len(base[t]) >= k and len(other.get(t, ())) >= k]
+            mine, theirs = {t: base[t] for t in usable}, {t: other[t] for t in usable}
+            diff, low, high = paired_difference(mine, theirs, k)
+            note = "" if len(usable) == len(base) == len(other) else f" ({len(usable)}과제)"
+            cells += [f"{pass_k(theirs, k):.1%}{note}", f"{diff:+.1%}p [{low:+.1%}, {high:+.1%}]"]
         lines.append(f"| {run_dir.name} | " + " | ".join(cells) + " |")
     return "\n".join(lines)
 
