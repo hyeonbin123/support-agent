@@ -129,6 +129,44 @@ class MeloSpeaker:
         return wav_bytes(samples, self.sample_rate)
 
 
+def decode_limited(audio: bytes, max_seconds: float) -> Any:
+    """faster-whisper's decode_audio, but it stops as soon as the recording passes `max_seconds`: a few kB of
+    FLAC can hold hours of silence, and decode_audio would first expand all of it in memory."""
+    import gc
+
+    import av
+    import numpy as np
+
+    limit, total, chunks = int(max_seconds * LISTEN_RATE), 0, []
+    resampler = av.audio.resampler.AudioResampler(format="s16", layout="mono", rate=LISTEN_RATE)
+
+    def take(frames) -> None:
+        nonlocal total
+        for frame in frames:
+            array = frame.to_ndarray().reshape(-1)
+            total += array.size
+            if total > limit:
+                raise AudioTooLongError(f"more than {max_seconds:g} s of audio")
+            chunks.append(array)
+
+    try:
+        with av.open(io.BytesIO(audio), mode="r", metadata_errors="ignore") as container:
+            frames = container.decode(audio=0)
+            while True:  # like decode_audio, a frame that fails to decode is skipped
+                try:
+                    frame = next(frames)
+                except StopIteration:
+                    break
+                except av.error.InvalidDataError:
+                    continue
+                take(resampler.resample(frame))
+            take(resampler.resample(None))  # flush
+    finally:
+        del resampler
+        gc.collect()  # faster-whisper#390: resampler objects are freed only by the collector
+    return np.concatenate(chunks).astype(np.float32) / 32768.0 if chunks else np.zeros(0, np.float32)
+
+
 class WhisperListener:
     """faster-whisper, Korean, temperature 0 only (no sampling fallback: the channel must be repeatable)."""
 
@@ -163,11 +201,12 @@ class WhisperListener:
         }
 
     def transcribe(self, audio: bytes) -> str:
-        from faster_whisper.audio import decode_audio
+        if self.max_seconds is None:  # the measured channel: unchanged
+            from faster_whisper.audio import decode_audio
 
-        samples = decode_audio(io.BytesIO(audio), sampling_rate=LISTEN_RATE)
-        if self.max_seconds is not None and len(samples) > self.max_seconds * LISTEN_RATE:
-            raise AudioTooLongError(f"{len(samples) / LISTEN_RATE:.0f} s of audio")
+            samples = decode_audio(io.BytesIO(audio), sampling_rate=LISTEN_RATE)
+        else:
+            samples = decode_limited(audio, self.max_seconds)
         segments, _info = self._model.transcribe(
             samples,
             language="ko",

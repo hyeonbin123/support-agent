@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import io
 import json
 import re
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -18,10 +20,10 @@ from support_agent.episode import NOTHING_HEARD, _converse
 from support_agent.paths import REPORTS
 from support_agent.toolkit import ToolContext, execute
 from support_agent.user_sim import ScriptedUser
-from support_agent.voice import metrics
+from support_agent.voice import metrics, speech
 from support_agent.voice.channel import SpeechChannel
 from support_agent.voice.normalize import normalize_heard
-from support_agent.voice.speech import Audio, wav_bytes
+from support_agent.voice.speech import LISTEN_RATE, Audio, AudioTooLongError, WhisperListener, wav_bytes
 from support_agent.voice.spoken import spoken_to_written
 from support_agent.voice.verbalize import native, sino, verbalize
 
@@ -170,6 +172,89 @@ def test_wav_bytes_is_a_wav_file():
         wav_bytes([], 16_000)
 
 
+# -------------------------------------------------------------------- decoding an upload (the service)
+
+
+def encoded(seconds, rate, *, fmt="flac", codec="flac", layout="mono", tone=False, step=4096, options=None):
+    """A recording made with PyAV (from the `voice` group): silence, or a 440 Hz tone with some noise."""
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    buffer, total, noise = io.BytesIO(), int(seconds * rate), np.random.default_rng(0)
+    with av.open(buffer, mode="w", format=fmt) as container:
+        stream = container.add_stream(codec, rate=rate, options=options or {})
+        stream.layout = layout
+        for start in range(0, total, step):
+            n = min(step, total - start)
+            x = np.zeros(n)
+            if tone:
+                x = np.sin(2 * np.pi * 440 * np.arange(start, start + n) / rate) * 8000 + noise.normal(
+                    0, 500, n
+                )
+            x = np.repeat(x, 2 if layout == "stereo" else 1).astype(np.int16).reshape(1, -1)
+            frame = av.AudioFrame.from_ndarray(x, format="s16", layout=layout)
+            frame.sample_rate, frame.pts = rate, start
+            container.mux(stream.encode(frame))
+        container.mux(stream.encode(None))
+    return buffer.getvalue()
+
+
+class StubWhisper:
+    def __init__(self):
+        self.lengths = []
+
+    def transcribe(self, samples, **options):
+        self.lengths.append(len(samples))
+        return [], None
+
+
+def listener_without_a_model(model) -> WhisperListener:
+    listener = object.__new__(WhisperListener)
+    listener.max_seconds, listener.beam_size, listener.vad_filter, listener._model = 60, 5, True, model
+    return listener
+
+
+def test_a_long_recording_is_refused_before_it_is_decoded(monkeypatch):
+    """19 kB of FLAC hold an hour of silence: the service stops at its limit instead of decoding it all."""
+    whisper_audio = pytest.importorskip("faster_whisper.audio")
+    hour = encoded(3600, 8000, step=32768, options={"frame_size": "32768"})
+    assert len(hour) < 50_000
+    monkeypatch.setattr(
+        whisper_audio, "decode_audio", lambda *a, **k: pytest.fail("decoded the whole upload")
+    )
+    model = StubWhisper()
+    tracemalloc.start()
+    try:
+        with pytest.raises(AudioTooLongError):
+            listener_without_a_model(model).transcribe(hour)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 50_000_000 and model.lengths == []  # decoding all of it takes about 580 MB
+
+
+@pytest.mark.parametrize(
+    "recording",
+    [
+        {"seconds": 20, "rate": 44_100, "layout": "stereo", "tone": True},
+        {"seconds": 20, "rate": 48_000, "fmt": "webm", "codec": "libopus", "tone": True, "step": 960},
+        {"seconds": 60, "rate": 16_000, "fmt": "wav", "codec": "pcm_s16le", "tone": True},  # just the limit
+    ],
+    ids=["flac-stereo-44k", "webm-opus-48k", "wav-60s"],
+)
+def test_the_limited_decoder_gives_what_decode_audio_gives(recording):
+    np = pytest.importorskip("numpy")
+    decode_audio = pytest.importorskip("faster_whisper.audio").decode_audio
+    data = encoded(**recording)
+    expected = decode_audio(io.BytesIO(data), sampling_rate=LISTEN_RATE)
+    assert np.array_equal(speech.decode_limited(data, 60), expected)
+
+
+def test_a_recording_under_the_limit_reaches_the_model():
+    model = StubWhisper()
+    assert listener_without_a_model(model).transcribe(encoded(2, 16_000, tone=True)) == ""
+    assert model.lengths == [2 * LISTEN_RATE]
+
+
 # -------------------------------------------------------------------- in an episode
 
 
@@ -279,7 +364,7 @@ def test_the_voice_table_pairs_runs_by_task():
 def test_importing_the_voice_package_needs_no_speech_library():
     source = Path(metrics.__file__).with_name("speech.py").read_text(encoding="utf-8")
     top_level = [line for line in source.splitlines() if re.match(r"(import|from) ", line)]
-    assert not [line for line in top_level if re.search(r"torch|melo|faster_whisper|numpy", line)]
+    assert not [line for line in top_level if re.search(r"torch|melo|faster_whisper|numpy|\bav\b", line)]
 
 
 # -------------------------------------------------------------------- V2: the normaliser
