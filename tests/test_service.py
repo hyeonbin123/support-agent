@@ -340,6 +340,41 @@ def test_a_refund_below_the_threshold_needs_nobody(engine):
         assert order_status(engine, "O-10097") == "cancelled"
 
 
+SPLIT = ("조시우", "01000007605", "O-10086")  # delivered, in its window: line 1 90,400 + line 2 36,700 won
+
+
+def test_lines_of_one_order_returned_one_at_a_time_add_up_against_the_threshold(engine):
+    name, phone, order_id = SPLIT
+    script = [
+        ToolCall("find_customer", {"name": name, "contact": phone}),
+        ToolCall("request_return", {"order_id": order_id, "line_nos": [1], "reason": "defective"}),
+        ToolCall("request_return", {"order_id": order_id, "line_nos": [2], "reason": "defective"}),
+        "접수했습니다.",
+    ]
+    with make_client(engine, script) as client:
+        session_id = client.post("/api/sessions").json()["session_id"]
+        events = say(client, session_id, f"{name}, {phone}입니다. {order_id} 불량이라 반품해 주세요.")
+        returns = [d for n, d in events if n == "tool_result" and d["name"] == "request_return"]
+        assert [(d["ok"], d["error_code"]) for d in returns] == [(True, None), (False, "approval_required")]
+        with Session(engine) as session:
+            requests = session.scalars(
+                select(db.ServiceRequest).where(db.ServiceRequest.order_id == order_id)
+            )
+            assert [(r.id, r.refund_won) for r in requests] == [("RT-O-10086-1", 90_400)]
+        pending = client.get("/api/admin/approvals?status=pending", headers=ADMIN).json()
+        assert [(a["args"]["line_nos"], a["refund_won"]) for a in pending] == [([2], 36_700)]
+        audit = client.get(f"/api/admin/sessions/{session_id}", headers=ADMIN).json()["audit"]
+        asked = next(e["payload"] for e in audit if e["kind"] == "approval_requested")
+        assert (asked["refund_won"], asked["order_refund_won"]) == (36_700, 127_100)
+
+        decided = client.post(
+            f"/api/admin/approvals/{pending[0]['id']}/decision", headers=ADMIN, json={"approve": True}
+        ).json()
+        assert decided["status"] == "approved"  # a person decided: the gate does not hold it again
+    with Session(engine) as session:
+        assert session.get(db.ServiceRequest, "RT-O-10086-2").refund_won == 36_700
+
+
 def test_static_pages_carry_no_inline_code():
     from support_agent.service.app import STATIC
 

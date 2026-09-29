@@ -11,9 +11,10 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Engine, select, update
+from sqlalchemy import Engine, func, select, update
 from sqlalchemy.orm import Session
 
+from support_agent import db
 from support_agent.agent import AgentState, agent_turn, build_system_prompt, load_policy, new_state
 from support_agent.chat import ChatProvider, Message, ProviderError, ToolCall
 from support_agent.config import RunConfig
@@ -287,10 +288,10 @@ class ChatService:
         """The one way a tool runs in the service.
 
         Inside the tool's own transaction (toolkit's on_success hook): the refund the handler really computed
-        is held against the approval threshold, the audit row is written, and an approval that is being
-        carried out is marked as done. So a change of the shop data never exists without its audit row, and
-        no amount above the threshold is committed without a person. `approval_id` is set when that person
-        has decided.
+        (for a return, plus the returns already filed on that order) is held against the approval threshold,
+        the audit row is written, and an approval that is being carried out is marked as done. So a change of
+        the shop data never exists without its audit row, and no amount above the threshold is committed
+        without a person. `approval_id` is set when that person has decided.
         """
         emit("tool", {"name": name, "label": TOOL_LABELS.get(name, name)})
         held: dict[str, Any] = {}
@@ -314,13 +315,23 @@ class ChatService:
 
         def in_transaction(db_session: Session, spec: ToolSpec, clean: dict[str, Any], answer: dict) -> None:
             refund = answer.get("refund_won")
+            earlier = 0
+            if approval_id is None and spec.name == "request_return" and isinstance(refund, int):
+                # Lines of one order returned one call at a time must not slip under the threshold.
+                earlier = db_session.scalar(
+                    select(func.coalesce(func.sum(db.ServiceRequest.refund_won), 0)).where(
+                        db.ServiceRequest.order_id == answer["order_id"],
+                        db.ServiceRequest.kind == db.RequestKind.RETURN,
+                        db.ServiceRequest.id != answer["request_id"],  # the row this call just added
+                    )
+                )
             if (
                 approval_id is None
                 and spec.name in APPROVAL_TOOLS
                 and isinstance(refund, int)
-                and refund >= self.settings.approval_refund_won
+                and refund + earlier >= self.settings.approval_refund_won
             ):
-                held.update(refund=refund, args=clean)
+                held.update(refund=refund, args=clean, order_total=refund + earlier)
                 raise ToolError("approval_required", "held for approval")  # rolls the call back
             content = json.dumps(answer, ensure_ascii=False)
             db_session.add(
@@ -338,7 +349,9 @@ class ChatService:
 
         result = execute(self.registry, self.engine, ctx, name, arguments, on_success=in_transaction)
         if held:
-            result = self._queue_approval(session_id, ctx, name, held["args"], held["refund"], emit)
+            result = self._queue_approval(
+                session_id, ctx, name, held["args"], held["refund"], emit, order_total=held["order_total"]
+            )
         if not result.ok:  # nothing was changed, so this row may stand alone
             self._audit(
                 session_id,
@@ -375,9 +388,18 @@ class ChatService:
     # ---------------------------------------------------------------- approvals
 
     def _queue_approval(
-        self, session_id: str, ctx: ToolContext, tool: str, clean: dict[str, Any], refund: int, emit: Emit
+        self,
+        session_id: str,
+        ctx: ToolContext,
+        tool: str,
+        clean: dict[str, Any],
+        refund: int,
+        emit: Emit,
+        *,
+        order_total: int,
     ) -> ToolResult:
-        """Put the write that was just rolled back into the queue (once per session and arguments)."""
+        """Put the write that was just rolled back into the queue (once per session and arguments).
+        `order_total` adds the returns already filed on the order; approving commits `refund` only."""
         with Session(self.engine) as db_session:
             pending = db_session.scalars(
                 select(Approval).where(
@@ -403,12 +425,21 @@ class ChatService:
         self._audit(
             session_id,
             "approval_requested",
-            {"code": code, "tool": tool, "args": clean, "refund_won": refund},
+            {
+                "code": code,
+                "tool": tool,
+                "args": clean,
+                "refund_won": refund,
+                "order_refund_won": order_total,
+            },
         )
         emit("approval", {"code": code, "tool": tool, "refund_won": refund})
+        amount = f"{refund:,}원" + (
+            f"(같은 주문의 반품 환불액 합계 {order_total:,}원)" if order_total != refund else ""
+        )
         return ToolResult.error(
             "approval_required",
-            f"환불액 {refund:,}원은 담당자 승인이 필요해 아직 처리되지 않았고, 승인 대기열에 올렸습니다"
+            f"환불액 {amount}은 담당자 승인이 필요해 아직 처리되지 않았고, 승인 대기열에 올렸습니다"
             f"(승인 번호 {code}). 고객에게 담당자 확인 후 처리되며 결과는 이 대화창으로 안내된다고 알리세요. "
             "같은 요청을 다시 호출하지 마세요.",
             args=clean,

@@ -131,7 +131,7 @@ ollama pull qwen2.5:7b-instruct
 docker compose up --build        # 채팅 http://127.0.0.1:8062, 관리 화면 /admin (기본 토큰 local-admin)
 ```
 
-- 평가와 같은 에이전트 루프와 도구가 PostgreSQL 위에서 돈다. 도구가 규정을 막고, 환불액 10만 원 이상인 취소·반품은 관리 화면에서 사람이 승인해야 실행된다. 고객 메시지, LLM 호출, 도구 호출, 승인 결정은 감사 로그에 남는다
+- 평가와 같은 에이전트 루프와 도구가 PostgreSQL 위에서 돈다. 도구가 규정을 막고, 환불액 10만 원 이상인 취소·반품(반품은 같은 주문에 접수된 반품과의 합계)은 관리 화면에서 사람이 승인해야 실행된다. 고객 메시지, LLM 호출, 도구 호출, 승인 결정은 감사 로그에 남는다
 - Docker 없이: `uv run uvicorn support_agent.service.app:create_app --factory --port 8062` (SQLite 파일)
 - MCP 서버: `uv run python -m support_agent.mcp_server` (읽기 도구만), `--scope write`(쓰기 포함), `--http`(토큰 필요). MCP로 호출해도 규정 검사, 사람 승인, 감사 로그를 똑같이 지난다
 

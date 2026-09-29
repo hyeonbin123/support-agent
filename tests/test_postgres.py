@@ -29,6 +29,9 @@ from test_service import (
     say,
     verify_and_cancel,
 )
+from test_service import (
+    test_lines_of_one_order_returned_one_at_a_time_add_up_against_the_threshold as returns_one_at_a_time,
+)
 
 from support_agent import db
 from support_agent.chat import ScriptedProvider
@@ -97,6 +100,10 @@ def test_a_turn_writes_the_change_and_its_audit_row_together(engine, monkeypatch
         session_id = client.post("/api/sessions").json()["session_id"]
         say(client, session_id, "박도윤, 01000009003입니다. O-90003 취소해 주세요.")
     assert order_status(engine, "O-90003") == "paid"  # no audit row, no cancellation
+
+
+def test_returns_of_one_order_add_up_against_the_threshold_on_postgresql(engine):
+    returns_one_at_a_time(engine)  # the sum over the order runs in the tool's transaction
 
 
 def test_of_two_deciders_one_carries_the_write_out_on_postgresql(engine):
