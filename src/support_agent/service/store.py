@@ -28,7 +28,9 @@ class SessionStatus(enum.StrEnum):
 
 class ApprovalStatus(enum.StrEnum):
     PENDING = "pending"
-    EXECUTING = "executing"  # claimed by one decider; stays so only if the process died meanwhile
+    # Claimed by one decider. A write that raises gives it back (pending); it stays only if the process died
+    # meanwhile or the database could not be reached to give it back.
+    EXECUTING = "executing"
     APPROVED = "approved"  # approved and carried out
     REJECTED = "rejected"
     FAILED = "failed"  # approved, but the tool refused by then (the order had moved on)

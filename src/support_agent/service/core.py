@@ -487,7 +487,26 @@ class ChatService:
                 state=ConversationState(verified_customer_id=customer_id),
             )
             # The tool's changes, its audit row and the approval's "approved" are one transaction.
-            result = self._run_tool(session_id, ctx, tool, args, lambda _e, _d: None, approval_id=approval_id)
+            try:
+                result = self._run_tool(
+                    session_id, ctx, tool, args, lambda _e, _d: None, approval_id=approval_id
+                )
+            except Exception as exc:
+                # That transaction was rolled back, so the shop is unchanged: give the claim back so the
+                # approval can be decided again. If the commit did land, it also set "approved", and this
+                # conditional UPDATE matches nothing.
+                with Session(self.engine) as db_session:
+                    db_session.execute(
+                        update(Approval)
+                        .where(Approval.id == approval_id, Approval.status == claimed.value)
+                        .values(
+                            status=ApprovalStatus.PENDING.value, decided_at=None, decided_by=None, note=""
+                        )
+                    )
+                    db_session.commit()
+                error = f"{type(exc).__name__}: {exc}"
+                self._audit(session_id, "error", {"approval": approval_code(approval_id), "error": error})
+                raise
             status = ApprovalStatus.APPROVED if result.ok else ApprovalStatus.FAILED
 
         if status is ApprovalStatus.APPROVED:

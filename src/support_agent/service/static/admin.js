@@ -6,6 +6,7 @@
   const BY_KEY = 'support-agent.admin-by';
   const APPROVAL_STATUS = {
     pending: '승인 대기',
+    executing: '처리 중',
     approved: '처리됨',
     rejected: '반려됨',
     failed: '승인했지만 처리 실패',

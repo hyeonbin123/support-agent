@@ -151,6 +151,61 @@ def test_of_two_deciders_one_carries_the_write_out(engine):  # noqa: F811
     assert order_status(engine, "O-10097") == "cancelled"
 
 
+def carried_out(engine, code: str) -> list[dict]:  # noqa: F811
+    with Session(engine) as session:
+        calls = session.scalars(select(store.AuditEvent).where(store.AuditEvent.kind == "tool_call")).all()
+        return [e.payload for e in calls if e.payload.get("approval") == code and e.payload["ok"]]
+
+
+def test_a_failed_approved_write_gives_the_claim_back(engine, monkeypatch):  # noqa: F811
+    """The tool's transaction was rolled back, so nothing changed: the approval can be decided again."""
+    with make_client(engine, [*verify_and_cancel(BIG), "담당자 확인 후 처리됩니다."]) as client:
+        session_id, _ = ask_for_big_cancel(client)
+    service = ChatService(Settings(), engine, ScriptedProvider([]))
+
+    real = core.AuditEvent
+
+    def failing(**fields):
+        if fields.get("kind") == "tool_call" and fields["payload"]["name"] == "cancel_order":
+            raise RuntimeError("audit storage failed")
+        return real(**fields)
+
+    monkeypatch.setattr(core, "AuditEvent", failing)
+    with pytest.raises(ToolBugError):
+        service.decide(1, approve=True, by="kim")
+    with Session(engine) as session:
+        approval = session.get(store.Approval, 1)
+        assert (approval.status, approval.decided_by) == ("pending", None)
+    assert order_status(engine, "O-10097") == "preparing"
+    assert [a["code"] for a in service.transcript(session_id)["pending_approvals"]] == ["AP-1"]
+
+    monkeypatch.setattr(core, "AuditEvent", real)
+    errors = [e["payload"] for e in service.audit(session_id) if e["kind"] == "error"]
+    assert [e["approval"] for e in errors] == ["AP-1"] and "ToolBugError" in errors[0]["error"]
+    assert service.decide(1, approve=True, by="kim")["status"] == "approved"
+    assert order_status(engine, "O-10097") == "cancelled"
+    assert [c["name"] for c in carried_out(engine, "AP-1")] == ["cancel_order"]
+
+
+def test_a_write_that_committed_is_not_given_back(engine, monkeypatch):  # noqa: F811
+    """An error after the commit (the tool's transaction already said "approved") leaves it approved."""
+    with make_client(engine, [*verify_and_cancel(BIG), "담당자 확인 후 처리됩니다."]) as client:
+        ask_for_big_cancel(client)
+    service = ChatService(Settings(), engine, ScriptedProvider([]))
+    real = core.execute
+
+    def commits_then_fails(*args, **kwargs):
+        real(*args, **kwargs)
+        raise ToolBugError("the connection dropped after the commit")
+
+    monkeypatch.setattr(core, "execute", commits_then_fails)
+    with pytest.raises(ToolBugError):
+        service.decide(1, approve=True, by="kim")
+    with Session(engine) as session:
+        assert session.get(store.Approval, 1).status == "approved"
+    assert order_status(engine, "O-10097") == "cancelled"
+
+
 # -------------------------------------------------------------------- 4-6: limits of the web layer
 
 
