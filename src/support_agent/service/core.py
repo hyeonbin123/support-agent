@@ -199,6 +199,8 @@ class ChatService:
                 raise SessionClosedError(row.status)
             state = _state_from(row.state)
             customer_id, turns = row.verified_customer_id, row.turns
+        # max_tool_errors is per turn, like max_agent_calls: errors of earlier turns must not end this one.
+        earlier_errors, state.tool_errors = state.tool_errors, 0
 
         self._audit(session_id, "customer_message", {"text": text, **({"via": via} if via else {})})
         ctx = ToolContext(
@@ -237,6 +239,7 @@ class ChatService:
             reply = FALLBACK_REPLY
             if state.messages[-1].tool_calls:  # the call that failed has no answer; do not keep half of it
                 state.messages.pop()
+        state.tool_errors += earlier_errors  # the stored state keeps the session's total
         if reply is not None and (error or status is SessionStatus.CLOSED):
             state.messages.append(Message("assistant", reply))
         if turns + 1 >= self.settings.max_turns_per_session and status is SessionStatus.OPEN:

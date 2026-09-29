@@ -12,7 +12,7 @@ from sqlalchemy import func, inspect, select
 from sqlalchemy.orm import Session
 
 from support_agent import db
-from support_agent.chat import ProviderError, ScriptedProvider, ToolCall
+from support_agent.chat import ChatResponse, ProviderError, ScriptedProvider, ToolCall
 from support_agent.seed import build_seed_engine
 from support_agent.service import store
 from support_agent.service.app import create_app
@@ -231,6 +231,29 @@ def test_a_long_session_is_closed(engine):
         shown = client.get(f"/api/sessions/{session_id}").json()["messages"]
         assert [m["text"] for m in shown[-2:]] == ["네.", CLOSED_REPLY]
         assert client.post(f"/api/sessions/{session_id}/messages", json={"text": "셋"}).status_code == 409
+
+
+def test_tool_errors_of_earlier_turns_do_not_end_a_later_turn(engine):
+    """The limit of tool errors is per turn, like the limit of LLM calls: a session that met refusals over
+    many turns (not found, not verified, held for approval) still gets its answers."""
+
+    class LooksUpAMissingOrder(ScriptedProvider):
+        def chat(self, messages, tools=(), **options):
+            if messages[-1].role == "user":
+                return ChatResponse(tool_calls=(ToolCall("get_order", {"order_id": "O-99999"}),))
+            return ChatResponse(text="주문을 찾지 못했습니다.")
+
+    service = ChatService(Settings(), engine, LooksUpAMissingOrder([]))
+    session_id = service.new_session()["session_id"]
+    events: list[tuple[str, dict]] = []
+    for turn in range(11):
+        events.clear()
+        service.handle(session_id, "O-99999 주문이요.", lambda name, data: events.append((name, data)))
+        assert "error" not in [name for name, _ in events], turn
+        assert dict(events)["reply"] == {"text": "주문을 찾지 못했습니다."}
+        assert events[-1][1] == {"status": "open"}
+    with Session(engine) as session:
+        assert session.get(store.ChatSession, session_id).state["tool_errors"] == 11  # the session total
 
 
 def test_one_session_answers_one_message_at_a_time(engine):
