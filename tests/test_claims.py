@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 
 import pytest
@@ -13,7 +14,10 @@ from support_agent.agent import CLAIM_NOTICE, agent_turn, new_state
 from support_agent.chat import Message, ScriptedProvider, ToolCall
 from support_agent.claims import unbacked_claim
 from support_agent.config import JUDGED, RunConfig
-from support_agent.toolkit import ToolContext, execute
+from support_agent.seed import build_seed_engine
+from support_agent.tasks import load_tasks
+from support_agent.toolkit import ConversationState, ToolContext, execute
+from support_agent.tools import build_registry
 
 
 def shown(tool: str, **result) -> Message:
@@ -133,6 +137,52 @@ def test_one_kind_with_evidence_is_enough_and_the_first_bare_sentence_is_reporte
     claim = unbacked_claim(text, cancelled)
     assert (claim.sentence, claim.kinds) == ("교환 접수를 완료했습니다.", ("exchange",))
     assert (claim.label, claim.tools) == ("교환 접수", "request_exchange")
+
+
+# ------------------------------------------------------------------------------------------ real tool answers
+
+# The patterns of claims.KINDS read the JSON that toolkit.execute writes from the answers of tools.py; the
+# tests above build their own. One completion sentence per write tool: its real answer must back it.
+DONE_BY_TOOL = {
+    "cancel_order": "주문이 취소되었습니다.",
+    "request_return": "반품 접수를 완료했습니다.",
+    "request_exchange": "교환 접수가 완료되었습니다.",
+    "change_shipping_address": "배송지를 변경했습니다.",
+    "issue_compensation_coupon": "보상 쿠폰을 발급해 드렸습니다.",
+    "create_ticket": "상담 티켓을 남겼습니다.",
+    "transfer_to_human": "상담원과 연결되었습니다.",
+}
+
+
+@functools.cache
+def real_answers() -> dict[str, str]:
+    """The first answer of each write tool when the gold actions of the development tasks are replayed."""
+    registry, seed, out = build_registry(), build_seed_engine(), {}
+    for task in load_tasks("dev"):
+        engine = db.memory_engine(seed)
+        ctx = ToolContext(
+            now=task.now, state=ConversationState(task.customer_id if task.gold_verified else None)
+        )
+        for action in task.gold_actions:
+            result = execute(registry, engine, ctx, action.tool, action.args)
+            assert result.ok, (task.id, result.content)
+            out.setdefault(action.tool, result.content)
+        engine.dispose()
+    return out
+
+
+def test_every_write_tool_has_a_completion_sentence():
+    assert sorted(DONE_BY_TOOL) == sorted(name for name, spec in build_registry().items() if spec.write)
+
+
+@pytest.mark.parametrize(
+    ("tool", "text"),
+    [*DONE_BY_TOOL.items(), ("cancel_order", "환불 처리했습니다."), ("request_return", "환불 처리했습니다.")],
+    ids=[*DONE_BY_TOOL, "cancel_order-refund", "request_return-refund"],
+)
+def test_the_real_answer_of_a_write_tool_backs_its_completion_sentence(tool, text):
+    assert unbacked_claim(text, []) is not None  # the sentence is a claim
+    assert unbacked_claim(text, [Message("tool", real_answers()[tool], tool_name=tool)]) is None
 
 
 # ------------------------------------------------------------------------------------------ in the loop
