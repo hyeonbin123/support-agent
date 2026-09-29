@@ -214,7 +214,8 @@ def listener_without_a_model(model) -> WhisperListener:
 
 
 def test_a_long_recording_is_refused_before_it_is_decoded(monkeypatch):
-    """19 kB of FLAC hold an hour of silence: the service stops at its limit instead of decoding it all."""
+    """19 kB of FLAC hold an hour of silence: the service stops at its limit instead of decoding it all.
+    tracemalloc sees the samples kept in Python, not FFmpeg's own buffers; the next test covers those."""
     whisper_audio = pytest.importorskip("faster_whisper.audio")
     hour = encoded(3600, 8000, step=32768, options={"frame_size": "32768"})
     assert len(hour) < 50_000
@@ -230,6 +231,26 @@ def test_a_long_recording_is_refused_before_it_is_decoded(monkeypatch):
     finally:
         tracemalloc.stop()
     assert peak < 50_000_000 and model.lengths == []  # decoding all of it takes about 580 MB
+
+
+@pytest.mark.parametrize("rate", [1, 5])
+def test_an_hours_long_frame_is_refused_before_it_is_resampled(monkeypatch, rate):
+    """One 8 kB FLAC frame of 65,535 samples at 5 Hz is 13,107 s: resampled to 16 kHz it took 4 GB inside
+    FFmpeg (at 1 Hz 2 GB, and then nothing came out, so it was accepted). Its length is counted first."""
+    av = pytest.importorskip("av")
+    data = encoded(65_535 / rate, rate, step=65_535, options={"frame_size": "65535"})
+    assert len(data) < 10_000
+
+    class NoResampling:
+        def __init__(self, **options):
+            pass
+
+        def resample(self, frame):
+            pytest.fail("a frame went to the resampler")
+
+    monkeypatch.setattr(av.audio.resampler, "AudioResampler", NoResampling)
+    with pytest.raises(AudioTooLongError):
+        speech.decode_limited(data, 60)
 
 
 @pytest.mark.parametrize(

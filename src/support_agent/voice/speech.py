@@ -131,13 +131,19 @@ class MeloSpeaker:
 
 def decode_limited(audio: bytes, max_seconds: float) -> Any:
     """faster-whisper's decode_audio, but it stops as soon as the recording passes `max_seconds`: a few kB of
-    FLAC can hold hours of silence, and decode_audio would first expand all of it in memory."""
+    FLAC can hold hours of silence, and decode_audio would first expand all of it in memory.
+
+    Each frame's length is counted before the resampler sees it, because one frame can be hours long: 65,535
+    samples at 5 Hz become 13,107 s at 16 kHz, gigabytes inside the resampler. The count of what comes out
+    stays the exact check; a second of slack (far more than the resampler's delay) keeps the early count from
+    refusing a recording that the exact one accepts."""
     import gc
 
     import av
     import numpy as np
 
     limit, total, chunks = int(max_seconds * LISTEN_RATE), 0, []
+    seconds_in = 0.0
     resampler = av.audio.resampler.AudioResampler(format="s16", layout="mono", rate=LISTEN_RATE)
 
     def take(frames) -> None:
@@ -159,6 +165,9 @@ def decode_limited(audio: bytes, max_seconds: float) -> Any:
                     break
                 except av.error.InvalidDataError:
                     continue
+                seconds_in += frame.samples / frame.sample_rate
+                if seconds_in > max_seconds + 1:
+                    raise AudioTooLongError(f"more than {max_seconds:g} s of audio")
                 take(resampler.resample(frame))
             take(resampler.resample(None))  # flush
     finally:
