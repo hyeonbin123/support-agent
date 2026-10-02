@@ -26,7 +26,7 @@
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | 0. 기반 | 가상 DB, 도구 14개, 규정 문서, 에이전트 루프, Ollama 연결, 시뮬레이터, 판정, 스모크 과제 5개 | 완료. 실제 모델(qwen2.5 7B)로 에피소드가 끝까지 돌고 판정이 나옴 |
-| 1. 과제와 기준선 | 개발용 24개·시험용 40개 과제, 기준선 측정 | 완료. qwen2.5 7B, 개발용 pass^1 20.8%, pass^4 12.5% |
+| 1. 과제와 기준선 | 개발용 24개·시험용 40개 과제, 기준선 측정 | 완료. qwen2.5 7B, 개발용 pass^1 20.8%, pass^4 8.3%. 2단계의 기준은 Ollama가 올라간 뒤 같은 설정으로 다시 잰 것이다 (pass^1 20.8%, pass^4 12.5%) |
 | 2. 개선 실험 | 규정 적용 방식, 추론 절차, 멈춤 가드, 모델 크기 | 완료. 판정: 개선 없음 (아래) |
 | 3. 서비스 | 웹 채팅(SSE), 세션·감사 로그(PostgreSQL), 큰 환불의 사람 승인 대기열, 관리 화면, Docker Compose | 완료. [docs/service.md](docs/service.md) |
 | 4. MCP 서버 | 같은 도구 등록부를 MCP로 노출 (stdio·HTTP, 읽기/쓰기 범위) | 완료. [docs/mcp.md](docs/mcp.md) |
@@ -100,6 +100,7 @@ uv run python -m support_agent.analyze compare reports/<기준 실행> outputs/r
 - 발화와 도구 호출의 seed는 (기본 seed, 과제, 시도, 역할, 호출 순번)에서 나오므로 같은 명령은 같은 seed로 돈다. 그래도 GPU 연산 순서 때문에 에피소드가 글자 단위로 같지는 않다
 - 실행마다 `manifest.json`에 커밋, 설정, 모델 digest, Ollama 버전, 프롬프트·과제·seed DB의 해시가 남는다. 두 실행을 짝지어도 되는지는 `analyze same-setup <실행 A> <실행 B>`가 확인한다
 - 이 저장소의 수치는 모두 `reports/`의 기록에서 다시 계산된다: `analyze table`, `compare`, `voice`, `claims`. 모델 없이 된다
+- 새 클론에서 모델 없이 확인한 것(설치, 린트·테스트, Compose 빌드와 기동, 모델 대역으로 상담 하나, 기록에서 수치 다시 계산)과 확인하지 않은 것(실제 모델로 다시 재기)은 [docs/plan.md](docs/plan.md)의 "새 클론 확인"에 있다 (2026-10-02)
 - 후보별 옵션: `--policy P1`, `--reasoning R1`, `--guard G1|G2`, `--rescue F1`, `--claims C1|C2`, `--model qwen2.5:14b-instruct --user-on-cpu --num-ctx 8192`, `--voice V1|V2`(`uv sync --group voice` 필요). 시험용 과제는 `--tasks test --allow-test`이고 단계마다 한 번만 잰다
 
 ## 실행

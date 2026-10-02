@@ -67,7 +67,7 @@ uv run uvicorn support_agent.service.offline:create_offline_app --factory --port
 APP_ID=<앱 번호> ADMIN_TOKEN=<같은 토큰> SCAN_SESSION_ID=<세션 번호> hawk scan
 ```
 
-스캔 결과 (2026-09-21, HawkScan 6.4.0, 정책 OpenAPI/REST API)
+스캔 결과 (2026-09-21~29, HawkScan 6.4.0, 정책 OpenAPI/REST API. 1~3은 2026-09-21, 4~6의 날짜는 각 줄에)
 
 | 스캔 | 대상 | 결과 |
 |---|---|---|
