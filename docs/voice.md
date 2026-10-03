@@ -37,6 +37,16 @@ uv run --group voice uvicorn support_agent.service.app:create_app --factory --po
 - 음성을 켜면 응답 헤더가 두 군데 달라진다: `Permissions-Policy`의 `microphone=(self)`, CSP의 `media-src 'self' blob:`
 - `SUPPORT_AGENT_TTS_DEVICE`, `SUPPORT_AGENT_STT_DEVICE`로 모델을 CPU에 둘 수 있다
 
+## V4: 발신 번호로 하는 본인 확인 (9단계)
+
+`--voice V4`는 V2와 같은 채널에 본인 확인 방식 하나를 바꾼다. 규칙과 결과는 [experiments.md](experiments.md)의 "9단계".
+
+- 통화가 고객이 가입한 전화번호에서 온다고 보고, 하니스가 그 번호를 도구 문맥에 넣는다 (에이전트에게는 보이지 않는다)
+- 에이전트의 도구 목록에서 `find_customer`가 빠지고 `verify_caller(name)`가 들어간다. 번호가 가리키는 고객 한 명의 이름과만 비교하고, 자모 편집 거리 1까지 받아들인다 ("배성분"은 "배성훈"으로 확인된다). 결과에는 등록된 이름이 온다
+- 시스템 프롬프트 규칙 목록 끝에 한 줄이 붙는다 (`prompts/caller_id.md`). V0~V2의 프롬프트와 도구 목록은 그대로다
+- 서비스의 음성 모드와 MCP 서버는 바뀌지 않는다 (브라우저 마이크에는 발신 번호가 없다)
+- `uv run python -m support_agent.analyze caller-id <실행 ...>`: 확인 도구를 부르지 않은 에피소드, 허용 오차로 통과한 확인, 없는 도구(`find_customer`) 호출. `analyze name-collisions --k 1`: seed 고객의 번호와 다른 고객 이름의 쌍 가운데 허용 오차가 받아들이는 것
+
 ## 구성
 
 | 파일 | 하는 일 |

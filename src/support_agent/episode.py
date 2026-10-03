@@ -8,6 +8,7 @@ import traceback
 import unicodedata
 
 from sqlalchemy import Engine
+from sqlalchemy.orm import Session
 
 from support_agent import db
 from support_agent.agent import AgentState, agent_turn, build_system_prompt, new_state
@@ -37,6 +38,16 @@ def gold_dump_of(task: Task, seed_engine: Engine, registry: Registry) -> db.Dump
         return db.dump_db(engine)
     finally:
         engine.dispose()
+
+
+def caller_number(task: Task, seed_engine: Engine) -> str:
+    """Voice V4: the number the call comes from. Every task's customer calls from the phone they registered,
+    also when the scenario only gives them an e-mail address."""
+    with Session(seed_engine) as session:
+        customer = session.get(db.Customer, task.customer_id)
+        if customer is None:
+            raise ValueError(f"{task.id}: customer {task.customer_id} is not in the seed data")
+        return customer.phone
 
 
 _STOP = re.compile(r"#{2,}\s*STOP\s*#{2,}", re.IGNORECASE)
@@ -111,12 +122,19 @@ def run_episode(
     channel: SpeechChannel | None = None,
 ) -> EpisodeResult:
     started = time.perf_counter()
+    if ("verify_caller" in registry) != config.caller_id:
+        # The prompt line, the tool list and the caller number go together (V4), or none of them does.
+        raise ValueError("voice V4 needs build_registry(caller_id=True), and only V4 may use it")
     if gold_dump is None:
         gold_dump = gold_dump_of(task, seed_engine, registry)
     seed_dump = db.dump_db(seed_engine)
     engine = db.memory_engine(seed_engine)  # private copy of this episode
-    ctx = ToolContext(now=task.now, enforce_policy=config.enforce_policy)  # the task's fixed clock
-    state = new_state(build_system_prompt(policy_text, task.now))
+    ctx = ToolContext(  # the task's fixed clock
+        now=task.now,
+        enforce_policy=config.enforce_policy,
+        caller_phone=caller_number(task, seed_engine) if config.caller_id else None,
+    )
+    state = new_state(build_system_prompt(policy_text, task.now, caller_id=config.caller_id))
 
     def run_tool(name: str, arguments: dict):
         return execute(registry, engine, ctx, name, arguments)

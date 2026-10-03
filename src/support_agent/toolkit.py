@@ -86,6 +86,7 @@ class ToolContext:
     enforce_policy: bool = True  # P1 = True, P0 = False
     state: ConversationState = field(default_factory=ConversationState)
     violations: list[str] = field(default_factory=list)  # policy codes that were let through (P0 only)
+    caller_phone: str | None = None  # voice V4: the number the call comes from (digits); None elsewhere
 
     def require(self, ok: bool, code: str, message: str) -> None:
         """Integrity and identity checks. Refused in every mode."""

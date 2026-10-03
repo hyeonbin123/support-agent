@@ -9,11 +9,14 @@ Usage:
     uv run python -m support_agent.analyze voice-worst reports/<voice run on the development tasks>
     uv run python -m support_agent.analyze claims reports/<run> [more run dirs ...]
     uv run python -m support_agent.analyze same-setup reports/<run> reports/<run to pair it with>
+        [--ignore voice] [--ignore-prompt tools agent_system]   (stage 9: V2 and V4 differ in those two)
     uv run python -m support_agent.analyze smoke outputs/runs/<smoke run of a stage 8 candidate>
     uv run python -m support_agent.analyze select reports/<P1 7B dev> reports/<P0 7B dev> reports/<cand> ..
     uv run python -m support_agent.analyze verdict reports/<P1 7B test> reports/<P0 7B test> reports/<cand>
     uv run python -m support_agent.analyze blind reports/<dev run A> reports/<dev run B> .. --n 20 --out <dir>
     uv run python -m support_agent.analyze unblind <dir>
+    uv run python -m support_agent.analyze name-collisions [--k 1]
+    uv run python -m support_agent.analyze caller-id reports/<V2 run> reports/<V4 run> [...]
 
 `table` prints the markdown tables that go into docs/experiments.md. `misses` lists episodes whose database
 matched but whose required value was not found, so that a person can check the value matcher. `sample` draws
@@ -317,14 +320,21 @@ def is_test_run(run_dir: Path) -> bool:
     )
 
 
-def setup_differences(run_a: Path, run_b: Path, ignore: tuple[str, ...] = ("voice",)) -> list[str]:
+def setup_differences(
+    run_a: Path, run_b: Path, ignore: tuple[str, ...] = ("voice",), ignore_prompts: tuple[str, ...] = ()
+) -> list[str]:
     """Why two runs may not be paired as "the same setup but for `ignore`". Empty when they may.
 
     Compared: every config field but the ignored axes (a field an older manifest lacks counts as its default),
-    trials, task hashes, seed hash, prompt hashes, both providers (model digest, server version, options), and
-    per task the trials that were judged.
+    trials, task hashes, seed hash, prompt hashes but `ignore_prompts` (V4 changes the agent prompt and the
+    tool list on purpose), both providers (model digest, server version, options), and per task the trials
+    that were judged.
     """
     a, b = load_manifest(run_a), load_manifest(run_b)
+    for manifest in (a, b):
+        prompts = manifest.get("prompt_sha256")
+        if isinstance(prompts, dict) and ignore_prompts:
+            manifest["prompt_sha256"] = {k: v for k, v in prompts.items() if k not in ignore_prompts}
     defaults = RunConfig().to_dict()
     out = []
     for key in sorted((set(a["config"]) | set(b["config"]) | set(defaults)) - set(ignore)):
@@ -351,6 +361,98 @@ def setup_differences(run_a: Path, run_b: Path, ignore: tuple[str, ...] = ("voic
         if left.get(task) != right.get(task):
             out.append(f"judged trials of {task}: {left.get(task)} != {right.get(task)}")
     return out
+
+
+# ---------------------------------------------------------------- stage 9: voice V4, the caller's number
+
+
+def name_collisions(
+    names: dict[str, str], k: int
+) -> tuple[list[tuple[str, str, str, str, int]], list[tuple[str, str]]]:
+    """The gate of stage 9, on customer id -> name: (collisions, same-name pairs).
+
+    A collision is an ordered pair (A, B) where B's name is not A's name but verify_caller, called from A's
+    number with B's name, would accept it (jamo distance <= k). Pairs with the very same name are set apart:
+    exact matching accepts them as well, and the customer verified is A, the owner of the number.
+    """
+    from support_agent.tools import _normalise_name, name_distance
+
+    collisions, same = [], []
+    for a in sorted(names):
+        for b in sorted(names):
+            if a == b:
+                continue
+            if _normalise_name(names[a]) == _normalise_name(names[b]):
+                same.append((a, b))
+                continue
+            distance = name_distance(names[b], names[a])
+            if distance <= k:
+                collisions.append((a, b, names[a], names[b], distance))
+    return collisions, same
+
+
+def seed_names() -> dict[str, str]:
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+
+    from support_agent import db
+    from support_agent.seed import build_seed_engine
+
+    with Session(build_seed_engine()) as session:
+        return {c.id: c.name for c in session.scalars(select(db.Customer))}
+
+
+def collision_report(k: int) -> tuple[str, bool]:
+    names = seed_names()
+    collisions, same = name_collisions(names, k)
+    lines = [
+        f"customers {len(names)}, distinct names {len(set(names.values()))}, k = {k}",
+        f"same-name ordered pairs (set apart): {len(same)} " + " ".join(f"{a}/{b}" for a, b in same),
+        f"collisions (another name accepted from a number): {len(collisions)}",
+        *(f"  {a} {na} <- {b} {nb}: {d}" for a, b, na, nb, d in collisions),
+        "gate: " + ("PASS (0 collisions)" if not collisions else "FAIL"),
+    ]
+    return "\n".join(lines), not collisions
+
+
+# verify_caller refusals that mean the harness gave no usable number: a bug, never the agent's doing.
+CALLER_HARNESS_ERRORS = ("no_caller_number", "caller_not_registered", "caller_shared")
+
+
+def caller_id_table(runs: dict[str, list[dict[str, Any]]]) -> str:
+    """How the customer got identified, per run: find_customer (V0..V2) or verify_caller (V4)."""
+    from support_agent.tools import name_distance
+
+    lines = [
+        "| 실행 | 에피소드 | 본인 확인 성공 | 확인 도구를 부르지 않음 | find_customer 성공 / 호출 "
+        "| verify_caller 성공 / 호출 | 허용 오차로 통과 | 없는 도구 호출 | 발신 번호 오류 |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    for name, episodes in runs.items():
+        counted = [e for e in episodes if e["status"] != "infra_error"]
+        calls = [c for e in counted for c in e["tool_calls"]]
+
+        def tally(tool: str, calls: list[dict[str, Any]] = calls) -> str:
+            mine = [c for c in calls if c["name"] == tool]
+            return f"{sum(bool(c['ok']) for c in mine)} / {len(mine)}"
+
+        tolerated = 0
+        for c in calls:
+            if c["name"] == "verify_caller" and c["ok"]:
+                said = (c.get("args") or {}).get("name", "")
+                tolerated += name_distance(said, json.loads(c["content"])["name"]) > 0
+        identified = sum(voice_metrics.identified(e) for e in counted)
+        silent = sum(
+            not any(c["name"] in voice_metrics.IDENTITY_TOOLS for c in e["tool_calls"]) for e in counted
+        )
+        share = identified / len(counted) if counted else float("nan")
+        codes = Counter(c.get("error_code") for c in calls)
+        lines.append(
+            f"| {name} | {len(counted)} | {identified} ({share:.1%}) | {silent} | {tally('find_customer')} "
+            f"| {tally('verify_caller')} | {tolerated} | {codes['unknown_tool']} "
+            f"| {sum(codes[code] for code in CALLER_HARNESS_ERRORS)} |"
+        )
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------- stage 8: a new-generation agent model
@@ -801,6 +903,12 @@ def main() -> None:
     pairing.add_argument("run_a", type=Path)
     pairing.add_argument("run_b", type=Path)
     pairing.add_argument("--ignore", nargs="*", default=["voice"], help="config axes that may differ")
+    pairing.add_argument(
+        "--ignore-prompt",
+        nargs="*",
+        default=[],
+        help="prompt hashes that may differ (V4: tools agent_system)",
+    )
     commands.add_parser("smoke").add_argument("run_dir", type=Path)
     selector = commands.add_parser("select")
     selector.add_argument("base_dir", type=Path, help="P1 7B on the development tasks")
@@ -815,6 +923,9 @@ def main() -> None:
     blinder.add_argument("--n", type=int, default=20)
     blinder.add_argument("--out", type=Path, required=True)
     commands.add_parser("unblind").add_argument("out_dir", type=Path)
+    colliding = commands.add_parser("name-collisions")
+    colliding.add_argument("--k", type=int, default=1, help="jamo edits verify_caller allows")
+    commands.add_parser("caller-id").add_argument("run_dirs", nargs="+", type=Path)
     args = parser.parse_args()
 
     sys.stdout.reconfigure(encoding="utf-8")  # Korean on a Windows console
@@ -843,8 +954,15 @@ def main() -> None:
         print(f"wrote {args.out / 'sheet.md'}; fill in marks.json from marks.template.json, then run unblind")
     elif args.command == "unblind":
         print(unblind(args.out_dir))
+    elif args.command == "name-collisions":
+        report, passed = collision_report(args.k)
+        print(report)
+        if not passed:
+            sys.exit(1)
+    elif args.command == "caller-id":
+        print(caller_id_table({d.name: load_episodes(d) for d in args.run_dirs}))
     elif args.command == "same-setup":
-        differences = setup_differences(args.run_a, args.run_b, tuple(args.ignore))
+        differences = setup_differences(args.run_a, args.run_b, tuple(args.ignore), tuple(args.ignore_prompt))
         print("\n".join(differences) or "same setup")
         if differences:
             sys.exit(1)

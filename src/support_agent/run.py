@@ -34,7 +34,7 @@ from support_agent.paths import OUTPUTS, REPORTS, ROOT
 from support_agent.records import EpisodeResult
 from support_agent.seed import build_seed_engine
 from support_agent.tasks import load_tasks
-from support_agent.tools import build_registry
+from support_agent.tools import NAME_TOLERANCE, build_registry
 from support_agent.user_sim import LLMUser, build_user_prompt
 from support_agent.voice.speech import versions as speech_versions
 
@@ -138,14 +138,14 @@ def summarise(results: list[EpisodeResult]) -> dict[str, Any]:
 
 
 def build_channel(config: RunConfig, tts_device: str, stt_device: str):
-    """The speech channel of V1/V2 (needs the `voice` dependency group), or None for text."""
+    """The speech channel of V1/V2/V4 (needs the `voice` dependency group), or None for text."""
     if config.voice == "V0":
         return None
     from support_agent.voice.channel import SpeechChannel
     from support_agent.voice.speech import MeloSpeaker, WhisperListener
 
     normalizer = None
-    if config.voice == "V2":
+    if config.voice in ("V2", "V4"):  # V4 hears exactly as V2 does; only the identification differs
         from support_agent.voice.normalize import normalize_heard as normalizer
     print(f"loading the speech models (tts on {tts_device}, stt on {stt_device}) ...")
     return SpeechChannel(
@@ -196,9 +196,10 @@ def main() -> None:
     )
     parser.add_argument(
         "--voice",
-        choices=["V0", "V1", "V2"],
+        choices=["V0", "V1", "V2", "V4"],
         default="V0",
-        help="V1: the customer is heard through speech synthesis and recognition; V2: and a normaliser",
+        help="V1: the customer is heard through speech synthesis and recognition; V2: and a normaliser; "
+        "V4: V2, and verify_caller checks the name against the caller's number instead of find_customer",
     )
     parser.add_argument("--tts-device", choices=["cuda", "cpu"], default="cuda")
     parser.add_argument("--stt-device", choices=["cuda", "cpu"], default="cuda")
@@ -275,7 +276,7 @@ def main() -> None:
             f"{OTHER_GPU_USE_LIMIT_MIB}). Another job is probably running; not starting (--force overrides)."
         )
 
-    registry = build_registry()
+    registry = build_registry(caller_id=config.caller_id)
     seed_engine = build_seed_engine()
     seed_dump = db.dump_db(seed_engine)
     policy_text = load_policy()
@@ -327,13 +328,18 @@ def main() -> None:
         "seed_hash": db.state_hash(seed_dump),
         "prompt_sha256": {
             "policy": text_sha256(policy_text),
-            "agent_system": text_sha256(build_system_prompt(policy_text, tasks[0].now)),
+            "agent_system": text_sha256(
+                build_system_prompt(policy_text, tasks[0].now, caller_id=config.caller_id)
+            ),
             "user_sim": text_sha256(build_user_prompt(tasks[0])),
             "tools": text_sha256(tools_json),
         },
         "agent_provider": provider.describe(),
         "user_provider": user_provider.describe(),
         "voice_channel": channel.describe() if channel else None,
+        "caller_id": (
+            {"tool": "verify_caller", "name_tolerance": NAME_TOLERANCE} if config.caller_id else None
+        ),
         "gpu_mib_used_by_others_at_start": others,
         "ollama_ps_after_preload": ollama_ps(provider),
         "versions": {"python": sys.version.split()[0]}

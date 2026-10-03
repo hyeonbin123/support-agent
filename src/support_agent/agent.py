@@ -90,10 +90,13 @@ def load_policy() -> str:
     return _prompt_file("policy.md")
 
 
-def build_system_prompt(policy_text: str, now: datetime) -> str:
+def build_system_prompt(policy_text: str, now: datetime, *, caller_id: bool = False) -> str:
+    """The agent's system prompt. caller_id (voice V4) adds one rule line: identify by the caller's number and
+    the name. Without it the text is the same as before stage 9 (the manifests' hashes)."""
     local = to_kst(now)
     now_text = f"{local:%Y-%m-%d %H:%M} ({_WEEKDAYS[local.weekday()]}요일)"
-    return _prompt_file("agent.md").format(policy=policy_text.strip(), now=now_text)
+    caller_rule = "\n" + _prompt_file("caller_id.md").strip() if caller_id else ""
+    return _prompt_file("agent.md").format(policy=policy_text.strip(), now=now_text, caller_rule=caller_rule)
 
 
 def new_state(system_prompt: str) -> AgentState:

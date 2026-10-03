@@ -1,4 +1,5 @@
-"""The 14 domain tools. Every caller runs them through toolkit.execute().
+"""The 14 domain tools, and verify_caller that takes find_customer's place in voice V4 (stage 9). Every caller
+runs them through toolkit.execute().
 
 Check order inside a handler: identity -> existence -> ownership -> integrity (`ctx.require`) -> policy
 (`ctx.check_policy`). Error messages give the reason only, never a hint about what to do next.
@@ -23,6 +24,9 @@ from support_agent.labels import choices, label
 from support_agent.toolkit import Registry, ToolArgs, ToolContext, make_registry, tool
 
 CANCELLABLE = (db.OrderStatus.PAID, db.OrderStatus.PREPARING)
+# Voice V4: jamo edits allowed between the name the agent heard and the caller's registered name. Fixed before
+# measuring from the misheard names of the development V1/V2 runs (docs/experiments.md, stage 9).
+NAME_TOLERANCE = 1
 
 
 # ---------------------------------------------------------------------------------------------- arguments
@@ -31,6 +35,10 @@ CANCELLABLE = (db.OrderStatus.PAID, db.OrderStatus.PREPARING)
 class FindCustomerArgs(ToolArgs):
     name: str = Field(description="고객 이름")
     contact: str = Field(description="가입한 전화번호 또는 이메일")
+
+
+class VerifyCallerArgs(ToolArgs):
+    name: str = Field(description="고객이 말한 이름")
 
 
 LineNo = Annotated[int, Field(ge=1, le=999)]
@@ -215,6 +223,35 @@ def _normalise_name(name: str) -> str:
     return text
 
 
+def name_distance(said: str, registered: str) -> int:
+    """Edit distance of two names in jamo after the find_customer normalisation ("배성분", "배성훈": 1)."""
+    a, b = (unicodedata.normalize("NFD", _normalise_name(x)) for x in (said, registered))
+    previous = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        current = [i]
+        for j, y in enumerate(b, 1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (x != y)))
+        previous = current
+    return previous[-1]
+
+
+def _identified(ctx: ToolContext, customer: db.Customer) -> dict:
+    """Mark the customer as verified for this conversation (one customer per conversation)."""
+    verified = ctx.state.verified_customer_id
+    ctx.require(
+        verified is None or verified == customer.id,
+        "already_verified",
+        "이 대화에서는 이미 다른 고객의 본인 확인을 마쳤습니다.",
+    )
+    ctx.state.verified_customer_id = customer.id
+    return {
+        "customer_id": customer.id,
+        "name": customer.name,
+        "grade": customer.grade.value,
+        "grade_label": label(customer.grade),
+    }
+
+
 # -------------------------------------------------------------------------------------------------- reads
 
 
@@ -230,19 +267,25 @@ def find_customer(session: Session, ctx: ToolContext, args: FindCustomerArgs) ->
         )
         found = next((c for c in candidates if "".join(c.name.split()) == name), None)
     ctx.require(found is not None, "customer_not_found", "이름과 연락처가 모두 일치하는 고객이 없습니다.")
-    verified = ctx.state.verified_customer_id
+    return _identified(ctx, found)
+
+
+@tool(write=False)
+def verify_caller(session: Session, ctx: ToolContext, args: VerifyCallerArgs) -> dict:
+    """전화 상담의 본인 확인. 고객이 말한 이름이 발신 번호로 가입한 고객의 이름과 맞는지 확인한다."""
+    ctx.require(ctx.caller_phone is not None, "no_caller_number", "발신 번호가 없는 상담입니다.")
+    digits = "".join(ch for ch in ctx.caller_phone or "" if ch.isdigit())
+    owners = list(session.scalars(select(db.Customer).filter_by(phone=digits).order_by(db.Customer.id)))
+    ctx.require(bool(owners), "caller_not_registered", "발신 번호로 가입한 고객이 없습니다.")
+    # One to one: the number names one customer, and the name is only checked against that customer.
+    ctx.require(len(owners) == 1, "caller_shared", "발신 번호로 가입한 고객이 여러 명입니다.")
+    owner = owners[0]
     ctx.require(
-        verified is None or verified == found.id,
-        "already_verified",
-        "이 대화에서는 이미 다른 고객의 본인 확인을 마쳤습니다.",
+        bool(_normalise_name(args.name)) and name_distance(args.name, owner.name) <= NAME_TOLERANCE,
+        "name_mismatch",
+        "발신 번호로 가입한 고객의 이름과 일치하지 않습니다.",
     )
-    ctx.state.verified_customer_id = found.id
-    return {
-        "customer_id": found.id,
-        "name": found.name,
-        "grade": found.grade.value,
-        "grade_label": label(found.grade),
-    }
+    return _identified(ctx, owner)
 
 
 @tool(write=False)
@@ -664,9 +707,12 @@ def think(session: Session, ctx: ToolContext, args: ThinkArgs) -> dict:
     return {"ok": True}
 
 
-def build_registry() -> Registry:
+def build_registry(*, caller_id: bool = False) -> Registry:
+    """The tools of a conversation. caller_id (voice V4): verify_caller takes the place of find_customer.
+
+    The service and the MCP server use the default."""
     return make_registry(
-        find_customer,
+        verify_caller if caller_id else find_customer,
         get_customer,
         list_orders,
         get_order,

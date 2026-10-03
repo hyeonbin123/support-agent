@@ -42,7 +42,9 @@ class RunConfig:
     rescue: Literal["F0", "F1"] = "F0"  # F1: a tool call leaked into the text is parsed and run
     # V1: what the customer says reaches the agent through speech synthesis and recognition.
     # V2: and the recognised text goes through the rule-based normaliser first.
-    voice: Literal["V0", "V1", "V2"] = "V0"
+    # V4 (stage 9): V2, and the call comes from the customer's registered number: verify_caller checks the
+    # name against that one customer (find_customer is not offered). V3 is not used.
+    voice: Literal["V0", "V1", "V2", "V4"] = "V0"
     # L1: a reply written in Chinese or Japanese script is not delivered but sent back, like a format
     # error. The service turns it on; it has not been measured, so the evaluation default is L0.
     language: Literal["L0", "L1"] = "L0"
@@ -69,6 +71,11 @@ class RunConfig:
     @property
     def enforce_policy(self) -> bool:
         return self.policy == "P1"
+
+    @property
+    def caller_id(self) -> bool:
+        """V4: the customer is identified by the number of the call and the name they give."""
+        return self.voice == "V4"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

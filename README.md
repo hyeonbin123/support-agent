@@ -34,6 +34,7 @@
 | 6. 정리 | 결과표, 한계, 다시 재는 방법 | 완료 |
 | 7. 완료 주장 가드 (계획에 없던 추가 실험) | "취소되었습니다"처럼 끝났다고 말하는 답을 그 대화의 도구 결과와 대조해, 근거가 없으면 고객에게 보내지 않고 다시 시킨다 | 완료. 판정: 개선 없음. 거짓 완료의 전달은 0이 되지만 성공률은 오르지 않는다 (아래) |
 | 8. 새 세대 소형 모델 (계획에 없던 추가 실험) | 서비스 구성(규정을 도구에서도 막음)에서 에이전트 모델만 `qwen3:4b-instruct-2507`, `qwen3.5:4b`(비사고 모드)로 바꿔 잰다. Ollama가 0.35.1로 바뀌어 기준을 다시 잰다 | 완료. 판정: 개선. `qwen3.5:4b`가 시험용 pass^1을 18.1%에서 55.6%로 올렸다 (아래). 서비스의 기본 모델은 바꾸지 않았다 |
+| 9. 음성 V4: 발신 번호로 본인 확인 (계획에 없던 추가 실험) | 음성 상담에서 연락처를 받아 적는 대신, 전화가 온 번호의 고객 한 명과 이름(자모 1개까지 허용)만 맞춰 본인 확인을 한다. 5단계의 V2와 짝지어 잰다 | 규칙만 커밋함, 측정 전 ([docs/experiments.md](docs/experiments.md) 9단계) |
 
 ### 측정 결과 (2단계)
 
@@ -122,7 +123,7 @@ uv run python -m support_agent.analyze compare reports/<기준 실행> outputs/r
 - 실행마다 `manifest.json`에 커밋, 설정, 모델 digest, Ollama 버전, 프롬프트·과제·seed DB의 해시가 남는다. 두 실행을 짝지어도 되는지는 `analyze same-setup <실행 A> <실행 B>`가 확인한다
 - 이 저장소의 수치는 모두 `reports/`의 기록에서 다시 계산된다: `analyze table`, `compare`, `voice`, `claims`. 모델 없이 된다
 - 새 클론에서 모델 없이 확인한 것(설치, 린트·테스트, Compose 빌드와 기동, 모델 대역으로 상담 하나, 기록에서 수치 다시 계산)과 확인하지 않은 것(실제 모델로 다시 재기)은 [docs/plan.md](docs/plan.md)의 "새 클론 확인"에 있다 (2026-10-02)
-- 후보별 옵션: `--policy P1`, `--reasoning R1`, `--guard G1|G2`, `--rescue F1`, `--claims C1|C2`, `--model qwen2.5:14b-instruct --user-on-cpu --num-ctx 8192`, `--voice V1|V2`(`uv sync --group voice` 필요). 시험용 과제는 `--tasks test --allow-test`이고 단계마다 한 번만 잰다
+- 후보별 옵션: `--policy P1`, `--reasoning R1`, `--guard G1|G2`, `--rescue F1`, `--claims C1|C2`, `--model qwen2.5:14b-instruct --user-on-cpu --num-ctx 8192`, `--voice V1|V2|V4`(`uv sync --group voice` 필요. V4는 9단계의 발신 번호 본인 확인). 시험용 과제는 `--tasks test --allow-test`이고 단계마다 한 번만 잰다
 - 8단계 옵션: `--model qwen3:4b-instruct-2507-q4_K_M --think off --num-ctx 12288 --user-num-ctx 12288` (`--think`는 에이전트에만, `--user-num-ctx`는 시뮬레이터의 컨텍스트, `--user-num-gpu N`은 시뮬레이터 층 N개만 GPU에). 에이전트와 시뮬레이터가 같은 모델이면 실행기 옵션이 같아야 한다 (다르면 Ollama가 턴마다 모델을 다시 읽으므로 시작하지 않는다). 표는 `analyze smoke`, `select`, `verdict`, 시뮬레이터 점검은 `analyze blind`·`unblind`
 
 ## 실행

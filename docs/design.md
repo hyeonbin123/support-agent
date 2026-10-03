@@ -16,7 +16,7 @@ src/support_agent/
   labels.py     enum 코드의 한국어 표기
   rules.py      규정 계산 (반품 기한, 환불액, 보상 금액). 순수 함수
   seed.py       가상 데이터 생성 (seed 고정) + 과제용 고정 행
-  tools.py      도구 14개, build_registry()
+  tools.py      도구 14개, build_registry() (음성 V4는 find_customer 대신 verify_caller)
   ollama.py     OllamaProvider (httpx, /api/chat)
   agent.py      AgentState, agent_turn()  ← 에이전트 루프
   claims.py     응답의 "끝났습니다"에 도구 결과의 근거가 있는지 (7단계의 완료 주장 가드)
@@ -61,6 +61,7 @@ tasks/smoke.yaml, dev.yaml, test.yaml
 | 도구 | 종류 | 인자 | 출력 (JSON 키) |
 |---|---|---|---|
 | `find_customer` | 읽기 | `name`, `contact`(전화번호 또는 이메일) | `customer_id, name, grade, grade_label` |
+| `verify_caller` | 읽기 (음성 V4에서만, `find_customer` 대신) | `name` | `customer_id, name, grade, grade_label`. 발신 번호(`ToolContext.caller_phone`)로 가입한 고객 한 명의 이름과 자모 편집 거리 1 이하면 통과 |
 | `get_customer` | 읽기 | `customer_id` | `customer_id, name, phone, email, grade, grade_label, joined_at, addresses[address_id, label, recipient, postal_code, address, is_default], compensation_coupons[coupon_id, order_id, reason, reason_label, amount_won, issued_at]` |
 | `list_orders` | 읽기 | `customer_id` | `customer_id, orders[order_id, ordered_at, status, status_label, total_won, item_summary]` (최근 주문부터) |
 | `get_order` | 읽기 | `order_id` | `order_id, status, status_label, ordered_at, items[line_no, product_id, variant_id, product_name, option_label, quantity, unit_price_won, status, status_label], items_won, shipping_fee_won, discount_won, total_won, payment{method, method_label, amount_won, status, status_label, refund_won}, shipping{address_id, recipient, postal_code, address}, requests[request_id, kind, kind_label, reason, reason_label, line_nos, refund_won, return_fee_won, created_at], compensation_coupons[같은 키], cancelled_at, cancel_reason, cancel_reason_label` |
@@ -81,7 +82,8 @@ tasks/smoke.yaml, dev.yaml, test.yaml
 |---|---|
 | `customer_not_found` | 이름과 연락처가 모두 일치하는 고객이 없음. 연락처는 글에서 뽑은 이메일(소문자) 또는 숫자만 남긴 전화번호(`+82 10…`은 `010…`으로)로, 이름은 공백과 끝의 `님`·`고객님`을 떼고 비교. `get_customer`·`list_orders`의 없는 id도 같은 코드 |
 | `already_verified` | 이 대화에서 이미 다른 고객을 확인함 (대화당 고객 1명) |
-| `identity_not_verified` | 본인 확인 전에 고객·주문 정보를 조회하거나 처리하려 함 (`find_customer`, `get_product`, `transfer_to_human`, `think`는 예외) |
+| `name_mismatch`, `caller_not_registered`, `caller_shared`, `no_caller_number` | `verify_caller`: 이름이 발신 번호의 고객과 다름 / 그 번호로 가입한 고객이 없음 / 여럿임 / 발신 번호가 없는 상담 |
+| `identity_not_verified` | 본인 확인 전에 고객·주문 정보를 조회하거나 처리하려 함 (`find_customer`, `verify_caller`, `get_product`, `transfer_to_human`, `think`는 예외) |
 | `not_same_customer`, `not_order_owner`, `address_not_owned` | 확인된 고객의 것이 아님 |
 | `order_not_found`, `product_not_found`, `variant_not_found`, `address_not_found`, `line_not_found`, `shipment_not_found` | 없는 대상 |
 | `already_cancelled` | 이미 취소된 주문에 대한 취소·반품·교환·배송지 변경 |

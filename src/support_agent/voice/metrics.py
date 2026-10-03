@@ -97,9 +97,12 @@ def channel_summary(episodes: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+IDENTITY_TOOLS = ("find_customer", "verify_caller")  # verify_caller: voice V4 (stage 9)
+
+
 def identified(episode: dict[str, Any]) -> bool:
     """The customer was verified at least once: the first thing every task needs."""
-    return any(call["name"] == "find_customer" and call["ok"] for call in episode["tool_calls"])
+    return any(call["name"] in IDENTITY_TOOLS and call["ok"] for call in episode["tool_calls"])
 
 
 def identified_by_task(episodes: list[dict[str, Any]]) -> dict[str, float]:
