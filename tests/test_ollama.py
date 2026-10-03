@@ -414,9 +414,10 @@ def test_loaded_models():
     }
     provider = make(Server({"/api/ps": ps}))
 
+    # size next to size_vram tells how much of a model sits on the GPU (stage 8 smoke gate)
     assert provider.loaded_models() == [
-        {"name": MODEL, "size_vram": 5_500_000_000},
-        {"name": "other:1b", "size_vram": 0},
+        {"name": MODEL, "size": 6_000_000_000, "size_vram": 5_500_000_000},
+        {"name": "other:1b", "size": 0, "size_vram": 0},
     ]
 
 

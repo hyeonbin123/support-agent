@@ -33,6 +33,7 @@
 | 5. 음성 채널 | 고객의 말이 음성 합성 → 음성 인식을 거쳐 들어올 때 성공률이 얼마나 떨어지는지, 규칙 기반 정규화로 얼마나 되찾는지. 서비스의 음성 입출력 | 완료. 판정: 음성 채널이 성공률을 낮추고, 정규화가 일부를 되찾는다 (아래). [docs/voice.md](docs/voice.md) |
 | 6. 정리 | 결과표, 한계, 다시 재는 방법 | 완료 |
 | 7. 완료 주장 가드 (계획에 없던 추가 실험) | "취소되었습니다"처럼 끝났다고 말하는 답을 그 대화의 도구 결과와 대조해, 근거가 없으면 고객에게 보내지 않고 다시 시킨다 | 완료. 판정: 개선 없음. 거짓 완료의 전달은 0이 되지만 성공률은 오르지 않는다 (아래) |
+| 8. 새 세대 소형 모델 (계획에 없던 추가 실험) | 서비스 구성(규정을 도구에서도 막음)에서 에이전트 모델만 `qwen3:4b-instruct-2507`, `qwen3.5:4b`(비사고 모드)로 바꿔 잰다. Ollama가 0.35.1로 바뀌어 기준을 다시 잰다 | 규칙만 정함 (2026-10-03). 측정 전. [docs/experiments.md](docs/experiments.md) 8단계 |
 
 ### 측정 결과 (2단계)
 
@@ -102,6 +103,7 @@ uv run python -m support_agent.analyze compare reports/<기준 실행> outputs/r
 - 이 저장소의 수치는 모두 `reports/`의 기록에서 다시 계산된다: `analyze table`, `compare`, `voice`, `claims`. 모델 없이 된다
 - 새 클론에서 모델 없이 확인한 것(설치, 린트·테스트, Compose 빌드와 기동, 모델 대역으로 상담 하나, 기록에서 수치 다시 계산)과 확인하지 않은 것(실제 모델로 다시 재기)은 [docs/plan.md](docs/plan.md)의 "새 클론 확인"에 있다 (2026-10-02)
 - 후보별 옵션: `--policy P1`, `--reasoning R1`, `--guard G1|G2`, `--rescue F1`, `--claims C1|C2`, `--model qwen2.5:14b-instruct --user-on-cpu --num-ctx 8192`, `--voice V1|V2`(`uv sync --group voice` 필요). 시험용 과제는 `--tasks test --allow-test`이고 단계마다 한 번만 잰다
+- 8단계 옵션: `--model qwen3:4b-instruct-2507-q4_K_M --think off --num-ctx 12288 --user-num-ctx 12288` (`--think`는 에이전트에만, `--user-num-ctx`는 시뮬레이터의 컨텍스트, `--user-num-gpu N`은 시뮬레이터 층 N개만 GPU에). 에이전트와 시뮬레이터가 같은 모델이면 실행기 옵션이 같아야 한다 (다르면 Ollama가 턴마다 모델을 다시 읽으므로 시작하지 않는다). 표는 `analyze smoke`, `select`, `verdict`, 시뮬레이터 점검은 `analyze blind`·`unblind`
 
 ## 실행
 

@@ -9,6 +9,11 @@ Usage:
     uv run python -m support_agent.analyze voice-worst reports/<voice run on the development tasks>
     uv run python -m support_agent.analyze claims reports/<run> [more run dirs ...]
     uv run python -m support_agent.analyze same-setup reports/<run> reports/<run to pair it with>
+    uv run python -m support_agent.analyze smoke outputs/runs/<smoke run of a stage 8 candidate>
+    uv run python -m support_agent.analyze select reports/<P1 7B dev> reports/<P0 7B dev> reports/<cand> ..
+    uv run python -m support_agent.analyze verdict reports/<P1 7B test> reports/<P0 7B test> reports/<cand>
+    uv run python -m support_agent.analyze blind reports/<dev run A> reports/<dev run B> --n 20 --out <dir>
+    uv run python -m support_agent.analyze unblind <dir>
 
 `table` prints the markdown tables that go into docs/experiments.md. `misses` lists episodes whose database
 matched but whose required value was not found, so that a person can check the value matcher. `sample` draws
@@ -20,6 +25,8 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
+import statistics
 import sys
 from collections import Counter
 from pathlib import Path
@@ -346,6 +353,430 @@ def setup_differences(run_a: Path, run_b: Path, ignore: tuple[str, ...] = ("voic
     return out
 
 
+# ---------------------------------------------------------------- stage 8: a new-generation agent model
+# Thresholds of the stage 8 rules in docs/experiments.md, written down and committed before measuring.
+
+RELOAD_MS = 1_000.0  # a call whose load_duration is longer than this waited for its model to be loaded again
+SMOKE_REFERENCE_AGENT_CALL_MS = 588.9  # P1·7B, reports/20260920-190957-...-p1 (Ollama 0.34.2): a pre-filter
+SMOKE_MAX_CALL_RATIO = 3.0
+SMOKE_MAX_PROMPT_EVAL_MEDIAN_MS = 500.0  # far below a prompt evaluated from scratch, far above a cached one
+SMOKE_MAX_FORMAT_ERRORS_PER_EPISODE = 1.0  # twice the P1·7B rate (48 in 96 episodes)
+SMOKE_MAX_OTHER_SCRIPT_SHARE = 0.10
+SELECT_MIN_GAIN = 0.05
+SELECT_MAX_CALL_RATIO = 3.0
+_THINK_TAG = re.compile(r"</?think>")
+
+
+def _judged(episodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [e for e in episodes if e["status"] != "infra_error"]
+
+
+def _agent_calls(episodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [c for e in _judged(episodes) for c in e["llm_calls"] if c["who"] == "agent"]
+
+
+def _format_errors(calls: list[dict[str, Any]]) -> int:
+    return sum(c["format_error"] not in _NOT_A_FORMAT_ERROR for c in calls)
+
+
+def _think_leaks(calls: list[dict[str, Any]]) -> int:
+    """Replies with a reasoning tag in their text: a thinking model whose thoughts were not split off."""
+    return sum(bool(_THINK_TAG.search(c.get("text") or "")) for c in calls)
+
+
+def delivered_replies(episode: dict[str, Any]) -> list[str]:
+    """What the agent said to the customer: assistant text that was delivered and was not a tool call."""
+    return [
+        m["content"]
+        for m in episode["messages"]
+        if m["role"] == "assistant"
+        and m.get("content")
+        and m.get("delivered", True)
+        and not m.get("tool_calls")
+    ]
+
+
+def _other_script(episodes: list[dict[str, Any]]) -> tuple[int, int]:
+    from support_agent.agent import in_another_language
+
+    replies = [r for e in _judged(episodes) for r in delivered_replies(e)]
+    return sum(in_another_language(r) for r in replies), len(replies)
+
+
+def _reloads(episodes: list[dict[str, Any]]) -> int:
+    return sum((c.get("load_ms") or 0) > RELOAD_MS for e in _judged(episodes) for c in e["llm_calls"])
+
+
+def _mean(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def _unexpected(episodes: list[dict[str, Any]]) -> int:
+    return sum(e["verdict"]["unexpected_writes"] for e in _judged(episodes))
+
+
+def _violations(episodes: list[dict[str, Any]]) -> int:
+    return sum(len(e["verdict"]["policy_violations"]) for e in _judged(episodes))
+
+
+def _writes(episodes: list[dict[str, Any]]) -> int:
+    return sum(1 for e in _judged(episodes) for t in e["tool_calls"] if t["ok"] and t["write"])
+
+
+def load_summary(run_dir: Path) -> dict[str, Any]:
+    path = run_dir / "summary.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def _gpu_share(ps: list[dict[str, Any]], model: str) -> float | None:
+    """size_vram / size of a loaded model; None when the server did not hold it."""
+    for m in ps:
+        if m.get("name") == model:
+            size = m.get("size") or 0
+            return (m.get("size_vram") or 0) / size if size else 0.0
+    return None
+
+
+def _placement(user_provider: dict[str, Any]) -> str:
+    num_gpu = user_provider.get("num_gpu")
+    if num_gpu is None:
+        return "GPU"
+    return "CPU" if num_gpu == 0 else f"일부 CPU (num_gpu {num_gpu})"
+
+
+def smoke_gates(run_dir: Path) -> list[tuple[str, str, bool]]:
+    """The stage 8 smoke gates S0-S5 as (gate, what was seen, passed). The smoke run is not a measurement."""
+    episodes = load_episodes(run_dir)
+    manifest = load_manifest(run_dir)
+    ps = load_summary(run_dir).get("ollama_ps_at_end")
+    judged = _judged(episodes)
+    calls = _agent_calls(episodes)
+    infra = len(episodes) - len(judged)
+    out = [("S0", f"infra 오류 {infra}건", infra == 0)]
+
+    user = manifest["user_provider"]
+    reloads = _reloads(episodes)
+    if ps is None:
+        out.append(("S1", "/api/ps 기록 없음", False))
+    else:
+        agent_share = _gpu_share(ps, manifest["agent_provider"]["model"])
+        user_share = _gpu_share(ps, user["model"])
+        placement = _placement(user)
+        if placement == "GPU":
+            user_ok = user_share is not None and user_share >= 0.999
+        elif placement == "CPU":
+            user_ok = user_share == 0.0
+        else:
+            user_ok = user_share is not None and user_share > 0.0
+        ok = agent_share is not None and agent_share >= 0.999 and user_ok and reloads == 0
+
+        def pct(share: float | None) -> str:
+            return "없음" if share is None else f"{share:.0%}"
+
+        detail = (
+            f"에이전트 {pct(agent_share)} GPU, 시뮬레이터 {pct(user_share)} GPU (지정: {placement}), "
+            f"다시 읽기 {reloads}회"
+        )
+        out.append(("S1", detail, ok))
+
+    mean_ms = _mean([c["wall_ms"] for c in calls])
+    limit = SMOKE_MAX_CALL_RATIO * SMOKE_REFERENCE_AGENT_CALL_MS
+    out.append(("S2", f"에이전트 호출당 {mean_ms:.0f} ms (상한 {limit:.0f})", mean_ms <= limit))
+    median_eval = statistics.median([c["prompt_eval_ms"] for c in calls]) if calls else 0.0
+    out.append(
+        (
+            "S3",
+            f"prompt_eval 중앙값 {median_eval:.0f} ms (상한 {SMOKE_MAX_PROMPT_EVAL_MEDIAN_MS:.0f})",
+            median_eval <= SMOKE_MAX_PROMPT_EVAL_MEDIAN_MS,
+        )
+    )
+    errors, leaks = _format_errors(calls), _think_leaks(calls)
+    per_episode = (errors + leaks) / len(judged) if judged else 0.0
+    out.append(
+        (
+            "S4",
+            f"형식 오류 {errors} + think 태그 {leaks} = 에피소드당 {per_episode:.2f} "
+            f"(상한 {SMOKE_MAX_FORMAT_ERRORS_PER_EPISODE:.1f})",
+            per_episode <= SMOKE_MAX_FORMAT_ERRORS_PER_EPISODE,
+        )
+    )
+    other, total = _other_script(episodes)
+    share = other / total if total else 0.0
+    out.append(
+        (
+            "S5",
+            f"한자·가나 섞인 전달 답 {other}/{total} ({share:.0%}, 상한 {SMOKE_MAX_OTHER_SCRIPT_SHARE:.0%})",
+            share <= SMOKE_MAX_OTHER_SCRIPT_SHARE,
+        )
+    )
+    return out
+
+
+def smoke_report(run_dir: Path) -> str:
+    gates = smoke_gates(run_dir)
+    episodes = _judged(load_episodes(run_dir))
+    manifest = load_manifest(run_dir)
+    lines = ["| 관문 | 본 것 | 통과 |", "|---|---|---|"]
+    lines += [f"| {name} | {detail} | {'예' if ok else '아니오'} |" for name, detail, ok in gates]
+    seconds = _mean([e["wall_seconds"] for e in episodes if "wall_seconds" in e])
+    user_ms = _mean([c["wall_ms"] for e in episodes for c in e["llm_calls"] if c["who"] == "user"])
+    failed = [name for name, _, ok in gates if not ok]
+    lines += [
+        "",
+        f"- 시뮬레이터 자리: {_placement(manifest['user_provider'])}, 시뮬레이터 호출당 {user_ms:.0f} ms",
+        f"- 에피소드당 {seconds:.1f}초 → 개발용 96 에피소드 약 {96 * seconds / 3600:.2f}시간, "
+        f"시험용 160 에피소드 약 {160 * seconds / 3600:.2f}시간",
+        f"- GPU를 쓴 다른 프로그램 (시작할 때): {manifest.get('gpu_mib_used_by_others_at_start')} MiB",
+        f"- 결과: {'모두 통과' if not failed else '통과하지 못한 관문 ' + ', '.join(failed)}",
+    ]
+    return "\n".join(lines)
+
+
+def _check_runs(base_dir: Path, p0_dir: Path, cand_dirs: list[Path], *, test: bool) -> None:
+    """The references are what the stage 8 rule names: the same tasks, the same Ollama, the right policy."""
+    base = load_manifest(base_dir)
+    expected = {base_dir: "P1", p0_dir: "P0"} | dict.fromkeys(cand_dirs, "P1")
+    for run_dir, policy in expected.items():
+        manifest = load_manifest(run_dir)
+        if manifest["config"].get("policy") != policy:
+            raise ValueError(f"{run_dir.name}: the rule needs policy {policy} here")
+        if is_test_run(run_dir) != test:
+            raise ValueError(f"{run_dir.name}: {'only test runs' if test else 'test runs are not'} read here")
+        if manifest["task_sha256"] != base["task_sha256"]:
+            raise ValueError(f"{run_dir.name}: other tasks than {base_dir.name}")
+        version = manifest["agent_provider"].get("ollama_version")
+        if version != base["agent_provider"].get("ollama_version"):
+            raise ValueError(f"{run_dir.name}: Ollama {version} is not the version of {base_dir.name}")
+
+
+def _pairing(base_dir: Path, cand_dir: Path) -> tuple[list[str], str]:
+    """Why a candidate cannot be paired with the baseline (empty when it can), and where its simulator sat.
+    The agent model (and its think value) is the axis; a simulator moved to the CPU is recorded, not refused.
+    """
+    blocking = []
+    for line in setup_differences(base_dir, cand_dir, ignore=("model",)):
+        if line.startswith(("agent_provider differs", "judged trials of")):
+            continue  # the axis itself; tasks lost to infra errors are paired over the rest
+        if line == "user_provider differs (num_gpu)":
+            continue
+        blocking.append(line)
+    return blocking, _placement(load_manifest(cand_dir)["user_provider"])
+
+
+def _paired_pass1(base: dict[str, list[bool]], other: dict[str, list[bool]]) -> tuple[float, float, float]:
+    usable = [t for t in base if base[t] and other.get(t)]
+    return paired_difference({t: base[t] for t in usable}, {t: other[t] for t in usable}, 1)
+
+
+def select(base_dir: Path, p0_dir: Path, cand_dirs: list[Path]) -> str:
+    """The stage 8 selection rule on the development tasks. base: P1·7B, p0: P0·7B (the write reference)."""
+    _check_runs(base_dir, p0_dir, cand_dirs, test=False)
+    base_eps = load_episodes(base_dir)
+    base_by = successes_by_task(base_eps)
+    base_ms = _mean([c["wall_ms"] for c in _agent_calls(base_eps)])
+    limit = _unexpected(load_episodes(p0_dir))
+    header = (
+        "| 실행 | pass^1 | 기준과의 차이 [95% 구간] | pass^4 | 정답에 없는 쓰기 / P0 상한 | 통과된 규정 위반 "
+        "| 에이전트 호출 ms (기준의 배수) | 쓰기 정밀도 | 버린 호출 | 형식 오류 | 한자 섞인 답 "
+        "| 컨텍스트 한도 종료 "
+        "| 시뮬레이터 | 조건 1·2·3 | 채택 가능 |"
+    )
+    lines = [header, "|---|" + "---|" * (header.count("|") - 2)]
+
+    def report_cells(eps: list[dict[str, Any]]) -> list[str]:
+        calls = _agent_calls(eps)
+        writes = _writes(eps)
+        unexpected = _unexpected(eps)
+        precision = (
+            f"{(writes - unexpected) / writes:.0%} ({writes - unexpected}/{writes})" if writes else "-"
+        )
+        other, total = _other_script(eps)
+        return [
+            precision,
+            str(sum(c["dropped_calls"] for c in calls)),
+            str(_format_errors(calls)),
+            f"{other}/{total}",
+            str(sum(e["termination"] == "context_limit" for e in _judged(eps))),
+        ]
+
+    lines.append(
+        f"| {base_dir.name} (기준) | {pass_k(base_by, 1):.1%} | | {pass_k(base_by, 4):.1%} "
+        f"| {_unexpected(base_eps)} / {limit} | {_violations(base_eps)} | {base_ms:.0f} | "
+        + " | ".join(report_cells(base_eps))
+        + f" | {_placement(load_manifest(base_dir)['user_provider'])} | | |"
+    )
+    eligible: list[tuple[float, Path, str]] = []
+    notes: list[str] = []
+    for run_dir in cand_dirs:
+        eps = load_episodes(run_dir)
+        by_task = successes_by_task(eps)
+        diff, low, high = _paired_pass1(base_by, by_task)
+        unexpected, violations = _unexpected(eps), _violations(eps)
+        ms = _mean([c["wall_ms"] for c in _agent_calls(eps)])
+        ratio = ms / base_ms if base_ms else float("inf")
+        blocking, placement = _pairing(base_dir, run_dir)
+        conditions = [
+            diff >= SELECT_MIN_GAIN - 1e-9,
+            unexpected <= limit and violations == 0,
+            ratio <= SELECT_MAX_CALL_RATIO,
+        ]
+        ok = all(conditions) and not blocking
+        if blocking:
+            notes.append(f"- 짝지을 수 없음 ({run_dir.name}): " + "; ".join(blocking))
+        if ok:
+            eligible.append((pass_k(by_task, 1), run_dir, placement))
+        lines.append(
+            f"| {run_dir.name} | {pass_k(by_task, 1):.1%} | {diff:+.1%}p [{low:+.1%}, {high:+.1%}] "
+            f"| {pass_k(by_task, 4):.1%} | {unexpected} / {limit} | {violations} "
+            f"| {ms:.0f} ({ratio:.2f}배) | "
+            + " | ".join(report_cells(eps))
+            + f" | {placement} | {' · '.join('예' if c else '아니오' for c in conditions)} "
+            f"| {'예' if ok else '아니오'} |"
+        )
+    lines += ["", *notes]
+    infra = {d.name: len(load_episodes(d)) - len(_judged(load_episodes(d))) for d in [base_dir, *cand_dirs]}
+    if any(infra.values()):
+        lines.append("- infra 오류: " + ", ".join(f"{name} {n}" for name, n in infra.items() if n))
+    if not eligible:
+        lines.append("선택: 없음 (시험용은 재지 않고 '개선 없음'으로 적는다)")
+    else:
+        # the highest pass^1; max() keeps the first of equals, and the candidates are given smallest first
+        _, chosen, placement = max(eligible, key=lambda item: item[0])
+        if placement == "CPU":
+            lines.append(
+                f"선택: {chosen.name} (시뮬레이터를 CPU에서 돌렸으므로 규칙대로 시험용은 재지 않는다)"
+            )
+        else:
+            lines.append(
+                f"선택: {chosen.name} (시험용 40과제 × 4회로 P1·7B 기준, P0·7B 쓰기 참조와 함께 잰다)"
+            )
+    return "\n".join(lines)
+
+
+def verdict(base_dir: Path, p0_dir: Path, cand_dir: Path) -> str:
+    """The stage 8 verdict on the test tasks: the stage 2 table, with the P0·7B count as the write limit."""
+    _check_runs(base_dir, p0_dir, [cand_dir], test=True)
+    blocking, placement = _pairing(base_dir, cand_dir)
+    if blocking:
+        raise ValueError(f"{cand_dir.name} cannot be paired with {base_dir.name}: " + "; ".join(blocking))
+    base_by = successes_by_task(load_episodes(base_dir))
+    cand_eps = load_episodes(cand_dir)
+    diff, low, high = _paired_pass1(base_by, successes_by_task(cand_eps))
+    unexpected, limit = _unexpected(cand_eps), _unexpected(load_episodes(p0_dir))
+    raised, safe = low > 0, unexpected <= limit
+    if raised and safe:
+        outcome = "개선"
+    elif raised:
+        outcome = "성공률은 올랐지만 위험한 쓰기가 늘었음"
+    else:
+        outcome = "개선을 확인하지 못함"
+    return "\n".join(
+        [
+            "| 후보 | pass^1 차이 [95% 구간] | 1: 구간이 0 위 | 정답에 없는 쓰기 / P0·7B | 2: 늘지 않음 "
+            "| 시뮬레이터 |",
+            "|---|---|---|---|---|---|",
+            f"| {cand_dir.name} | {diff:+.1%}p [{low:+.1%}, {high:+.1%}] | {'예' if raised else '아니오'} "
+            f"| {unexpected} / {limit} | {'예' if safe else '아니오'} | {placement} |",
+            "",
+            f"판정: {outcome}",
+        ]
+    )
+
+
+BLIND_CODES = {
+    "outcome": "결과를 바꿨을 만한 잘못이 하나라도 있음",
+    "invent": "시나리오에 없는 사실을 지어냄",
+    "early_stop": "일이 끝나기 전이나 값을 듣기 전에 대화를 끝냄",
+    "agent_role": "상담원처럼 말함",
+    "asks_wait": "상담원에게 기다려 달라고 함",
+    "wrong_accept": "틀린 안내나 확인 요청에 동의함",
+    "off_script": "시나리오에 없는 제안을 받아들임",
+    "language": "다른 언어가 섞임",
+}
+_TOOL_RESULT_CHARS = 300
+
+
+def blind(run_a: Path, run_b: Path, n: int, out_dir: Path) -> None:
+    """P5(a): the same n (task, trial) pairs from two development runs, shuffled, with no run names or
+    verdicts.
+    sheet.md is for the reader, key.json says which is which, marks.json is what the reader fills in."""
+    from support_agent.paths import TASKS
+    from support_agent.tasks import load_tasks
+
+    for run_dir in (run_a, run_b):
+        if is_test_run(run_dir):
+            raise ValueError(
+                f"{run_dir.name}: the simulator check reads development records only, never test"
+            )
+    scenarios = {task.id: task.user for path in sorted(TASKS.glob("*.yaml")) for task in load_tasks(path)}
+    keyed = [{(e["task_id"], e["trial"]): e for e in _judged(load_episodes(d))} for d in (run_a, run_b)]
+    common = sorted(set(keyed[0]) & set(keyed[1]))
+    chosen = random.Random(BOOTSTRAP_SEED).sample(common, min(n, len(common)))
+    items = [
+        (run_dir.name, key, episodes[key])
+        for run_dir, episodes in zip((run_a, run_b), keyed, strict=True)
+        for key in chosen
+    ]
+    random.Random(BOOTSTRAP_SEED + 1).shuffle(items)
+
+    sheet = [
+        "# 시뮬레이터 점검 (구성 이름을 가림)",
+        "",
+        "각 에피소드에서 고객(시뮬레이터)의 잘못을 아래 코드로 적는다. 상담원의 잘못은 적지 않는다.",
+        "",
+        *[f"- `{code}`: {text}" for code, text in BLIND_CODES.items()],
+    ]
+    key: dict[str, dict[str, Any]] = {}
+    for number, (run_name, (task_id, trial), episode) in enumerate(items, start=1):
+        label = f"B{number:02d}"
+        key[label] = {"run": run_name, "task_id": task_id, "trial": trial}
+        scenario = scenarios.get(task_id)
+        sheet += ["", f"## {label}", "", "시나리오"]
+        if scenario is not None:
+            sheet += [
+                f"- 상황: {scenario.reason.strip()}",
+                f"- 알고 있는 것: {scenario.known.strip()}",
+                f"- 모르는 것: {scenario.unknown.strip() or '(없음)'}",
+                f"- 지침: {scenario.rules.strip() or '(없음)'}",
+            ]
+        sheet += ["", "대화"]
+        for m in episode["messages"]:
+            if m["role"] == "user" and not m.get("harness"):
+                sheet.append(f"- 고객: {m['content']}")
+            elif m["role"] == "assistant" and m.get("tool_calls"):
+                call = m["tool_calls"][0]
+                sheet.append(f"- (도구) {call['name']} {json.dumps(call['arguments'], ensure_ascii=False)}")
+            elif m["role"] == "tool":
+                sheet.append(f"  - (결과) {m['content'][:_TOOL_RESULT_CHARS]}")
+            elif m["role"] == "assistant" and m.get("content") and m.get("delivered", True):
+                sheet.append(f"- 상담원: {m['content']}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "sheet.md").write_text("\n".join(sheet) + "\n", encoding="utf-8", newline="\n")
+    (out_dir / "key.json").write_text(json.dumps(key, ensure_ascii=False, indent=1), encoding="utf-8")
+    template = json.dumps(dict.fromkeys(key, []), indent=1)
+    (out_dir / "marks.template.json").write_text(template, encoding="utf-8")
+
+
+def unblind(out_dir: Path) -> str:
+    """Counts of each code per run from the reader's marks.json. Observation only, nothing is chosen by it."""
+    key = json.loads((out_dir / "key.json").read_text(encoding="utf-8"))
+    marks = json.loads((out_dir / "marks.json").read_text(encoding="utf-8"))
+    missing = sorted(set(key) - set(marks))
+    if missing:
+        raise ValueError(f"no marks for {', '.join(missing)}")
+    unknown = sorted({code for codes in marks.values() for code in codes} - set(BLIND_CODES))
+    if unknown:
+        raise ValueError(f"unknown codes: {', '.join(unknown)} (known: {', '.join(BLIND_CODES)})")
+    lines = ["| 실행 | 에피소드 | " + " | ".join(BLIND_CODES) + " |", "|---|---|" + "---|" * len(BLIND_CODES)]
+    for run_name in sorted({entry["run"] for entry in key.values()}):
+        labels = [label for label, entry in key.items() if entry["run"] == run_name]
+        counts = Counter(code for label in labels for code in set(marks[label]))
+        lines.append(
+            f"| {run_name} | {len(labels)} | " + " | ".join(str(counts[c]) for c in BLIND_CODES) + " |"
+        )
+    return "\n".join(lines)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -364,6 +795,21 @@ def main() -> None:
     pairing.add_argument("run_a", type=Path)
     pairing.add_argument("run_b", type=Path)
     pairing.add_argument("--ignore", nargs="*", default=["voice"], help="config axes that may differ")
+    commands.add_parser("smoke").add_argument("run_dir", type=Path)
+    selector = commands.add_parser("select")
+    selector.add_argument("base_dir", type=Path, help="P1 7B on the development tasks")
+    selector.add_argument("p0_dir", type=Path, help="P0 7B on the development tasks (the write reference)")
+    selector.add_argument("run_dirs", nargs="+", type=Path, help="candidates, the smallest model first")
+    judging = commands.add_parser("verdict")
+    judging.add_argument("base_dir", type=Path, help="P1 7B on the test tasks")
+    judging.add_argument("p0_dir", type=Path, help="P0 7B on the test tasks (the write reference)")
+    judging.add_argument("run_dir", type=Path, help="the selected candidate on the test tasks")
+    blinder = commands.add_parser("blind")
+    blinder.add_argument("run_a", type=Path)
+    blinder.add_argument("run_b", type=Path)
+    blinder.add_argument("--n", type=int, default=20)
+    blinder.add_argument("--out", type=Path, required=True)
+    commands.add_parser("unblind").add_argument("out_dir", type=Path)
     args = parser.parse_args()
 
     sys.stdout.reconfigure(encoding="utf-8")  # Korean on a Windows console
@@ -381,6 +827,17 @@ def main() -> None:
         print(voice_metrics.worst(load_episodes(args.run_dir)))
     elif args.command == "claims":
         print(claims_table(args.run_dirs))
+    elif args.command == "smoke":
+        print(smoke_report(args.run_dir))
+    elif args.command == "select":
+        print(select(args.base_dir, args.p0_dir, args.run_dirs))
+    elif args.command == "verdict":
+        print(verdict(args.base_dir, args.p0_dir, args.run_dir))
+    elif args.command == "blind":
+        blind(args.run_a, args.run_b, args.n, args.out)
+        print(f"wrote {args.out / 'sheet.md'}; fill in marks.json from marks.template.json, then run unblind")
+    elif args.command == "unblind":
+        print(unblind(args.out_dir))
     elif args.command == "same-setup":
         differences = setup_differences(args.run_a, args.run_b, tuple(args.ignore))
         print("\n".join(differences) or "same setup")

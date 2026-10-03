@@ -237,7 +237,11 @@ class OllamaProvider(ChatProvider):
         try:
             models = self._request("GET", "/api/ps", timeout=_META_TIMEOUT_S).get("models") or []
             return [
-                {"name": m.get("name") or m.get("model") or "", "size_vram": m.get("size_vram", 0) or 0}
+                {
+                    "name": m.get("name") or m.get("model") or "",
+                    "size": m.get("size", 0) or 0,  # with size_vram: how much of the model is on the GPU
+                    "size_vram": m.get("size_vram", 0) or 0,
+                }
                 for m in models
                 if isinstance(m, dict)
             ]

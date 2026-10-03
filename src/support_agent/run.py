@@ -3,6 +3,8 @@
 Usage:
     uv run python -m support_agent.run --tasks smoke --trials 1
     uv run python -m support_agent.run --tasks smoke --model qwen2.5:14b-instruct --policy P1 --label p1-14b
+    uv run python -m support_agent.run --tasks smoke --policy P1 --model qwen3:4b-instruct-2507-q4_K_M
+        --think off --num-ctx 12288 --user-num-ctx 12288 --label smoke-m2a   (one command line)
 
 Records go to outputs/runs/<run_id>/ (git-ignored). Pass --official to write to reports/ (committed); that
 needs a clean working tree, and test task files also need --allow-test. The GPU is shared with other
@@ -71,6 +73,12 @@ def gpu_used_by_others_mib(provider: OllamaProvider) -> int | None:
         return None
     ollama_mib = sum(int(m.get("size_vram") or 0) for m in provider.loaded_models()) // (1024 * 1024)
     return max(used - ollama_mib, 0)
+
+
+def ollama_ps(provider: OllamaProvider) -> list[dict[str, Any]]:
+    """What the server holds in memory (name, size, size_vram); [] for providers that cannot say."""
+    loaded = getattr(provider, "loaded_models", None)
+    return loaded() if callable(loaded) else []
 
 
 def text_sha256(text: str) -> str:
@@ -175,6 +183,18 @@ def main() -> None:
         help="run the simulator model on the CPU (when the agent model leaves no GPU memory for it)",
     )
     parser.add_argument(
+        "--user-num-gpu",
+        type=int,
+        default=None,
+        help="layers of the simulator model on the GPU, the rest on the CPU (0 is --user-on-cpu)",
+    )
+    parser.add_argument(
+        "--think",
+        choices=["on", "off"],
+        default=None,
+        help="send think to the agent model only (default: not sent; models without thinking refuse it)",
+    )
+    parser.add_argument(
         "--voice",
         choices=["V0", "V1", "V2"],
         default="V0",
@@ -183,6 +203,9 @@ def main() -> None:
     parser.add_argument("--tts-device", choices=["cuda", "cpu"], default="cuda")
     parser.add_argument("--stt-device", choices=["cuda", "cpu"], default="cuda")
     parser.add_argument("--num-ctx", type=int, default=RunConfig.num_ctx)
+    parser.add_argument(
+        "--user-num-ctx", type=int, default=None, help="the simulator's num_ctx (default: --num-ctx)"
+    )
     parser.add_argument("--label", default="", help="short name added to the run id")
     parser.add_argument("--official", action="store_true", help="write to reports/ (needs a clean tree)")
     parser.add_argument("--allow-test", action="store_true", help="required for test task files")
@@ -199,9 +222,22 @@ def main() -> None:
             "--official needs git and a clean working tree, so that the commit describes the code that ran"
         )
 
+    if args.user_on_cpu and args.user_num_gpu not in (None, 0):
+        parser.error("--user-on-cpu means --user-num-gpu 0")
+    user_num_gpu = 0 if args.user_on_cpu else args.user_num_gpu
+    user_num_ctx = args.user_num_ctx or args.num_ctx
+    user_model = args.user_model or RunConfig.user_model
+    if user_model == args.model and (user_num_ctx != args.num_ctx or user_num_gpu is not None):
+        # Ollama keeps one runner per model; other runner options reload it, and here that is every turn.
+        parser.error(
+            "the agent and the simulator are the same model, so they need the same runner options: "
+            "drop --user-num-ctx/--user-on-cpu/--user-num-gpu or use another simulator model"
+        )
+    think = None if args.think is None else args.think == "on"
+
     config = RunConfig(
         model=args.model,
-        user_model=args.user_model or RunConfig.user_model,
+        user_model=user_model,
         policy=args.policy,
         reasoning=args.reasoning,
         guard=args.guard,
@@ -209,6 +245,7 @@ def main() -> None:
         voice=args.voice,
         claims=args.claims,
         num_ctx=args.num_ctx,
+        user_num_ctx=user_num_ctx,
     )
     tasks = load_tasks(args.tasks)
     if args.task_id:
@@ -219,15 +256,16 @@ def main() -> None:
     if not tasks:
         parser.error("no tasks selected")
 
-    provider = OllamaProvider(config.model, num_ctx=config.num_ctx)
-    # One provider object when both roles use the same model: equal runner options, so no reload.
-    same = config.user_model == config.model and not args.user_on_cpu
+    # think is a request field, not a runner option, so it never reloads a model; it goes to the agent only.
+    provider = OllamaProvider(
+        config.model, num_ctx=config.num_ctx, **({} if think is None else {"think": think})
+    )
+    # One provider object when both roles use the same model and nothing differs: equal runner options.
+    same = config.user_model == config.model and think is None
     user_provider = (
         provider
         if same
-        else OllamaProvider(
-            config.user_model, num_ctx=config.num_ctx, num_gpu=0 if args.user_on_cpu else None
-        )
+        else OllamaProvider(config.user_model, num_ctx=config.user_num_ctx, num_gpu=user_num_gpu)
     )
 
     others = gpu_used_by_others_mib(provider)
@@ -245,8 +283,9 @@ def main() -> None:
     gold_dumps = {task.id: gold_dump_of(task, seed_engine, registry) for task in tasks}
     channel = build_channel(config, args.tts_device, args.stt_device)
     print(f"loading {config.model} ... {provider.preload() / 1000:.1f} s")
-    if not same:
+    if user_provider is not provider:
         print(f"loading {config.user_model} ... {user_provider.preload() / 1000:.1f} s")
+    if config.user_model != config.model:
         print("warning: two models take turns; if both do not fit in GPU memory every turn reloads one")
     started = datetime.now(UTC)
     run_id = "-".join(
@@ -289,6 +328,7 @@ def main() -> None:
         "user_provider": user_provider.describe(),
         "voice_channel": channel.describe() if channel else None,
         "gpu_mib_used_by_others_at_start": others,
+        "ollama_ps_after_preload": ollama_ps(provider),
         "versions": {"python": sys.version.split()[0]}
         | {name: version(name) for name in ("sqlalchemy", "pydantic", "httpx", "pyyaml")}
         | (speech_versions("faster-whisper", "ctranslate2", "melotts", "torch") if channel else {}),
@@ -322,6 +362,7 @@ def main() -> None:
         )
     finally:  # also after Ctrl-C or a crash: what was measured so far stays readable
         summary = summarise(results)
+        summary["ollama_ps_at_end"] = ollama_ps(provider)  # a model evicted or moved to the CPU shows here
         (run_dir / "summary.json").write_text(
             json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n"
         )

@@ -53,6 +53,9 @@ class RunConfig:
     user_temperature: float = 0.3
     base_seed: int = 1000
     num_ctx: int = 16384
+    # The simulator's num_ctx. None (records before stage 8) means the same as num_ctx; the runner always
+    # writes the resolved number. One model in both roles must keep one value (Ollama reloads otherwise).
+    user_num_ctx: int | None = None
     max_tokens: int = 1024
     max_agent_calls: int = 30  # LLM calls by the agent per episode
     max_user_turns: int = 20
