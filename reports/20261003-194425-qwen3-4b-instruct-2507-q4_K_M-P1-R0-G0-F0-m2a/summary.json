@@ -1,0 +1,73 @@
+{
+ "episodes": 96,
+ "infra_errors": 0,
+ "truncated": 0,
+ "terminations": {
+  "handoff": 4,
+  "max_user_turns": 24,
+  "out_of_scope": 1,
+  "user_stop": 67
+ },
+ "successes": 43,
+ "pass_hat_k": {
+  "1": 0.4479166666666667,
+  "2": 0.28472222222222227,
+  "3": 0.21875,
+  "4": 0.20833333333333334
+ },
+ "by_task": {
+  "dev-001": "4/4",
+  "dev-002": "2/4",
+  "dev-003": "4/4",
+  "dev-004": "2/4",
+  "dev-005": "0/4",
+  "dev-006": "4/4",
+  "dev-007": "2/4",
+  "dev-008": "4/4",
+  "dev-009": "4/4",
+  "dev-010": "2/4",
+  "dev-011": "2/4",
+  "dev-012": "0/4",
+  "dev-013": "1/4",
+  "dev-014": "3/4",
+  "dev-015": "2/4",
+  "dev-016": "1/4",
+  "dev-017": "0/4",
+  "dev-018": "1/4",
+  "dev-019": "0/4",
+  "dev-020": "2/4",
+  "dev-021": "0/4",
+  "dev-022": "2/4",
+  "dev-023": "0/4",
+  "dev-024": "1/4"
+ },
+ "tasks_without_valid_trials": [],
+ "successes_with_unexpected_writes": 0,
+ "unexpected_writes": 4,
+ "policy_violations": 0,
+ "policy_blocks": 11,
+ "auth_blocks": 11,
+ "format_errors": 0,
+ "held_claims": 0,
+ "dropped_calls": 0,
+ "seconds_per_episode": 10.5,
+ "agent_calls_per_episode": 12.1,
+ "agent_call_ms": 569.3,
+ "agent_prompt_eval_ms": 35.8,
+ "agent_prompt_tokens_max": 8281,
+ "agent_calls_without_prompt_tokens": 0,
+ "user_call_ms": 393.5,
+ "model_load_ms_total": 6871.3,
+ "ollama_ps_at_end": [
+  {
+   "name": "qwen2.5:7b-instruct",
+   "size": 5377213070,
+   "size_vram": 5377213070
+  },
+  {
+   "name": "qwen3:4b-instruct-2507-q4_K_M",
+   "size": 4394498129,
+   "size_vram": 4394498129
+  }
+ ]
+}
