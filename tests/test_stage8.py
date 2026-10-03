@@ -6,6 +6,7 @@ reads synthetic records.
 from __future__ import annotations
 
 import json
+import random
 
 import pytest
 
@@ -486,25 +487,28 @@ def test_the_verdict_reads_only_test_runs(tmp_path):
 # ---------------------------------------------------------------- the blind simulator check (P5(a))
 
 
-def two_dev_runs(tmp_path):
+def blind_task_ids():
     from support_agent.tasks import load_tasks
 
-    ids = [t.id for t in load_tasks("dev")][:6]
+    return [t.id for t in load_tasks("dev")][:6]
 
-    def episodes(text):
-        out = []
-        for task in ids:
-            for trial in range(4):
-                e = ep(task, trial, trial == 0, replies=(text,))
-                e["messages"] = [
-                    {"role": "user", "content": "주문 취소하고 싶어요."},
-                    {"role": "assistant", "content": text},
-                ]
-                out.append(e)
-        return out
 
-    a = write_run(tmp_path, "run-a", episodes("기준 상담원의 말"))
-    b = write_run(tmp_path, "run-b", episodes("후보 상담원의 말"), model=NEW)
+def talk_episodes(text):
+    out = []
+    for task in blind_task_ids():
+        for trial in range(4):
+            e = ep(task, trial, trial == 0, replies=(text,))
+            e["messages"] = [
+                {"role": "user", "content": "주문 취소하고 싶어요."},
+                {"role": "assistant", "content": text},
+            ]
+            out.append(e)
+    return out
+
+
+def two_dev_runs(tmp_path):
+    a = write_run(tmp_path, "run-a", talk_episodes("기준 상담원의 말"))
+    b = write_run(tmp_path, "run-b", talk_episodes("후보 상담원의 말"), model=NEW)
     return a, b
 
 
@@ -526,6 +530,46 @@ def test_the_blind_sheet_hides_which_run_and_how_it_ended(tmp_path):
     for entry in key.values():
         pairs.setdefault(entry["run"], set()).add((entry["task_id"], entry["trial"]))
     assert pairs["run-a"] == pairs["run-b"]
+
+
+def test_two_runs_keep_the_layout_of_the_recorded_sheets(tmp_path):
+    # the stage 8 sheets were made from two runs each; the same command must give the same sheet again
+    a, b = two_dev_runs(tmp_path)
+    out = tmp_path / "blind"
+    analyze.blind(a, b, n=5, out_dir=out)
+    key = json.loads((out / "key.json").read_text(encoding="utf-8"))
+    common = sorted((task, trial) for task in blind_task_ids() for trial in range(4))
+    chosen = random.Random(analyze.BOOTSTRAP_SEED).sample(common, 5)
+    items = [(name, pair) for name in ("run-a", "run-b") for pair in chosen]
+    random.Random(analyze.BOOTSTRAP_SEED + 1).shuffle(items)
+    assert [(entry["run"], (entry["task_id"], entry["trial"])) for entry in key.values()] == items
+
+
+def test_every_run_of_one_check_goes_into_one_sheet(tmp_path):
+    # two sheets that share a run have the same layout (fixed seeds), so its episodes give the other run
+    # away; with every run in one sheet nothing is left to eliminate
+    a, b = two_dev_runs(tmp_path)
+    c = write_run(tmp_path, "run-c", talk_episodes("셋째 상담원의 말"), model="qwen3.5:4b")
+    out = tmp_path / "three"
+    analyze.blind(a, b, c, n=5, out_dir=out)
+    key = json.loads((out / "key.json").read_text(encoding="utf-8"))
+    sheet = (out / "sheet.md").read_text(encoding="utf-8")
+    assert len(key) == 15 and sheet.count("\n## B") == 15
+    for hidden in ("run-a", "run-b", "run-c", "qwen3.5"):
+        assert hidden not in sheet
+    pairs = {}
+    for entry in key.values():
+        pairs.setdefault(entry["run"], set()).add((entry["task_id"], entry["trial"]))
+    assert set(pairs) == {"run-a", "run-b", "run-c"}
+    assert pairs["run-a"] == pairs["run-b"] == pairs["run-c"] and len(pairs["run-a"]) == 5
+
+
+def test_the_blind_check_needs_two_different_runs(tmp_path):
+    a, _ = two_dev_runs(tmp_path)
+    with pytest.raises(ValueError, match="two or more"):
+        analyze.blind(a, n=1, out_dir=tmp_path / "one")
+    with pytest.raises(ValueError, match="same run twice"):
+        analyze.blind(a, a, n=1, out_dir=tmp_path / "twice")
 
 
 def test_unblinding_counts_the_marks_per_run(tmp_path):

@@ -12,7 +12,7 @@ Usage:
     uv run python -m support_agent.analyze smoke outputs/runs/<smoke run of a stage 8 candidate>
     uv run python -m support_agent.analyze select reports/<P1 7B dev> reports/<P0 7B dev> reports/<cand> ..
     uv run python -m support_agent.analyze verdict reports/<P1 7B test> reports/<P0 7B test> reports/<cand>
-    uv run python -m support_agent.analyze blind reports/<dev run A> reports/<dev run B> --n 20 --out <dir>
+    uv run python -m support_agent.analyze blind reports/<dev run A> reports/<dev run B> .. --n 20 --out <dir>
     uv run python -m support_agent.analyze unblind <dir>
 
 `table` prints the markdown tables that go into docs/experiments.md. `misses` lists episodes whose database
@@ -696,25 +696,31 @@ BLIND_CODES = {
 _TOOL_RESULT_CHARS = 300
 
 
-def blind(run_a: Path, run_b: Path, n: int, out_dir: Path) -> None:
-    """P5(a): the same n (task, trial) pairs from two development runs, shuffled, with no run names or
-    verdicts.
+def blind(*run_dirs: Path, n: int, out_dir: Path) -> None:
+    """P5(a): the same n (task, trial) pairs from two or more development runs, shuffled into one sheet,
+    with no run names or verdicts. Every run of one check goes into one sheet: the draw and the shuffle
+    use fixed seeds, so two sheets that share a run have the same layout and its episodes give the
+    other run away.
     sheet.md is for the reader, key.json says which is which, marks.json is what the reader fills in."""
     from support_agent.paths import TASKS
     from support_agent.tasks import load_tasks
 
-    for run_dir in (run_a, run_b):
+    if len(run_dirs) < 2:
+        raise ValueError("the blind check needs two or more runs")
+    if len({run_dir.name for run_dir in run_dirs}) != len(run_dirs):
+        raise ValueError("the same run twice: the key would not tell them apart")
+    for run_dir in run_dirs:
         if is_test_run(run_dir):
             raise ValueError(
                 f"{run_dir.name}: the simulator check reads development records only, never test"
             )
     scenarios = {task.id: task.user for path in sorted(TASKS.glob("*.yaml")) for task in load_tasks(path)}
-    keyed = [{(e["task_id"], e["trial"]): e for e in _judged(load_episodes(d))} for d in (run_a, run_b)]
-    common = sorted(set(keyed[0]) & set(keyed[1]))
+    keyed = [{(e["task_id"], e["trial"]): e for e in _judged(load_episodes(d))} for d in run_dirs]
+    common = sorted(set.intersection(*(set(episodes) for episodes in keyed)))
     chosen = random.Random(BOOTSTRAP_SEED).sample(common, min(n, len(common)))
     items = [
         (run_dir.name, key, episodes[key])
-        for run_dir, episodes in zip((run_a, run_b), keyed, strict=True)
+        for run_dir, episodes in zip(run_dirs, keyed, strict=True)
         for key in chosen
     ]
     random.Random(BOOTSTRAP_SEED + 1).shuffle(items)
@@ -805,8 +811,7 @@ def main() -> None:
     judging.add_argument("p0_dir", type=Path, help="P0 7B on the test tasks (the write reference)")
     judging.add_argument("run_dir", type=Path, help="the selected candidate on the test tasks")
     blinder = commands.add_parser("blind")
-    blinder.add_argument("run_a", type=Path)
-    blinder.add_argument("run_b", type=Path)
+    blinder.add_argument("run_dirs", nargs="+", type=Path, help="every run of one check, in one sheet")
     blinder.add_argument("--n", type=int, default=20)
     blinder.add_argument("--out", type=Path, required=True)
     commands.add_parser("unblind").add_argument("out_dir", type=Path)
@@ -834,7 +839,7 @@ def main() -> None:
     elif args.command == "verdict":
         print(verdict(args.base_dir, args.p0_dir, args.run_dir))
     elif args.command == "blind":
-        blind(args.run_a, args.run_b, args.n, args.out)
+        blind(*args.run_dirs, n=args.n, out_dir=args.out)
         print(f"wrote {args.out / 'sheet.md'}; fill in marks.json from marks.template.json, then run unblind")
     elif args.command == "unblind":
         print(unblind(args.out_dir))
