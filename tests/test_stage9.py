@@ -385,3 +385,24 @@ def test_the_caller_id_table_tells_tolerance_passes_apart(tmp_path):
     table = analyze.caller_id_table({"v2": v2, "v4": v4})
     assert "| v2 | 4 | 4 (100.0%) | 0 | 4 / 4 | 0 / 0 | 0 | 0 | 0 |" in table
     assert "| v4 | 5 | 2 (40.0%) | 1 | 0 / 1 | 2 / 4 | 1 | 1 | 1 |" in table
+
+
+def test_the_recorded_gate_result_comes_back_from_the_seed():
+    # docs/experiments.md stage 9: the gate failed at k=1 with 12 ordered pairs, and the stage stopped there
+    names = analyze.seed_names()
+    collisions, same = analyze.name_collisions(names, k=1)
+    assert len(names) == 109 and len(same) == 6 and len(collisions) == 12
+    assert {frozenset((a, b)) for a, b, *_ in collisions} == {
+        frozenset(pair)
+        for pair in [
+            ("C-0006", "C-0016"),
+            ("C-0024", "C-0028"),
+            ("C-0028", "C-0030"),
+            ("C-9101", "C-9211"),
+            ("C-9110", "C-9203"),
+            ("C-9120", "C-9208"),
+        ]
+    }
+    assert analyze.name_collisions(names, k=0)[0] == []
+    report, passed = analyze.collision_report(1)
+    assert not passed and report.endswith("gate: FAIL")
