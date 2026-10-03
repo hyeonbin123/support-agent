@@ -664,3 +664,11 @@ uv run python -m support_agent.run --tasks test --trials 4 --allow-test --offici
 uv run python -m support_agent.run --tasks test --trials 4 --allow-test --policy P1 --model <고른 모델> --think off --num-ctx 12288 --user-num-ctx 12288 [--user-num-gpu N] --official --label test-<후보>
 uv run python -m support_agent.analyze verdict reports/<test-p1-stage8> reports/<test-p0-stage8> reports/<test-후보>
 ```
+
+### 측정 중 메모 (2026-10-04, 스모크 M2a 첫 시도 뒤, 다시 돌기 전)
+- 2026-10-03 저녁의 GPU 단계는 스모크(`outputs/runs/20261003-110525·111037·121747-...-smoke-m2a*`) 도중 사용자 요청으로 끊겼다. 그 출력은 완결 여부를 확인하지 않아 쓰지 않고, 2026-10-04에 스모크부터 다시 했다
+- 스모크 M2a (2026-10-04 03:45, `outputs/runs/20261003-184542-...-smoke-m2a`. 실행 이름의 시각은 UTC다. 시작 전 1분 CPU 11.8%, GPU 0%): S0·S2·S3·S4·S5는 통과, S1은 "다시 읽기 1회" 하나로 걸렸다. 첫 에피소드의 첫 에이전트 호출이 load_duration 1.8초였다
+  - 원인은 미리 올리는 순서다. 실행기가 에이전트(qwen3 4B)를 먼저, 시뮬레이터(qwen2.5 7B)를 나중에 올렸는데, 서버가 둘째를 올리면서 첫째를 내렸다 (manifest의 `ollama_ps_after_preload`에 7B만 있다). 첫 에이전트 호출이 4B를 7B 옆에 다시 올렸고, 그 뒤로는 다시 읽은 호출이 없었다 (나머지 에이전트 호출 33개, 시뮬레이터 호출 전부). 끝날 때 `/api/ps`는 둘 다 100% GPU (4.39 GB + 5.38 GB)
+  - S1이 보려는 것은 두 모델이 함께 GPU에 머무는지이고, 이 한 번은 실행 시작 때 순서 때문에 생긴 하니스 문제다. 그래서 사다리로 가지 않고 하니스를 고친 뒤 스모크를 다시 돈다. 고친 것: 두 모델을 올린 뒤 `/api/ps`에 에이전트 모델이 없으면 실행기가 한 번 더 올리고, manifest는 그 뒤 상태를 남긴다 (`run.py`, 테스트 `tests/test_stage8.py`). 모델·옵션·프롬프트·과제는 그대로라 측정 내용은 바뀌지 않는다. S1 규칙도 그대로다
+- 공유 메모리 확인 (실행 계획에 있던 보조 확인, 등록한 관문은 아니다): WDDM의 `GPU Process Memory\Shared Usage`가 스모크 중 llama-server마다 428 MiB(7B)·410 MiB(4B)였다. 같은 모델을 하나만 올려 GPU 메모리가 5~6 GB 남을 때도 428 MiB·432 MiB였으므로 고정 호스트 버퍼이고, GPU 메모리가 넘친 것이 아니다. 앞으로는 모델 하나만 올렸을 때보다 200 MiB 넘게 많을 때를 넘친 것으로 본다
+- 같은 시간에 다른 프로젝트의 CPU 작업(pytest)이 돌 수 있다. 쉬기 대기 기록과 nvidia-smi 기록을 실행마다 `outputs/stage8/`에 남긴다

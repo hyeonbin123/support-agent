@@ -126,6 +126,43 @@ def test_without_think_nothing_is_sent(tmp_path, monkeypatch):
     assert made[0].options.get("think") is None  # a model without thinking answers 400 to any think value
 
 
+class EvictingOllama(RecordingOllama):
+    """One server for all providers: the first simulator load evicts the agent, which then fits beside it."""
+
+    held: list[str] = []
+    loads: list[str] = []
+
+    def preload(self) -> float:
+        EvictingOllama.loads.append(self.model)
+        if self.model == SIM and EvictingOllama.loads.count(SIM) == 1:
+            EvictingOllama.held = []
+        if self.model not in EvictingOllama.held:
+            EvictingOllama.held.append(self.model)
+        return 0.0
+
+    def loaded_models(self):
+        return [{"name": name, "size": 100, "size_vram": 100} for name in EvictingOllama.held]
+
+
+def test_an_agent_model_evicted_by_the_simulator_load_is_loaded_again(tmp_path, monkeypatch):
+    EvictingOllama.held, EvictingOllama.loads = [], []
+    monkeypatch.setattr(run, "OllamaProvider", EvictingOllama)
+    monkeypatch.setattr(run, "gpu_used_by_others_mib", lambda provider: None)
+    monkeypatch.setattr(run, "OUTPUTS", tmp_path)
+    argv = ["run", "--tasks", "smoke", "--task-id", "smoke-lookup-01", "--model", NEW]
+    monkeypatch.setattr("sys.argv", argv)
+    run.main()
+    assert EvictingOllama.loads == [NEW, SIM, NEW]
+    (run_dir,) = (tmp_path / "runs").iterdir()
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert {m["name"] for m in manifest["ollama_ps_after_preload"]} == {NEW, SIM}
+
+
+def test_a_model_still_held_is_not_loaded_again(tmp_path, monkeypatch):
+    start(tmp_path, monkeypatch, "--model", NEW)  # the plain fake always lists the agent model
+    assert [m.model for m in RecordingOllama.made] == [NEW, SIM]
+
+
 def test_the_records_say_where_the_models_sat(tmp_path, monkeypatch):
     _, manifest, summary = start(tmp_path, monkeypatch, "--model", NEW, "--user-num-ctx", "16384")
     assert manifest["ollama_ps_after_preload"] == [{"name": NEW, "size": 100, "size_vram": 100}]

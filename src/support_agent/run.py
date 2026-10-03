@@ -285,6 +285,13 @@ def main() -> None:
     print(f"loading {config.model} ... {provider.preload() / 1000:.1f} s")
     if user_provider is not provider:
         print(f"loading {config.user_model} ... {user_provider.preload() / 1000:.1f} s")
+        # The server may evict the first model to load the second even when the first then fits next to the
+        # second (seen 2026-10-04: qwen2.5 7B evicted qwen3 4B, whose next load sat beside it). Load it again
+        # here, once, so that the first episode does not pay for that reload.
+        held = [m.get("name") for m in ollama_ps(provider)]
+        if held and config.model not in held:
+            seconds = provider.preload() / 1000
+            print(f"{config.model} was evicted by that load; loaded it again ... {seconds:.1f} s")
     if config.user_model != config.model:
         print("warning: two models take turns; if both do not fit in GPU memory every turn reloads one")
     started = datetime.now(UTC)
