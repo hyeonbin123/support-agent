@@ -1,4 +1,7 @@
-"""Stage 9 (voice V4): the caller's number picks the one customer, the name heard may be one jamo off.
+"""Stage 9 (voice V4): the caller's number picks the one customer, and the name heard must be that customer's.
+
+The first rules allowed one jamo (k=1) and stopped at their collision gate; the 2026-10-04 rule change
+registered exact names (k=0) before any measurement (docs/experiments.md, stage 9).
 
 Everything here runs without a model: tools on the tiny shop, scripted episodes on the seed data, the runner
 with fakes, and the analysis commands on hand-made records.
@@ -48,8 +51,9 @@ def tools_hash(registry, config) -> str:
 # ------------------------------------------------------------------------------- the name tolerance
 
 
-def test_the_registered_tolerance_is_one_jamo():
-    assert NAME_TOLERANCE == 1
+def test_the_registered_tolerance_is_exact_names():
+    # k=1 (rules e7c28c5) failed its collision gate; the 2026-10-04 rule change registered k=0
+    assert NAME_TOLERANCE == 0
 
 
 @pytest.mark.parametrize(
@@ -104,15 +108,21 @@ def test_the_caller_number_and_the_name_verify_the_customer(shop):
     assert order.ok  # verified as with find_customer
 
 
-def test_one_jamo_off_passes_and_the_registered_name_comes_back(shop):
+def test_one_jamo_off_is_refused_and_the_normalised_name_passes(shop):
     ctx = ToolContext(now=NOW, caller_phone="01000000001")
-    result = verify(shop, ctx, "김하순")  # ㅅ for ㅈ
-    assert result.ok and json.loads(result.content)["name"] == "김하준"
+    result = verify(shop, ctx, "김하순")  # ㅅ for ㅈ: accepted at k=1, refused at k=0
+    assert not result.ok and result.error_code == "name_mismatch"
+    assert ctx.state.verified_customer_id is None
+    # spaces and the honorific go first, as in find_customer
+    for said in ("김하준 고객님", "김 하준님", "김하준"):
+        result = verify(shop, ctx, said)
+        assert result.ok and json.loads(result.content)["name"] == "김하준", said
 
 
 @pytest.mark.parametrize(
     ("caller", "name", "code"),
     [
+        ("01000000001", "김하순", "name_mismatch"),  # one jamo off
         ("01000000001", "김하정", "name_mismatch"),  # two jamo off
         ("01000000001", "이서연", "name_mismatch"),  # another customer's name from this phone
         ("01000000002", "김하준", "name_mismatch"),  # the name of the other number's customer
@@ -220,12 +230,18 @@ def test_the_gold_path_with_verify_caller_passes_under_v4(task):
     assert result.tool_calls[0].ok
 
 
-def test_the_caller_is_the_task_customer_and_a_misheard_name_still_verifies():
+def test_the_caller_is_the_task_customer_and_a_misheard_name_is_refused():
     task = next(t for t in ALL_TASKS if t.id == "dev-002")  # 배성훈, who gave an e-mail address
-    result = v4_episode(task, [ToolCall("verify_caller", {"name": "배성분"}), "확인되었습니다."])
-    (call,) = result.tool_calls
-    assert call.ok and json.loads(call.content)["customer_id"] == task.customer_id == "C-9102"
-    assert metrics.identified(json.loads(result.to_json_line()))
+    script = [
+        ToolCall("verify_caller", {"name": "배성분"}),  # how the recogniser wrote it in the V1/V2 runs
+        ToolCall("verify_caller", {"name": "배성훈"}),
+        "확인되었습니다.",
+    ]
+    misheard, heard = v4_episode(task, script).tool_calls
+    assert not misheard.ok and misheard.error_code == "name_mismatch"
+    assert heard.ok and json.loads(heard.content)["customer_id"] == task.customer_id == "C-9102"
+    refused = v4_episode(task, [ToolCall("verify_caller", {"name": "배성분"}), "네."])
+    assert not metrics.identified(json.loads(refused.to_json_line()))
 
 
 def test_v4_needs_its_registry_and_the_other_conditions_refuse_it():
@@ -270,7 +286,7 @@ def test_a_v4_run_uses_the_v2_normaliser_the_caller_registry_and_records_k(tmp_p
     v2, v4 = sorted((tmp_path / "runs").iterdir(), key=lambda p: p.name[-2:])
     assert v4.name.endswith("-P0-R0-G0-F0-V4-v4")
     m2, m4 = (json.loads((d / "manifest.json").read_text(encoding="utf-8")) for d in (v2, v4))
-    assert m4["config"]["voice"] == "V4" and m4["caller_id"] == {"tool": "verify_caller", "name_tolerance": 1}
+    assert m4["config"]["voice"] == "V4" and m4["caller_id"] == {"tool": "verify_caller", "name_tolerance": 0}
     assert m2["caller_id"] is None
     assert m2["prompt_sha256"]["agent_system"] == sha(
         build_system_prompt(load_policy(), next(t for t in ALL_TASKS if t.id == "smoke-lookup-01").now)
@@ -367,6 +383,7 @@ def call(name, ok, args=None, content="", code=None):
 
 
 def test_the_caller_id_table_tells_tolerance_passes_apart(tmp_path):
+    # hand-made records: at k=0 the "tolerance" column must stay 0, and a pass counted there is a bug
     found = json.dumps({"customer_id": "C-9101", "name": "고은채"}, ensure_ascii=False)
     v4 = [
         episode_with([call("verify_caller", True, {"name": "고은채"}, found)]),
@@ -388,7 +405,7 @@ def test_the_caller_id_table_tells_tolerance_passes_apart(tmp_path):
 
 
 def test_the_recorded_gate_result_comes_back_from_the_seed():
-    # docs/experiments.md stage 9: the gate failed at k=1 with 12 ordered pairs, and the stage stopped there
+    # docs/experiments.md stage 9: the first gate failed at k=1 with 12 ordered pairs, and the stage stopped
     names = analyze.seed_names()
     collisions, same = analyze.name_collisions(names, k=1)
     assert len(names) == 109 and len(same) == 6 and len(collisions) == 12

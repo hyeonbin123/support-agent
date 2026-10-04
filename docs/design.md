@@ -61,7 +61,7 @@ tasks/smoke.yaml, dev.yaml, test.yaml
 | 도구 | 종류 | 인자 | 출력 (JSON 키) |
 |---|---|---|---|
 | `find_customer` | 읽기 | `name`, `contact`(전화번호 또는 이메일) | `customer_id, name, grade, grade_label` |
-| `verify_caller` | 읽기 (음성 V4에서만, `find_customer` 대신) | `name` | `customer_id, name, grade, grade_label`. 발신 번호(`ToolContext.caller_phone`)로 가입한 고객 한 명의 이름과 자모 편집 거리 1 이하면 통과 |
+| `verify_caller` | 읽기 (음성 V4에서만, `find_customer` 대신) | `name` | `customer_id, name, grade, grade_label`. 발신 번호(`ToolContext.caller_phone`)로 가입한 고객 한 명의 이름과, `find_customer`와 같은 정규화 뒤 글자까지 같으면 통과 (`NAME_TOLERANCE` = 0. 처음 규칙의 자모 1개 허용은 9단계 관문에서 멈췄다) |
 | `get_customer` | 읽기 | `customer_id` | `customer_id, name, phone, email, grade, grade_label, joined_at, addresses[address_id, label, recipient, postal_code, address, is_default], compensation_coupons[coupon_id, order_id, reason, reason_label, amount_won, issued_at]` |
 | `list_orders` | 읽기 | `customer_id` | `customer_id, orders[order_id, ordered_at, status, status_label, total_won, item_summary]` (최근 주문부터) |
 | `get_order` | 읽기 | `order_id` | `order_id, status, status_label, ordered_at, items[line_no, product_id, variant_id, product_name, option_label, quantity, unit_price_won, status, status_label], items_won, shipping_fee_won, discount_won, total_won, payment{method, method_label, amount_won, status, status_label, refund_won}, shipping{address_id, recipient, postal_code, address}, requests[request_id, kind, kind_label, reason, reason_label, line_nos, refund_won, return_fee_won, created_at], compensation_coupons[같은 키], cancelled_at, cancel_reason, cancel_reason_label` |

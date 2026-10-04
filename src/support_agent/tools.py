@@ -24,9 +24,10 @@ from support_agent.labels import choices, label
 from support_agent.toolkit import Registry, ToolArgs, ToolContext, make_registry, tool
 
 CANCELLABLE = (db.OrderStatus.PAID, db.OrderStatus.PREPARING)
-# Voice V4: jamo edits allowed between the name the agent heard and the caller's registered name. Fixed before
-# measuring from the misheard names of the development V1/V2 runs (docs/experiments.md, stage 9).
-NAME_TOLERANCE = 1
+# Voice V4: jamo edits allowed between the name the agent heard and the caller's registered name. The first
+# rules took 1 and failed their collision gate (six pairs of seed names one jamo apart); the 2026-10-04 rule
+# change took 0, exact names after normalisation, before any measurement (docs/experiments.md, stage 9).
+NAME_TOLERANCE = 0
 
 
 # ---------------------------------------------------------------------------------------------- arguments
