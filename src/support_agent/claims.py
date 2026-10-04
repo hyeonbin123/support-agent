@@ -12,6 +12,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from support_agent.chat import Message
+from support_agent.confirm import is_confirmation
 from support_agent.toolkit import ERROR_PREFIX
 
 
@@ -106,10 +107,11 @@ class Claim:
 
 def shown_results(messages: Iterable[Message]) -> list[str]:
     """The successful tool results of the conversation, each as "<tool name>\\n<content>" (plus the
-    approval_required errors of the service, which record a queued request)."""
+    approval_required errors of the service, which record a queued request). An R2 preview shows what a
+    write would do, not that it was done."""
     out = []
     for m in messages:
-        if m.role != "tool":
+        if m.role != "tool" or is_confirmation(m.content):
             continue
         entry = f"{m.tool_name or ''}\n{m.content}"
         if not m.content.startswith(f"{ERROR_PREFIX}: [") or _QUEUED.match(entry):

@@ -20,6 +20,7 @@ from support_agent.config import (
     Termination,
     derive_seed,
 )
+from support_agent.confirm import ConfirmGate, customer_turn
 from support_agent.judge import gold_engine, judge
 from support_agent.records import EpisodeResult
 from support_agent.tasks import Task
@@ -135,9 +136,13 @@ def run_episode(
         caller_phone=caller_number(task, seed_engine) if config.caller_id else None,
     )
     state = new_state(build_system_prompt(policy_text, task.now, caller_id=config.caller_id))
+    gate = ConfirmGate() if config.reasoning == "R2" else None  # R2: writes wait for the customer's yes
 
     def run_tool(name: str, arguments: dict):
-        return execute(registry, engine, ctx, name, arguments)
+        if gate is None:
+            return execute(registry, engine, ctx, name, arguments)
+        turn, said = customer_turn(state.messages)
+        return gate.run(registry, engine, ctx, name, arguments, turn=turn, said=said)
 
     error = ""
     voice_log: list[dict] = []

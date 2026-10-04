@@ -2,7 +2,7 @@
 
 execute() is the single path of every caller (agent loop, gold replay, later the service and the MCP server):
 look up -> validate -> before_write hook -> handler and on_success hook in one DB session -> commit or
-roll back.
+roll back. A dry run (R2's preview, confirm.py) rolls back what the handler did and skips the hooks.
 """
 
 from __future__ import annotations
@@ -257,8 +257,13 @@ def execute(
     *,
     before_write: BeforeWrite | None = None,
     on_success: OnSuccess | None = None,
+    dry_run: bool = False,
 ) -> ToolResult:
-    """Run one tool call. Expected failures come back as ToolResult; a handler bug raises ToolBugError."""
+    """Run one tool call. Expected failures come back as ToolResult; a handler bug raises ToolBugError.
+
+    dry_run (R2's preview): the handler runs and everything it did is rolled back, the conversation state
+    and the recorded violations included; the hooks do not run. The answer and the violations the call would
+    have are returned."""
     spec = registry.get(name)
     if spec is None:
         return ToolResult.error("unknown_tool", f"{name} 도구는 없습니다.")
@@ -267,7 +272,7 @@ def execute(
     except ValidationError as error:
         return ToolResult.error("invalid_arguments", f"인자가 잘못되었습니다. {short_errors(error)}")
     clean = canonical_args(spec, args)
-    if spec.write and before_write is not None:
+    if spec.write and before_write is not None and not dry_run:
         refusal = before_write(spec, clean)
         if refusal is not None:
             return refusal
@@ -277,6 +282,12 @@ def execute(
         try:
             result = spec.handler(session, ctx, args)
             content = json.dumps(result, ensure_ascii=False)
+            if dry_run:
+                session.rollback()
+                ctx.state = saved_state
+                found = tuple(ctx.violations[seen:])
+                del ctx.violations[seen:]
+                return ToolResult(True, content, args=clean, violations=found)
             if on_success is not None:
                 on_success(session, spec, clean, result)
             session.commit()

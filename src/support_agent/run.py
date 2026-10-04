@@ -27,6 +27,7 @@ from typing import Any
 from support_agent import db
 from support_agent.agent import build_system_prompt, load_policy, visible_tools
 from support_agent.config import RunConfig
+from support_agent.confirm import CONFIRM_CODE
 from support_agent.episode import gold_dump_of, run_episode
 from support_agent.judge import pass_k_table
 from support_agent.ollama import OllamaProvider
@@ -124,6 +125,7 @@ def summarise(results: list[EpisodeResult]) -> dict[str, Any]:
         "auth_blocks": sum(r.verdict.auth_blocks for r in counted if r.verdict),
         "format_errors": sum(c.format_error not in (None, "stall", "unbacked_claim") for c in agent_calls),
         "held_claims": sum(c.format_error == "unbacked_claim" for c in agent_calls),
+        "confirmation_requests": sum(t.error_code == CONFIRM_CODE for r in counted for t in r.tool_calls),
         "dropped_calls": sum(c.dropped_calls for c in agent_calls),
         "seconds_per_episode": mean([r.wall_seconds for r in counted]),
         "agent_calls_per_episode": mean([float(sum(c.who == "agent" for c in r.llm_calls)) for r in counted]),
@@ -164,7 +166,12 @@ def main() -> None:
     parser.add_argument("--model", default=RunConfig.model)
     parser.add_argument("--user-model", default=None, help="simulator model (default: qwen2.5:7b-instruct)")
     parser.add_argument("--policy", choices=["P0", "P1"], default="P0")
-    parser.add_argument("--reasoning", choices=["R0", "R1"], default="R0", help="R2 arrives in stage 2")
+    parser.add_argument(
+        "--reasoning",
+        choices=["R0", "R1", "R2"],
+        default="R0",
+        help="R1: the think tool; R2: a write runs only after the customer agreed to its preview",
+    )
     parser.add_argument(
         "--guard", choices=["G0", "G1", "G2"], default="G0", help="G1: hold back replies that only promise"
     )

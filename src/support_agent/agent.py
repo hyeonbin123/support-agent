@@ -22,6 +22,7 @@ from support_agent.config import (
     Termination,
     derive_seed,
 )
+from support_agent.confirm import CONFIRM_CODE
 from support_agent.records import LLMCallLog, ToolCallLog
 from support_agent.toolkit import Registry, ToolResult
 
@@ -309,6 +310,8 @@ def agent_turn(
         state.messages.append(
             Message("tool", result.content, tool_name=call.name, tool_call_id=call.id or None)
         )
+        if result.error_code == CONFIRM_CODE:
+            continue  # R2: a preview that waits for the customer's answer, not a tool error
         if not result.ok:
             state.tool_errors += 1
             if state.tool_errors >= config.max_tool_errors:

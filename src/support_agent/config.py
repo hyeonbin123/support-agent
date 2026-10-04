@@ -36,7 +36,9 @@ class RunConfig:
     model: str = "qwen2.5:7b-instruct"
     user_model: str = "qwen2.5:7b-instruct"
     policy: Literal["P0", "P1"] = "P0"  # P0: rules only in the prompt, P1: tools also refuse
-    reasoning: Literal["R0", "R1", "R2"] = "R0"  # R1: think tool, R2: confirmation enforced before writes
+    # R1: think tool. R2 (stage 10): a write runs only when the customer agreed to its preview (confirm.py);
+    # the prompt and the tool list are those of R0.
+    reasoning: Literal["R0", "R1", "R2"] = "R0"
     # G1: a reply that only promises to act is sent back, not delivered. G2: and the retry is sampled.
     guard: Literal["G0", "G1", "G2"] = "G0"
     rescue: Literal["F0", "F1"] = "F0"  # F1: a tool call leaked into the text is parsed and run

@@ -17,6 +17,11 @@ Usage:
     uv run python -m support_agent.analyze unblind <dir>
     uv run python -m support_agent.analyze name-collisions [--k K]   (default: the registered tolerance)
     uv run python -m support_agent.analyze caller-id reports/<V2 run> reports/<V4 run> [...]
+    uv run python -m support_agent.analyze confirm reports/<R2 run> [...]   (stage 10: previews and answers)
+    uv run python -m support_agent.analyze confirm-smoke outputs/runs/<R2 smoke run>
+    uv run python -m support_agent.analyze confirm-check reports/<M2b run> reports/<R2 run> [--test]
+    uv run python -m support_agent.analyze confirm-sheet reports/<R2 dev run> --n 20 --out <dir>
+    uv run python -m support_agent.analyze confirm-marks <dir>
 
 `table` prints the markdown tables that go into docs/experiments.md. `misses` lists episodes whose database
 matched but whose required value was not found, so that a person can check the value matcher. `sample` draws
@@ -885,6 +890,25 @@ def unblind(out_dir: Path) -> str:
     return "\n".join(lines)
 
 
+def _confirm_command(args: argparse.Namespace) -> None:
+    """Stage 10 (R2) commands; the code is in confirm_report.py."""
+    from support_agent import confirm_report
+
+    if args.command == "confirm":
+        print(confirm_report.confirmation_table(args.run_dirs))
+    elif args.command == "confirm-smoke":
+        print(confirm_report.smoke_report(args.run_dir))
+    elif args.command == "confirm-check":
+        report, _ = confirm_report.check(args.base_dir, args.run_dir, test=args.test)
+        print(report)
+    elif args.command == "confirm-sheet":
+        confirm_report.blind_sheet(args.run_dir, n=args.n, out_dir=args.out)
+        sheet = args.out / "sheet.md"
+        print(f"wrote {sheet}; fill in marks.json from marks.template.json, then confirm-marks")
+    else:
+        print(confirm_report.unblind(args.out_dir))
+
+
 def main() -> None:
     from support_agent.tools import NAME_TOLERANCE
 
@@ -930,6 +954,17 @@ def main() -> None:
         "--k", type=int, default=NAME_TOLERANCE, help="jamo edits verify_caller allows (default: registered)"
     )
     commands.add_parser("caller-id").add_argument("run_dirs", nargs="+", type=Path)
+    commands.add_parser("confirm").add_argument("run_dirs", nargs="+", type=Path)
+    commands.add_parser("confirm-smoke").add_argument("run_dir", type=Path)
+    checking = commands.add_parser("confirm-check")
+    checking.add_argument("base_dir", type=Path, help="the stage 8 M2b record (R0)")
+    checking.add_argument("run_dir", type=Path, help="the R2 run on the same tasks")
+    checking.add_argument("--test", action="store_true", help="the test verdict (default: development)")
+    sheeting = commands.add_parser("confirm-sheet")
+    sheeting.add_argument("run_dir", type=Path)
+    sheeting.add_argument("--n", type=int, default=20)
+    sheeting.add_argument("--out", type=Path, required=True)
+    commands.add_parser("confirm-marks").add_argument("out_dir", type=Path)
     args = parser.parse_args()
 
     sys.stdout.reconfigure(encoding="utf-8")  # Korean on a Windows console
@@ -965,6 +1000,8 @@ def main() -> None:
             sys.exit(1)
     elif args.command == "caller-id":
         print(caller_id_table({d.name: load_episodes(d) for d in args.run_dirs}))
+    elif args.command.startswith("confirm"):
+        _confirm_command(args)
     elif args.command == "same-setup":
         differences = setup_differences(args.run_a, args.run_b, tuple(args.ignore), tuple(args.ignore_prompt))
         print("\n".join(differences) or "same setup")
