@@ -15,7 +15,7 @@ Usage:
     uv run python -m support_agent.analyze verdict reports/<P1 7B test> reports/<P0 7B test> reports/<cand>
     uv run python -m support_agent.analyze blind reports/<dev run A> reports/<dev run B> .. --n 20 --out <dir>
     uv run python -m support_agent.analyze unblind <dir>
-    uv run python -m support_agent.analyze name-collisions [--k 1]
+    uv run python -m support_agent.analyze name-collisions [--k K]   (default: the registered tolerance)
     uv run python -m support_agent.analyze caller-id reports/<V2 run> reports/<V4 run> [...]
 
 `table` prints the markdown tables that go into docs/experiments.md. `misses` lists episodes whose database
@@ -886,6 +886,8 @@ def unblind(out_dir: Path) -> str:
 
 
 def main() -> None:
+    from support_agent.tools import NAME_TOLERANCE
+
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("table").add_argument("run_dirs", nargs="+", type=Path)
@@ -924,7 +926,9 @@ def main() -> None:
     blinder.add_argument("--out", type=Path, required=True)
     commands.add_parser("unblind").add_argument("out_dir", type=Path)
     colliding = commands.add_parser("name-collisions")
-    colliding.add_argument("--k", type=int, default=1, help="jamo edits verify_caller allows")
+    colliding.add_argument(
+        "--k", type=int, default=NAME_TOLERANCE, help="jamo edits verify_caller allows (default: registered)"
+    )
     commands.add_parser("caller-id").add_argument("run_dirs", nargs="+", type=Path)
     args = parser.parse_args()
 

@@ -1005,3 +1005,12 @@ uv run python -m support_agent.analyze table reports/<v2-4b-stage9> reports/<v4-
 uv run --group voice python -m support_agent.run --tasks test --trials 4 --allow-test --voice V2 --model qwen3.5:4b --think off [--user-num-gpu N] --official --label test-v2-4b-stage9
 uv run --group voice python -m support_agent.run --tasks test --trials 4 --allow-test --voice V4 --model qwen3.5:4b --think off [--user-num-gpu N] --official --label test-v4-k0
 ```
+
+### 관문 결과 (2026-10-04, 규칙 변경 커밋 `d14d207` 뒤): 통과 — 측정으로 간다
+
+`uv run python -m support_agent.analyze name-collisions --k 0` (CPU, 출력은 `outputs/stage9/gate-k0-after-d14d207.txt`, 종료 코드 0)
+
+- 고객 109명, 서로 다른 이름 106개. 동명이인 순서쌍 6개(C-0011/C-0038, C-0013/C-0027, C-0024/C-0030)는 규칙대로 따로 셌다 (확인되는 고객은 번호의 주인이라 허용 오차 탓이 아니다)
+- **다른 이름을 받아들이는 순서쌍 0개. 관문을 통과했다.** 첫 관문의 참고 줄에 적은 값과 같다
+- 남은 것은 GPU 단계다: 위 "규칙 변경"의 사다리로 V4 스모크 → 개발용 V2 → V4 → (조건을 만족하면) 시험용 V2, V4. 이 절을 적을 때 GPU는 다른 작업이 쓰고 있었고, 스모크를 포함해 어떤 실행도 하지 않았다
+- `analyze name-collisions`의 `--k` 기본값은 이제 등록한 허용 오차(`tools.NAME_TOLERANCE`, 0)다. 첫 관문(k = 1에서 12개)과 이 관문은 테스트가 seed로 다시 계산해 고정한다 (`tests/test_stage9.py`)

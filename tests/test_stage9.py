@@ -423,3 +423,14 @@ def test_the_recorded_gate_result_comes_back_from_the_seed():
     assert analyze.name_collisions(names, k=0)[0] == []
     report, passed = analyze.collision_report(1)
     assert not passed and report.endswith("gate: FAIL")
+
+
+def test_the_re_registered_gate_passes_at_exact_names(monkeypatch, capsys):
+    # docs/experiments.md stage 9, rule change of 2026-10-04: k=0, the gate must give 0 before measuring
+    report, passed = analyze.collision_report(0)
+    assert passed and report.endswith("gate: PASS (0 collisions)")
+    assert "k = 0" in report and "same-name ordered pairs (set apart): 6 " in report
+    monkeypatch.setattr("sys.argv", ["analyze", "name-collisions"])  # the default k is the registered one
+    analyze.main()  # a failed gate exits non-zero
+    out = capsys.readouterr().out
+    assert "k = 0" in out and "gate: PASS (0 collisions)" in out
