@@ -1,5 +1,5 @@
 # The chat service and its database. The model runs in Ollama on the host (it needs the GPU):
-#   ollama pull qwen2.5:7b-instruct
+#   ollama pull qwen3.5:4b          (MODEL=qwen2.5:7b-instruct in .env brings the earlier model back)
 #   docker compose up --build
 # Chat: http://127.0.0.1:8062   Admin: http://127.0.0.1:8062/admin (token: ADMIN_TOKEN, default "local-admin")
 # Both ports listen on 127.0.0.1 only. The defaults below are for a local demo; set your own in .env.
@@ -30,7 +30,9 @@ services:
     environment:
       SUPPORT_AGENT_DATABASE_URL: postgresql+psycopg://support:${POSTGRES_PASSWORD:-support-local}@db:5432/support
       SUPPORT_AGENT_OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
-      SUPPORT_AGENT_MODEL: ${MODEL:-qwen2.5:7b-instruct}
+      SUPPORT_AGENT_MODEL: ${MODEL:-qwen3.5:4b}
+      # Empty: off for qwen3.5:4b, not sent for other models (service/settings.py)
+      SUPPORT_AGENT_THINK: ${THINK:-}
       SUPPORT_AGENT_ADMIN_TOKEN: ${ADMIN_TOKEN:-local-admin}
       SUPPORT_AGENT_APPROVAL_REFUND_WON: ${APPROVAL_REFUND_WON:-100000}
     extra_hosts:

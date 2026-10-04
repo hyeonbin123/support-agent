@@ -3,23 +3,28 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+import httpx
 import pytest
+import yaml
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import func, inspect, select
 from sqlalchemy.orm import Session
 
 from support_agent import db
 from support_agent.chat import ChatResponse, ProviderError, ScriptedProvider, ToolCall
 from support_agent.seed import build_seed_engine
+from support_agent.service import app as app_module
 from support_agent.service import store
 from support_agent.service.app import create_app
 from support_agent.service.bootstrap import copy_seed, prepare_database
 from support_agent.service.core import CLOSED_REPLY, FALLBACK_REPLY, BusyError, ChatService
 from support_agent.service.offline import OfflineProvider, create_offline_app
-from support_agent.service.settings import DEMO_NOW, Settings
+from support_agent.service.settings import DEFAULT_MODEL, DEMO_NOW, Settings
 from support_agent.service.voice_frontend import VoiceFrontEnd, repair_heard
 from support_agent.voice.speech import Audio
 
@@ -101,6 +106,81 @@ def test_settings_come_from_the_environment():
     assert settings.clock().tzinfo is not None
     assert Settings.from_env({}).clock().isoformat() == DEMO_NOW
     assert Settings.from_env({}).policy == "P1"
+
+
+def test_the_service_runs_qwen35_4b_without_thinking_by_default():
+    settings = Settings.from_env({})
+    assert (settings.model, settings.think, settings.agent_think()) == ("qwen3.5:4b", "off", False)
+    assert (Settings().model, Settings().think) == (DEFAULT_MODEL, "off")
+
+
+def test_the_old_model_stays_selectable_and_is_sent_no_think_field():
+    old = Settings.from_env({"SUPPORT_AGENT_MODEL": "qwen2.5:7b-instruct"})
+    assert (old.model, old.think, old.agent_think()) == ("qwen2.5:7b-instruct", "omit", None)
+    assert Settings(model="qwen2.5:7b-instruct").think == "omit"
+    # An empty value (compose passes THINK through as "") means "not set", not a value.
+    empty = {"SUPPORT_AGENT_MODEL": "qwen2.5:7b-instruct", "SUPPORT_AGENT_THINK": ""}
+    assert Settings.from_env(empty).think == "omit"
+    # An explicit value wins over the model's default.
+    explicit = {"SUPPORT_AGENT_MODEL": "other:4b", "SUPPORT_AGENT_THINK": "off"}
+    assert Settings.from_env(explicit).agent_think() is False
+    assert Settings.from_env({"SUPPORT_AGENT_THINK": "on"}).agent_think() is True
+    assert Settings.from_env({"SUPPORT_AGENT_THINK": "omit"}).agent_think() is None
+    with pytest.raises(ValidationError):
+        Settings.from_env({"SUPPORT_AGENT_THINK": "false"})
+
+
+class RecordingOllama:
+    """An Ollama server behind httpx.MockTransport that records every /api/chat body."""
+
+    def __init__(self):
+        self.bodies: list[dict] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path != "/api/chat":
+            return httpx.Response(404, text="not found")
+        body = json.loads(request.content)
+        self.bodies.append(body)
+        message = {"role": "assistant", "content": "무엇을 도와드릴까요?"}
+        return httpx.Response(200, json={"model": body["model"], "message": message, "done": True})
+
+
+@pytest.mark.parametrize(
+    ("overrides", "model", "think"),
+    [({}, "qwen3.5:4b", False), ({"model": "qwen2.5:7b-instruct"}, "qwen2.5:7b-instruct", None)],
+)
+def test_the_think_setting_reaches_the_ollama_request(engine, monkeypatch, overrides, model, think):
+    """The provider the service builds itself (no test double for it): every agent request carries think."""
+    server = RecordingOllama()
+    real = app_module.OllamaProvider
+    monkeypatch.setattr(
+        app_module,
+        "OllamaProvider",
+        lambda *args, **kwargs: real(*args, transport=httpx.MockTransport(server), **kwargs),
+    )
+    settings = Settings(admin_token="test-token", **overrides)
+    with TestClient(create_app(settings, engine=engine)) as client:
+        assert client.get("/healthz").json()["think"] == ("off" if think is False else "omit")
+        session_id = client.post("/api/sessions").json()["session_id"]
+        assert dict(say(client, session_id, "안녕하세요"))["reply"]["text"] == "무엇을 도와드릴까요?"
+        detail = client.get(f"/api/admin/sessions/{session_id}", headers=ADMIN).json()
+    assert server.bodies, "the service never called the model"
+    for body in server.bodies:
+        assert body["model"] == model
+        assert body.get("think", "absent") == ("absent" if think is None else think)
+        assert "think" not in body["options"]
+    started = next(e["payload"] for e in detail["audit"] if e["kind"] == "session_started")
+    assert (started["model"], started["think"]) == (model, settings.think)
+
+
+def test_compose_and_the_env_example_name_the_service_default_model():
+    root = Path(__file__).resolve().parents[1]
+    compose = yaml.safe_load((root / "compose.yaml").read_text(encoding="utf-8"))
+    app_env = compose["services"]["app"]["environment"]
+    assert app_env["SUPPORT_AGENT_MODEL"] == f"${{MODEL:-{DEFAULT_MODEL}}}"
+    assert app_env["SUPPORT_AGENT_THINK"] == "${THINK:-}"  # empty: the think value follows the model
+    example = (root / ".env.example").read_text(encoding="utf-8").splitlines()
+    assert f"MODEL={DEFAULT_MODEL}" in example and "THINK=" in example
 
 
 # -------------------------------------------------------------------- chat

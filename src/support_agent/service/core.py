@@ -153,7 +153,12 @@ class ChatService:
         self._audit(
             session_id,
             "session_started",
-            {"kind": kind, "model": self.settings.model, "policy": self.settings.policy},
+            {
+                "kind": kind,
+                "model": self.settings.model,
+                "think": self.settings.think,
+                "policy": self.settings.policy,
+            },
         )
         return self.transcript(session_id)
 

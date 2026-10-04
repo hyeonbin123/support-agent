@@ -83,7 +83,10 @@ def create_app(
     async def lifespan(app: FastAPI):
         own_engine = engine or prepare_database(settings.database_url, load_seed=settings.load_seed)
         own_provider = provider or OllamaProvider(
-            settings.model, num_ctx=settings.num_ctx, base_url=settings.ollama_url
+            settings.model,
+            num_ctx=settings.num_ctx,
+            think=settings.agent_think(),
+            base_url=settings.ollama_url,
         )
         app.state.service = ChatService(settings, own_engine, own_provider)
         app.state.voice = voice
@@ -138,6 +141,7 @@ def create_app(
         return {
             "ok": True,
             "model": settings.model,
+            "think": settings.think,
             "policy": settings.policy,
             "voice": getattr(app.state, "voice", None) is not None,
         }
