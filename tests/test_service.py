@@ -382,8 +382,48 @@ def test_a_large_refund_waits_for_a_person_and_nothing_is_written(engine):
 def test_asking_again_does_not_queue_the_same_write_twice(engine):
     cancel = verify_and_cancel(BIG)[1]
     with make_client(engine, [*verify_and_cancel(BIG), cancel, "담당자 확인 후 처리됩니다."]) as client:
-        ask_for_big_cancel(client)
+        _, events = ask_for_big_cancel(client)
         assert len(client.get("/api/admin/approvals", headers=ADMIN).json()) == 1
+        assert [d["text"].count("AP-1") for n, d in events if n == "reply"] == [1]  # one notice per approval
+
+
+# The qwen3.5:4b reply in the real service turn of 2026-10-04 (docs/service.md): the tool's instructions
+# for the agent ("…알리세요", "같은 요청을 다시 호출하지 마세요") passed on to the customer.
+LEAKED_REPLY = (
+    "주문 O-10097의 환불액 108,200원은 담당자 승인이 필요하여 승인 대기열에 올렸습니다. "
+    "고객님께 담당자 확인 후 처리되며 결과는 이 대화창으로 안내된다고 알려드리겠습니다. "
+    "같은 요청을 다시 호출하지 마세요."
+)
+
+
+def test_the_customer_never_reads_the_instructions_a_held_write_gives_the_agent(engine):
+    with make_client(engine, [*verify_and_cancel(BIG), LEAKED_REPLY]) as client:
+        session_id, events = ask_for_big_cancel(client)
+        replies = [d["text"] for n, d in events if n == "reply"]
+        shown = [m["text"] for m in client.get(f"/api/sessions/{session_id}").json()["messages"]]
+        with Session(engine) as session:
+            kept = session.get(store.ChatSession, session_id).state["messages"]
+        audit = client.get(f"/api/admin/sessions/{session_id}", headers=ADMIN).json()["audit"]
+
+    told_the_agent = next(m["content"] for m in kept if m.get("tool_name") == "cancel_order")
+    assert "같은 요청을 다시 호출하지 마세요" in told_the_agent  # the model still reads the whole notice
+    for text in [*replies, *shown]:
+        assert "호출" not in text and "알리세요" not in text and "알려드리겠습니다" not in text
+    assert LEAKED_REPLY not in shown
+    # What the customer is told comes from the service: the order, the amount and the approval number.
+    assert len(replies) == 1 and replies[0] == shown[-1]
+    assert all(part in replies[0] for part in ("O-10097", "취소", "108,200원", "AP-1", "담당자"))
+    # The model's own words are kept, marked as never delivered, and the audit log has both.
+    assert [m["content"] for m in kept if m.get("delivered") is False] == [LEAKED_REPLY]
+    reply_event = next(e["payload"] for e in audit if e["kind"] == "agent_reply")
+    assert (reply_event["text"], reply_event["not_delivered"]) == (replies[0], LEAKED_REPLY)
+
+
+def test_a_later_reply_after_a_held_write_is_the_models_own(engine):
+    later = "담당자 확인을 기다리고 있습니다. 결과는 이 대화창으로 알려 드리겠습니다."
+    with make_client(engine, [*verify_and_cancel(BIG), LEAKED_REPLY, later]) as client:
+        session_id, _ = ask_for_big_cancel(client)
+        assert dict(say(client, session_id, "언제 처리되나요?"))["reply"]["text"] == later
 
 
 def test_approval_carries_the_write_out_and_tells_the_customer(engine):
@@ -469,13 +509,58 @@ def test_lines_of_one_order_returned_one_at_a_time_add_up_against_the_threshold(
         audit = client.get(f"/api/admin/sessions/{session_id}", headers=ADMIN).json()["audit"]
         asked = next(e["payload"] for e in audit if e["kind"] == "approval_requested")
         assert (asked["refund_won"], asked["order_refund_won"]) == (36_700, 127_100)
-
+        notice = dict(events)["reply"]["text"]
+        assert all(part in notice for part in ("O-10086", "반품", "36,700원", "127,100원", "AP-1"))
+        assert notice.startswith("접수했습니다.")  # line 1 was filed in this turn: the model says so
         decided = client.post(
             f"/api/admin/approvals/{pending[0]['id']}/decision", headers=ADMIN, json={"approve": True}
         ).json()
         assert decided["status"] == "approved"  # a person decided: the gate does not hold it again
     with Session(engine) as session:
         assert session.get(db.ServiceRequest, "RT-O-10086-2").refund_won == 36_700
+
+
+def test_a_turn_that_also_wrote_keeps_the_models_words_without_the_agent_only_ones(engine):
+    """Line 1 is filed and line 2 is held in one turn: the model's account of line 1 reaches the customer,
+    the sentences that pass on the notice's instructions to the agent do not, and the service's notice
+    for line 2 follows."""
+    name, phone, order_id = SPLIT
+    said = (
+        "1번 상품 반품이 접수되었습니다(환불 예정 90,400원). 2번 상품은 담당자 승인이 필요합니다.\n"
+        "고객님께 담당자 확인 후 처리되며 결과는 이 대화창으로 안내된다고 알려드리겠습니다. "
+        "같은 요청을 다시 호출하지 마세요."
+    )
+    script = [
+        ToolCall("find_customer", {"name": name, "contact": phone}),
+        ToolCall("request_return", {"order_id": order_id, "line_nos": [1], "reason": "defective"}),
+        ToolCall("request_return", {"order_id": order_id, "line_nos": [2], "reason": "defective"}),
+        said,
+    ]
+    with make_client(engine, script) as client:
+        session_id = client.post("/api/sessions").json()["session_id"]
+        reply = dict(say(client, session_id, f"{name}, {phone}입니다. {order_id} 불량이라 반품해 주세요."))
+    text = reply["reply"]["text"]
+    assert text.startswith(
+        "1번 상품 반품이 접수되었습니다(환불 예정 90,400원). 2번 상품은 담당자 승인이 필요합니다.\n"
+    )
+    assert "호출" not in text and "알려드리겠습니다" not in text
+    assert all(part in text for part in ("O-10086", "36,700원", "AP-1"))
+
+
+def test_the_notice_the_agent_reads_is_unchanged():
+    """The model-facing text of a held write is what it was before the customer got a notice of its own
+    (core.py before 2026-10-05), so the agent's inputs and the claim guard's evidence stay the same."""
+    from support_agent.service.core import held_for_agent
+
+    assert held_for_agent(108_200, 108_200, "AP-1") == (
+        "환불액 108,200원은 담당자 승인이 필요해 아직 처리되지 않았고, "
+        "승인 대기열에 올렸습니다(승인 번호 AP-1). "
+        "고객에게 담당자 확인 후 처리되며 결과는 이 대화창으로 안내된다고 알리세요. "
+        "같은 요청을 다시 호출하지 마세요."
+    )
+    assert held_for_agent(36_700, 127_100, "AP-2").startswith(
+        "환불액 36,700원(같은 주문의 반품 환불액 합계 127,100원)은 담당자 승인이 필요해"
+    )
 
 
 def test_static_pages_carry_no_inline_code():

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import secrets
 import threading
 import traceback
@@ -62,7 +63,54 @@ FALLBACK_REPLY = (
 )
 CLOSED_REPLY = "대화가 길어져 이 상담은 여기서 마칩니다. 이어서 도움이 필요하시면 새 상담을 시작해 주세요."
 
+# A write held for a person answers the agent with the facts and with these instructions, which are for the
+# agent only. A model may pass them on word for word (docs/service.md, the qwen3.5:4b turn of 2026-10-04), so
+# in a turn that held a write the customer reads the service's own notice (HELD_NOTICE) instead.
+HELD_AGENT_ONLY = (
+    "고객에게 담당자 확인 후 처리되며 결과는 이 대화창으로 안내된다고 알리세요.",
+    "같은 요청을 다시 호출하지 마세요.",
+)
+HELD_NOTICE = (
+    "주문 {order_id}의 {kind} 요청(환불 예정 {amount})은 담당자 승인이 필요해 아직 처리되지 않았습니다. "
+    "승인 번호는 {code}이며, 담당자가 확인한 뒤 결과를 이 대화창으로 안내해 드립니다."
+)
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+_COPIED_RUN = 10  # characters (spaces aside) a sentence may share with HELD_AGENT_ONLY before it is dropped
+
 Emit = Callable[[str, dict[str, Any]], None]
+
+
+def _amount(refund: int, order_total: int) -> str:
+    return f"{refund:,}원" + (
+        f"(같은 주문의 반품 환불액 합계 {order_total:,}원)" if order_total != refund else ""
+    )
+
+
+def held_for_agent(refund: int, order_total: int, code: str) -> str:
+    """What the agent reads when a write was held. Unchanged since the gate was built."""
+    return (
+        f"환불액 {_amount(refund, order_total)}은 담당자 승인이 필요해 아직 처리되지 않았고, 승인 대기열에 "
+        f"올렸습니다(승인 번호 {code}). " + " ".join(HELD_AGENT_ONLY)
+    )
+
+
+def without_agent_only(text: str) -> str:
+    """`text` without its sentences that pass on HELD_AGENT_ONLY: one that copies a run of its characters
+    (spaces aside) or speaks of calling (호출, a word for tools, never for a customer's request)."""
+    keys = ["".join(s.split()) for s in HELD_AGENT_ONLY]
+
+    def agent_only(sentence: str) -> bool:
+        compact = "".join(sentence.split())
+        return "호출" in compact or any(
+            key[i : i + _COPIED_RUN] in compact for key in keys for i in range(len(key) - _COPIED_RUN + 1)
+        )
+
+    lines = []
+    for line in text.split("\n"):
+        kept = [s for s in _SENTENCE_END.split(line) if s.strip() and not agent_only(s)]
+        if kept or not line.strip():
+            lines.append(" ".join(kept))
+    return "\n".join(lines).strip()
 
 
 def wall_clock() -> datetime:
@@ -214,10 +262,18 @@ class ChatService:
             state=ConversationState(verified_customer_id=customer_id),
         )
 
+        held: dict[str, str] = {}  # approval code -> the customer's notice, for writes held in this turn
+        wrote: list[str] = []  # writes carried out in this turn
+
         def run_tool(name: str, arguments: dict) -> ToolResult:
-            return self._run_tool(session_id, ctx, name, arguments, emit)
+            result = self._run_tool(session_id, ctx, name, arguments, emit, notices=held)
+            spec = self.registry.get(name)
+            if result.ok and spec is not None and spec.write:
+                wrote.append(name)
+            return result
 
         status, reply, error, closing = SessionStatus.OPEN, None, "", ""
+        not_delivered = ""
         try:
             turn = agent_turn(
                 state,
@@ -235,6 +291,15 @@ class ChatService:
                 status, reply = SessionStatus.CLOSED, CLOSED_REPLY
             elif turn.stop:  # the model ran out of calls, retries or tool errors in this turn
                 error, reply = turn.stop, FALLBACK_REPLY
+            elif held:
+                # The model has just read the held write's instructions for the agent. The customer reads
+                # the service's notice; the model's words only when the turn also carried out a write
+                # they report, and then without the sentences that pass the instructions on.
+                not_delivered = reply
+                said = without_agent_only(reply) if wrote else ""
+                reply = "\n".join([*([said] if said else []), *held.values()])
+                state.messages[-1] = Message("assistant", not_delivered, delivered=False)
+                state.messages.append(Message("assistant", reply))
         except Exception as exc:  # noqa: BLE001
             # Whatever the tools wrote before the failure is committed and audited; keep the conversation
             # consistent with it and tell the customer that this message was not answered.
@@ -267,7 +332,15 @@ class ChatService:
             )
         if error:
             self._audit(session_id, "error", {"error": error})
-        self._audit(session_id, "agent_reply", {"text": reply or "", "status": status.value})
+        self._audit(
+            session_id,
+            "agent_reply",
+            {
+                "text": reply or "",
+                "status": status.value,
+                **({"not_delivered": not_delivered} if not_delivered else {}),
+            },
+        )
         with Session(self.engine) as db_session:
             row = self._row(db_session, session_id)
             row.state = state.to_dict()
@@ -292,6 +365,7 @@ class ChatService:
         emit: Emit,
         *,
         approval_id: int | None = None,
+        notices: dict[str, str] | None = None,
     ) -> ToolResult:
         """The one way a tool runs in the service.
 
@@ -357,9 +431,11 @@ class ChatService:
 
         result = execute(self.registry, self.engine, ctx, name, arguments, on_success=in_transaction)
         if held:
-            result = self._queue_approval(
+            result, notice = self._queue_approval(
                 session_id, ctx, name, held["args"], held["refund"], emit, order_total=held["order_total"]
             )
+            if notices is not None:
+                notices.update(notice)
         if not result.ok:  # nothing was changed, so this row may stand alone
             self._audit(
                 session_id,
@@ -405,9 +481,10 @@ class ChatService:
         emit: Emit,
         *,
         order_total: int,
-    ) -> ToolResult:
+    ) -> tuple[ToolResult, dict[str, str]]:
         """Put the write that was just rolled back into the queue (once per session and arguments).
-        `order_total` adds the returns already filed on the order; approving commits `refund` only."""
+        `order_total` adds the returns already filed on the order; approving commits `refund` only.
+        Returns the agent's answer and {approval code: the notice for the customer}."""
         with Session(self.engine) as db_session:
             pending = db_session.scalars(
                 select(Approval).where(
@@ -443,15 +520,13 @@ class ChatService:
         )
         emit("approval", {"code": code, "tool": tool, "refund_won": refund})
         amount = f"{refund:,}원" + (
-            f"(같은 주문의 반품 환불액 합계 {order_total:,}원)" if order_total != refund else ""
+            f", 같은 주문의 반품 환불액 합계 {order_total:,}원" if order_total != refund else ""
         )
-        return ToolResult.error(
-            "approval_required",
-            f"환불액 {amount}은 담당자 승인이 필요해 아직 처리되지 않았고, 승인 대기열에 올렸습니다"
-            f"(승인 번호 {code}). 고객에게 담당자 확인 후 처리되며 결과는 이 대화창으로 안내된다고 알리세요. "
-            "같은 요청을 다시 호출하지 마세요.",
-            args=clean,
+        notice = HELD_NOTICE.format(
+            order_id=clean.get("order_id", ""), kind=APPROVAL_TOOLS[tool], amount=amount, code=code
         )
+        result = ToolResult.error("approval_required", held_for_agent(refund, order_total, code), args=clean)
+        return result, {code: notice}
 
     def decide(self, approval_id: int, *, approve: bool, by: str, note: str = "") -> dict[str, Any]:
         """Approve (and carry out) or reject a waiting write. The customer reads the outcome in the chat."""
