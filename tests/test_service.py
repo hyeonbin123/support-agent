@@ -545,6 +545,16 @@ DONT_CALL = "같은 요청을 다시 호출하지 마세요."
             "2번 상품은 담당자 확인 후 처리되며, 1번 상품 반품은 접수되었습니다.",
             "1번 상품 반품은 접수되었습니다.",
         ),
+        # The report of the filed line comes first and the instruction starts right after its comma: the
+        # copied run crosses the comma, but only the instruction's clause goes.
+        (
+            "1번 상품 반품은 접수되었으며, 결과는 이 대화창으로 안내됩니다.",
+            "1번 상품 반품은 접수되었으며.",
+        ),
+        (
+            "1번 상품 반품은 바로 처리되며, 결과는 이 대화창으로 안내됩니다.",
+            "1번 상품 반품은 바로 처리되며.",
+        ),
         # Nothing to take out: the reply stays as it was, line breaks and all.
         (f"{LOOKED_UP}\n\n다른 주문도 확인해 드릴까요?", f"{LOOKED_UP}\n\n다른 주문도 확인해 드릴까요?"),
     ],

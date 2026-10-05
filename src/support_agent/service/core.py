@@ -109,9 +109,9 @@ def without_agent_only(text: str) -> str:
     Copied are the runs of _COPIED_RUN letters and digits (spaces and punctuation aside, also across the end
     of a sentence or a line) that `text` shares with an instruction, and the word 호출 (said of tools, never
     of a customer's request). A line without any is kept as it is. A sentence with one goes, unless commas
-    after joining endings (_JOINED) divide it into clauses: then only the clauses with copied text or with
-    a run of _CLAUSE_RUN go, and the rest of the sentence stays. A clause that ended with such a comma and
-    now ends the sentence ends with a full stop. A paraphrase of an instruction is not caught."""
+    after joining endings (_JOINED) divide it into clauses: then only the clauses that share a run of
+    _CLAUSE_RUN with an instruction go, and the rest of the sentence stays. A clause that ended with such a
+    comma and now ends the sentence ends with a full stop. A paraphrase of an instruction is not caught."""
     copied = _copied(text)
     lines = []
     for at, line in _pieces(text, 0, _LINE_END):
@@ -167,11 +167,10 @@ def _sentence_without(at: int, sentence: str, copied: set[int]) -> str:
             clauses.append((start, piece_at + len(piece)))
             if not last:
                 start = pieces[i + 1][0]
-    kept = [
-        sentence[s:e]
-        for s, e in clauses
-        if not copied.intersection(range(at + s, at + e)) and not _shares_a_run(sentence[s:e], _CLAUSE_RUN)
-    ]
+    # Judged on the clause's own text: a copied run found across the joining comma would also take the
+    # clause before it ("접수되었으며, 결과는 이 대화창으로 …"). Any copied run inside a clause is longer than
+    # _CLAUSE_RUN, so it is still caught here.
+    kept = [sentence[s:e] for s, e in clauses if not _shares_a_run(sentence[s:e], _CLAUSE_RUN)]
     if len(clauses) < 2 or not kept:
         return ""
     said = " ".join(kept)
