@@ -69,6 +69,13 @@ uv run uvicorn support_agent.service.offline:create_offline_app --factory --port
 APP_ID=<앱 번호> ADMIN_TOKEN=<같은 토큰> SCAN_SESSION_ID=<세션 번호> hawk scan
 ```
 
+- **2026-10-05부터는 OWASP ZAP(무료, Apache-2.0)으로 스캔한다.** HawkScan은 체험 기간이 이날 끝났다. 설정은 `zap/automation.yaml`로 같은 스캔이다 (API 설명, 스파이더, 패시브 스캔, 기본 정책의 액티브 스캔). ZAP 2.17.0 공식 크로스플랫폼 패키지를 Java 17 이상으로 직접 돌린다 (Docker 없음). 관리자 토큰은 ZAP이 대상 호스트로 가는 모든 요청에 헤더를 붙이게 하는 환경 변수(`ZAP_AUTH_HEADER*`, `zap/run_zap.sh`가 정함)로 넘기고, 실제 세션·승인 번호는 `requestor` 작업이 그 번호로 요청을 한 번씩 보내 스캔 대상에 넣는다 (HawkScan의 `customVariables` 자리. 승인 결정 요청은 그 승인을 실행한다). 두 도구는 규칙 목록과 기본 설정이 달라 **결과를 직접 비교하지 않고, 같은 도구의 기록끼리만 비교한다**
+
+```bash
+# 위와 같이 오프라인 앱을 띄우고 세션과 승인 대기를 만든 뒤. ZAP_DIR은 zap-2.17.0.jar가 있는 폴더, 결과는 work/zap/<이름>/
+ZAP_DIR=<폴더> ADMIN_TOKEN=<같은 토큰> SCAN_SESSION_ID=<세션 번호> SCAN_APPROVAL_ID=<승인 번호의 숫자> bash zap/run_zap.sh <이름>
+```
+
 스캔 결과 (2026-09-21~10-04, HawkScan 6.4.0, 정책 OpenAPI/REST API. 1~3은 2026-09-21, 4~7의 날짜는 각 줄에)
 
 | 스캔 | 대상 | 결과 |

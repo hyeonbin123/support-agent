@@ -4,6 +4,8 @@
 #   SUPPORT_AGENT_EXPOSE_OPENAPI=1 SUPPORT_AGENT_ADMIN_TOKEN=<token> \
 #     uv run uvicorn support_agent.service.offline:create_offline_app --factory --port 8062
 #   APP_ID=<application id> ADMIN_TOKEN=<token> SCAN_SESSION_ID=<a session id> hawk scan
+#
+# zap/automation.yaml is the same scan for OWASP ZAP, which replaces HawkScan from 2026-10-05.
 app:
   applicationId: ${APP_ID}
   env: ${APP_ENV:Development}

@@ -1,0 +1,95 @@
+# OWASP ZAP automation plan: the scan stackhawk.yml describes (the OpenAPI description of the web layer
+# without a model, spider, passive scan, active scan with the default policy), every request carrying the
+# admin token. Written for the cross-platform ZAP 2.17.0 release (Java 17 or later). No secrets in this file:
+# the variables come from the environment, and zap/run_zap.sh sets them and starts ZAP.
+#
+#   TARGET            the offline service, e.g. http://127.0.0.1:8062 (only ever a local service)
+#   SCAN_SESSION_ID   a chat session that exists in the scanned database
+#   SCAN_APPROVAL_ID  the number (1, not AP-1) of an approval of that session that is still pending
+#   REPORT_DIR        absolute path of the folder the reports go to; REPORT_NAME their file name
+#
+# The admin token is not a plan variable: ZAP itself adds the header to every request it sends to the target
+# host (the counterpart of HawkScan's TOKEN authentication) when ZAP_AUTH_HEADER=X-Admin-Token,
+# ZAP_AUTH_HEADER_VALUE=<token> and ZAP_AUTH_HEADER_SITE=<host> are set.
+env:
+  contexts:
+    - name: support-agent
+      urls:
+        - ${TARGET}
+      includePaths:
+        - "${TARGET}.*"
+  parameters:
+    failOnError: true
+    failOnWarning: false
+    progressToStdout: true
+
+jobs:
+  - type: openapi
+    parameters:
+      apiUrl: ${TARGET}/openapi.json
+      context: support-agent
+
+  # Generated path values only reach "no such session" (404) or "no such approval" (409). These requests use
+  # the real session and the waiting approval (stackhawk.yml's customVariables), so the active scan attacks
+  # the handlers behind them too. The decision approves the waiting write, as the first generated decision
+  # of a HawkScan run did. Bodies are ASCII: the offline stand-in looks up an order when it reads its number.
+  - type: requestor
+    requests:
+      - url: ${TARGET}/api/sessions/${SCAN_SESSION_ID}
+      - url: ${TARGET}/api/sessions/${SCAN_SESSION_ID}/messages
+        method: POST
+        headers:
+          - "Content-Type:application/json"
+        data: '{"text": "O-10097"}'
+      - url: ${TARGET}/api/sessions/${SCAN_SESSION_ID}/voice
+        method: POST
+        headers:
+          - "Content-Type:audio/webm"
+        data: "O-10097"
+      - url: ${TARGET}/api/sessions/${SCAN_SESSION_ID}/speech
+        method: POST
+        headers:
+          - "Content-Type:application/json"
+        data: '{"text": "O-10097"}'
+      - url: ${TARGET}/api/admin/sessions
+      - url: ${TARGET}/api/admin/sessions/${SCAN_SESSION_ID}
+      - url: ${TARGET}/api/admin/approvals?status=pending
+      - url: ${TARGET}/api/admin/approvals/${SCAN_APPROVAL_ID}/decision
+        method: POST
+        headers:
+          - "Content-Type:application/json"
+        data: '{"approve": true, "by": "zap", "note": "scan"}'
+
+  - type: spider
+    parameters:
+      context: support-agent
+      maxDuration: 2
+
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 5
+
+  # Default policy, as HawkScan's. The service runs at most four turns at once and answers 503 beyond that.
+  - type: activeScan
+    parameters:
+      context: support-agent
+      threadPerHost: 4
+      maxScanDurationInMins: 120
+
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 5
+
+  - type: report
+    parameters:
+      template: traditional-json
+      reportDir: ${REPORT_DIR}
+      reportFile: ${REPORT_NAME}
+      reportTitle: support-agent ZAP scan
+
+  - type: report
+    parameters:
+      template: traditional-md
+      reportDir: ${REPORT_DIR}
+      reportFile: ${REPORT_NAME}
+      reportTitle: support-agent ZAP scan
