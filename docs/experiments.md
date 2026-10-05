@@ -1324,3 +1324,17 @@ uv run --no-sync python -m support_agent.voice_real run reports/20261004-154016-
 uv run --no-sync python -m support_agent.voice_real run reports/20261004-154016-qwen3.5-4b-P0-R0-G0-F0-V4-v4-k0 --official --label dev
 uv run --no-sync python -m support_agent.voice_real report reports/<...-v4r-a-dev>
 ```
+
+### 관문 결과 (2026-10-05, 규칙 커밋 `4b51ea8` 뒤): 통과 — GPU 측정으로 간다
+
+`uv run --no-sync python -m support_agent.voice_real plan reports/20261004-154016-qwen3.5-4b-P0-R0-G0-F0-V4-v4-k0` (CPU, 출력은 `outputs/v4r/plan-gate-after-4b51ea8.txt`, 종료 코드 0)
+
+| 항목 | 뽑힌 값 | 등록한 범위 | 결과 |
+|---|---|---|---|
+| 먹먹한 발화 | 22.5% (929개 중) | 15~25% | 범위 안 |
+| 잃은 프레임 | 4,997 / 265,745 (1.88%) | 1~3% | 범위 안 |
+| 돌발 소음 | 93개 (오디오 88.4분) | 60.2~116.6개 | 범위 안 |
+| 배경 SNR | 12.00~18.00 dB (평균 15.03), 분홍 447 · 갈색 482 | 모두 12~18 dB, 두 색 모두 | 범위 안 |
+
+- 하니스 확인(CPU, 측정 아님): `voice_real run ... --device cpu --limit 3 --label cpu-check --cache outputs/v4r/cpu-check-cache.jsonl`이 세 발화를 끝까지 돌았다 (`outputs/v4r/20261005-080604-v4r-a-cpu-check`, 106초). 음성 모델이 9단계와 다르다는 경고(`compute_type`, 두 장치)가 나왔고, 기록에 두 받아쓰기, 뽑힌 조건, 길이, 시간이 남았다. CPU 합성은 GPU와 소리가 달라 첫 발화의 길이가 기록(10.738초)과 달랐다(10.634초). 캐시는 공식 캐시와 다른 파일에 두었다. 받아쓰기는 결과로 쓰지 않는다
+- 남은 것은 GPU 단계다. 이 절을 적을 때 GPU에서는 음성 측정을 하지 않았다
