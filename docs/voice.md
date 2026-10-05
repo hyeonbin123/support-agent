@@ -49,6 +49,19 @@ uv run --group voice uvicorn support_agent.service.app:create_app --factory --po
 - 서비스의 음성 모드와 MCP 서버는 바뀌지 않는다 (브라우저 마이크에는 발신 번호가 없다)
 - `uv run python -m support_agent.analyze caller-id <실행 ...>`: 확인 도구를 부르지 않은 에피소드, 허용 오차로 통과한 확인(허용 오차 0에서는 0이어야 한다), 없는 도구(`find_customer`) 호출. `analyze name-collisions [--k K]`(기본은 등록한 허용 오차 0): seed 고객의 번호와 다른 고객 이름의 쌍 가운데 허용 오차가 받아들이는 것
 
+## V4-R: 전화 통화 조건에서 받아쓰기 (11단계 A단계)
+
+`voice/degrade.py`는 합성 음성에 전화 통화 조건을 얹는다: 발화의 20%에 먹먹함(500 ms를 1500 Hz 저역 통과), 분홍·갈색 생성 잡음(전화 대역 안에서 SNR 15 dB ±3 dB), 분당 1회의 돌발 소음(−5 ~ +10 dB), 300–3400 Hz·8 kHz·8비트 μ-law(whisper-ko-ft의 `telephone()`과 같은 구현), 20 ms 프레임의 Gilbert–Elliott 손실(평균 2%, 100 ms 묶음, 잃은 프레임은 무음). 값은 τ-Voice (arXiv 2603.13686)의 Realistic이고, 다르게 정한 것과 이유는 [experiments.md](experiments.md)의 "11단계"에 있다. 무작위는 (기본 seed, 과제, 시도, "degrade", 순번)에서 나온다.
+
+```bash
+uv run --no-sync python -m support_agent.voice_real plan reports/<V4 개발용 실행>          # CPU: 뽑힌 조건만 확인
+uv run --no-sync python -m support_agent.voice_real run reports/<V4 개발용 실행> --official --label dev   # GPU
+uv run --no-sync python -m support_agent.voice_real report reports/<위 실행>
+```
+
+- 9단계 V4 실행의 고객 발화를 같은 말로 푼 글과 같은 합성 seed로 다시 합성하고, 같은 인식기로 그대로 한 번, 열화를 거쳐 한 번 받아 적는다. 에이전트는 없다. 결과는 발화마다 `utterances.jsonl`(두 받아쓰기, 뽑힌 조건)에 남는다
+- 공식 실행은 작업 트리가 깨끗하고, 음성 모델과 장치가 원본 실행과 같아야 한다. 왕복은 `outputs/voice-cache/v4r-roundtrips.jsonl`에 캐시한다 (키에 열화의 버전과 값이 들어 있다)
+
 ## 구성
 
 | 파일 | 하는 일 |
@@ -59,6 +72,8 @@ uv run --group voice uvicorn support_agent.service.app:create_app --factory --po
 | `voice/normalize.py` | V2: 인식된 글의 표기를 고치는 규칙 (주문 번호의 O, 이메일의 골뱅이와 도메인, 전화번호 구분, 만 단위 금액). 개발용 V1 기록만 보고 만들었다 |
 | `voice/spoken.py` | 사람이 읽은 전화번호·주문 번호를 숫자로 (서비스용, 측정과 무관) |
 | `voice/metrics.py` | 글자 오류율, 엔티티 생존율, 본인 확인 성공률과 짝지은 부트스트랩 구간 |
+| `voice/degrade.py` | 11단계: 전화 통화 조건(먹먹함, 생성 소음, 돌발 소음, 8 kHz μ-law, 프레임 손실). numpy·scipy만 쓴다 |
+| `voice_real.py` | 11단계 A단계: 다시 합성 → 깨끗한·열화한 받아쓰기, 뽑힌 조건의 CPU 관문, 표 |
 | `service/voice_frontend.py` | 서비스 앞단: 녹음을 글로, 답을 소리로. 모델 호출은 한 번에 하나 |
 
 ## 말로 풀어 쓰기

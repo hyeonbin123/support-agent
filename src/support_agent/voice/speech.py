@@ -216,6 +216,10 @@ class WhisperListener:
             samples = decode_audio(io.BytesIO(audio), sampling_rate=LISTEN_RATE)
         else:
             samples = decode_limited(audio, self.max_seconds)
+        return self.transcribe_samples(samples)
+
+    def transcribe_samples(self, samples: Any) -> str:
+        """Decoded 16 kHz mono float32 samples to text (stage 11 degrades the samples in between)."""
         segments, _info = self._model.transcribe(
             samples,
             language="ko",
