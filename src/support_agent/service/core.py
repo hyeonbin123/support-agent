@@ -65,7 +65,8 @@ CLOSED_REPLY = "대화가 길어져 이 상담은 여기서 마칩니다. 이어
 
 # A write held for a person answers the agent with the facts and with these instructions, which are for the
 # agent only. A model may pass them on word for word (docs/service.md, the qwen3.5:4b turn of 2026-10-04), so
-# in a turn that held a write the customer reads the service's own notice (HELD_NOTICE) instead.
+# in a turn that held a write the customer reads the model's reply without them (without_agent_only), then
+# the service's own notice (HELD_NOTICE).
 HELD_AGENT_ONLY = (
     "고객에게 담당자 확인 후 처리되며 결과는 이 대화창으로 안내된다고 알리세요.",
     "같은 요청을 다시 호출하지 마세요.",
@@ -74,8 +75,16 @@ HELD_NOTICE = (
     "주문 {order_id}의 {kind} 요청(환불 예정 {amount})은 담당자 승인이 필요해 아직 처리되지 않았습니다. "
     "승인 번호는 {code}이며, 담당자가 확인한 뒤 결과를 이 대화창으로 안내해 드립니다."
 )
+_COPIED_RUN = 10  # letters and digits a reply may share with HELD_AGENT_ONLY before that part is cut
+_CLAUSE_RUN = 6  # ... and that a clause kept from a cut sentence may not share with it
+_AGENT_KEYS = tuple("".join(ch for ch in s if ch.isalnum()) for s in HELD_AGENT_ONLY)
+_LINE_END = re.compile(r"\n")
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
-_COPIED_RUN = 10  # characters (spaces aside) a sentence may share with HELD_AGENT_ONLY before it is dropped
+_AFTER_COMMA = re.compile(r"(?<=,)\s+")
+# A comma after one of these endings closes a clause joined by "and", "while" or "but": …고, …며, …지만,
+# …는데 (a parenthesis may follow). Not the quoting …다고/…라고 (the instructions' own "안내된다고"), nor a
+# condition (…면) or a cause (…서): the clause left alone would say more than the sentence did.
+_JOINED = re.compile(r"(?:(?<![다라자냐])고|며|지만|데)(?:\s*\([^()]*\))?$")
 
 Emit = Callable[[str, dict[str, Any]], None]
 
@@ -95,22 +104,80 @@ def held_for_agent(refund: int, order_total: int, code: str) -> str:
 
 
 def without_agent_only(text: str) -> str:
-    """`text` without its sentences that pass on HELD_AGENT_ONLY: one that copies a run of its characters
-    (spaces aside) or speaks of calling (호출, a word for tools, never for a customer's request)."""
-    keys = ["".join(s.split()) for s in HELD_AGENT_ONLY]
+    """`text` without what passes HELD_AGENT_ONLY on to the customer.
 
-    def agent_only(sentence: str) -> bool:
-        compact = "".join(sentence.split())
-        return "호출" in compact or any(
-            key[i : i + _COPIED_RUN] in compact for key in keys for i in range(len(key) - _COPIED_RUN + 1)
-        )
-
+    Copied are the runs of _COPIED_RUN letters and digits (spaces and punctuation aside, also across the end
+    of a sentence or a line) that `text` shares with an instruction, and the word 호출 (said of tools, never
+    of a customer's request). A line without any is kept as it is. A sentence with one goes, unless commas
+    after joining endings (_JOINED) divide it into clauses: then only the clauses with copied text or with
+    a run of _CLAUSE_RUN go, and the rest of the sentence stays. A clause that ended with such a comma and
+    now ends the sentence ends with a full stop. A paraphrase of an instruction is not caught."""
+    copied = _copied(text)
     lines = []
-    for line in text.split("\n"):
-        kept = [s for s in _SENTENCE_END.split(line) if s.strip() and not agent_only(s)]
-        if kept or not line.strip():
-            lines.append(" ".join(kept))
-    return "\n".join(lines).strip()
+    for at, line in _pieces(text, 0, _LINE_END):
+        if not copied.intersection(range(at, at + len(line))):
+            lines.append(line)
+            continue
+        said = [_sentence_without(s_at, s, copied) for s_at, s in _pieces(line, at, _SENTENCE_END)]
+        if any(said):
+            lines.append(" ".join(s for s in said if s))
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def _pieces(text: str, start: int, sep: re.Pattern[str]) -> list[tuple[int, str]]:
+    """`text`, which starts at `start` of the whole reply, cut at `sep`: (start of the piece, piece)."""
+    out, at = [], 0
+    for match in sep.finditer(text):
+        out.append((start + at, text[at : match.start()]))
+        at = match.end()
+    out.append((start + at, text[at:]))
+    return out
+
+
+def _copied(text: str) -> set[int]:
+    """The positions in `text` of the letters and digits it copies from HELD_AGENT_ONLY."""
+    where = [i for i, ch in enumerate(text) if ch.isalnum()]
+    compact = "".join(text[i] for i in where)
+    runs = {key[i : i + _COPIED_RUN] for key in _AGENT_KEYS for i in range(len(key) - _COPIED_RUN + 1)}
+    out: set[int] = set()
+    for run in [*runs, "호출"]:
+        at = compact.find(run)
+        while at != -1:
+            out.update(where[at : at + len(run)])
+            at = compact.find(run, at + 1)
+    return out
+
+
+def _shares_a_run(text: str, n: int) -> bool:
+    compact = "".join(ch for ch in text if ch.isalnum())
+    return "호출" in compact or any(
+        key[i : i + n] in compact for key in _AGENT_KEYS for i in range(len(key) - n + 1)
+    )
+
+
+def _sentence_without(at: int, sentence: str, copied: set[int]) -> str:
+    """`sentence` (at `at` of the reply), its clauses without copied text, or "" (see without_agent_only)."""
+    if not copied.intersection(range(at, at + len(sentence))):
+        return sentence
+    pieces = _pieces(sentence, 0, _AFTER_COMMA)  # every piece but the last ends with its comma
+    clauses, start = [], 0
+    for i, (piece_at, piece) in enumerate(pieces):
+        last = i == len(pieces) - 1
+        if last or _JOINED.search(piece[:-1]):
+            clauses.append((start, piece_at + len(piece)))
+            if not last:
+                start = pieces[i + 1][0]
+    kept = [
+        sentence[s:e]
+        for s, e in clauses
+        if not copied.intersection(range(at + s, at + e)) and not _shares_a_run(sentence[s:e], _CLAUSE_RUN)
+    ]
+    if len(clauses) < 2 or not kept:
+        return ""
+    said = " ".join(kept)
+    if said.endswith(","):  # the clause that ended the sentence went
+        said = said[:-1] + ("." if sentence.rstrip()[-1:] in (".", "!", "?") else "")
+    return said
 
 
 def wall_clock() -> datetime:
@@ -263,14 +330,9 @@ class ChatService:
         )
 
         held: dict[str, str] = {}  # approval code -> the customer's notice, for writes held in this turn
-        wrote: list[str] = []  # writes carried out in this turn
 
         def run_tool(name: str, arguments: dict) -> ToolResult:
-            result = self._run_tool(session_id, ctx, name, arguments, emit, notices=held)
-            spec = self.registry.get(name)
-            if result.ok and spec is not None and spec.write:
-                wrote.append(name)
-            return result
+            return self._run_tool(session_id, ctx, name, arguments, emit, notices=held)
 
         status, reply, error, closing = SessionStatus.OPEN, None, "", ""
         not_delivered = ""
@@ -293,13 +355,13 @@ class ChatService:
                 error, reply = turn.stop, FALLBACK_REPLY
             elif held:
                 # The model has just read the held write's instructions for the agent. The customer reads
-                # the service's notice; the model's words only when the turn also carried out a write
-                # they report, and then without the sentences that pass the instructions on.
+                # the model's reply without them (what it looked up, asked or did besides), then the
+                # service's notice. The conversation keeps exactly that, so the model's next turn reads what
+                # the customer read; the model's own words stay in the audit log.
                 not_delivered = reply
-                said = without_agent_only(reply) if wrote else ""
+                said = without_agent_only(reply)
                 reply = "\n".join([*([said] if said else []), *held.values()])
-                state.messages[-1] = Message("assistant", not_delivered, delivered=False)
-                state.messages.append(Message("assistant", reply))
+                state.messages[-1] = Message("assistant", reply)
         except Exception as exc:  # noqa: BLE001
             # Whatever the tools wrote before the failure is committed and audited; keep the conversation
             # consistent with it and tell the customer that this message was not answered.

@@ -22,7 +22,13 @@ from support_agent.service import app as app_module
 from support_agent.service import store
 from support_agent.service.app import create_app
 from support_agent.service.bootstrap import copy_seed, prepare_database
-from support_agent.service.core import CLOSED_REPLY, FALLBACK_REPLY, BusyError, ChatService
+from support_agent.service.core import (
+    CLOSED_REPLY,
+    FALLBACK_REPLY,
+    BusyError,
+    ChatService,
+    without_agent_only,
+)
 from support_agent.service.offline import OfflineProvider, create_offline_app
 from support_agent.service.settings import DEFAULT_MODEL, DEMO_NOW, Settings
 from support_agent.service.voice_frontend import VoiceFrontEnd, repair_heard
@@ -410,11 +416,18 @@ def test_the_customer_never_reads_the_instructions_a_held_write_gives_the_agent(
     for text in [*replies, *shown]:
         assert "호출" not in text and "알리세요" not in text and "알려드리겠습니다" not in text
     assert LEAKED_REPLY not in shown
-    # What the customer is told comes from the service: the order, the amount and the approval number.
+    # The customer reads the model's first sentence, then the service's notice: the order, the amount and
+    # the approval number.
     assert len(replies) == 1 and replies[0] == shown[-1]
+    assert replies[0].startswith(
+        "주문 O-10097의 환불액 108,200원은 담당자 승인이 필요하여 승인 대기열에 올렸습니다.\n"
+    )
     assert all(part in replies[0] for part in ("O-10097", "취소", "108,200원", "AP-1", "담당자"))
-    # The model's own words are kept, marked as never delivered, and the audit log has both.
-    assert [m["content"] for m in kept if m.get("delivered") is False] == [LEAKED_REPLY]
+    # The conversation (what the model reads next) holds what the customer got and nothing undelivered;
+    # the audit log has both.
+    held_at = next(i for i, m in enumerate(kept) if m.get("tool_name") == "cancel_order")
+    assert [(m["role"], m["content"]) for m in kept[held_at + 1 :]] == [("assistant", replies[0])]
+    assert not [m for m in kept if m.get("delivered") is False]
     reply_event = next(e["payload"] for e in audit if e["kind"] == "agent_reply")
     assert (reply_event["text"], reply_event["not_delivered"]) == (replies[0], LEAKED_REPLY)
 
@@ -424,6 +437,120 @@ def test_a_later_reply_after_a_held_write_is_the_models_own(engine):
     with make_client(engine, [*verify_and_cancel(BIG), LEAKED_REPLY, later]) as client:
         session_id, _ = ask_for_big_cancel(client)
         assert dict(say(client, session_id, "언제 처리되나요?"))["reply"]["text"] == later
+
+
+BIG_NOTICE = (
+    "주문 O-10097의 취소 요청(환불 예정 108,200원)은 담당자 승인이 필요해 아직 처리되지 않았습니다. "
+    "승인 번호는 AP-1이며, 담당자가 확인한 뒤 결과를 이 대화창으로 안내해 드립니다."
+)
+
+
+def test_a_held_turn_keeps_what_the_model_looked_up_and_asks(engine):
+    """The review of 972317b: find_customer, get_order and a held cancel in one turn dropped the whole
+    model reply, so the lookup never reached the customer, while the next turn's model read that reply
+    as said. Now the customer gets the reply without the instructions, then the notice, and the model's
+    next turn reads exactly that."""
+    name, phone, order_id, _ = BIG
+    said = (
+        "주문 O-10097은 배송준비중이며 아령 세트와 보조배터리 두 상품입니다. "
+        "고객님께 담당자 확인 후 처리되며 결과는 이 대화창으로 안내된다고 알려드리겠습니다. "
+        "같은 요청을 다시 호출하지 마세요. 다른 주문도 확인해 드릴까요?"
+    )
+    later = "네, 담당자가 확인하고 있습니다."
+    provider = ScriptedProvider(
+        [
+            ToolCall("find_customer", {"name": name, "contact": phone}),
+            ToolCall("get_order", {"order_id": order_id}),
+            ToolCall("cancel_order", {"order_id": order_id, "reason": "changed_mind"}),
+            said,
+            later,
+        ]
+    )
+    settings = Settings(admin_token="test-token")
+    with TestClient(create_app(settings, provider=provider, engine=engine)) as client:
+        session_id, events = ask_for_big_cancel(client)
+        replies = [d["text"] for n, d in events if n == "reply"]
+        assert dict(say(client, session_id, "언제 처리되나요?"))["reply"]["text"] == later
+        shown = [m["text"] for m in client.get(f"/api/sessions/{session_id}").json()["messages"]]
+        audit = client.get(f"/api/admin/sessions/{session_id}", headers=ADMIN).json()["audit"]
+        with Session(engine) as session:
+            kept = session.get(store.ChatSession, session_id).state["messages"]
+
+    delivered = (
+        "주문 O-10097은 배송준비중이며 아령 세트와 보조배터리 두 상품입니다. 다른 주문도 확인해 드릴까요?\n"
+        + BIG_NOTICE
+    )
+    assert replies == [delivered]
+    assert shown[-3:] == [delivered, "언제 처리되나요?", later]
+    # The next turn's model reads, after the held call, what the customer got, then the customer.
+    seen = provider.requests[-1]["messages"]
+    held_at = next(i for i, m in enumerate(seen) if m.tool_name == "cancel_order")
+    assert [(m.role, m.content) for m in seen[held_at + 1 :]] == [
+        ("assistant", delivered),
+        ("user", "언제 처리되나요?"),
+    ]
+    assert not [m for m in kept if m.get("delivered") is False]
+    told = [e["payload"] for e in audit if e["kind"] == "agent_reply"]
+    assert [(p["text"], p.get("not_delivered")) for p in told] == [(delivered, said), (later, None)]
+
+
+LOOKED_UP = "주문 O-10097은 배송준비중입니다."
+REAL_TURN = "고객님께 담당자 확인 후 처리되며 결과는 이 대화창으로 안내된다고 알려드리겠습니다."
+DONT_CALL = "같은 요청을 다시 호출하지 마세요."
+
+
+@pytest.mark.parametrize(
+    ("said", "kept"),
+    [
+        # The real turn's two sentences (docs/service.md), and the tool's own words.
+        (f"{LOOKED_UP} {REAL_TURN} {DONT_CALL}", LOOKED_UP),
+        (
+            f"{LOOKED_UP} 고객에게 담당자 확인 후 처리되며 결과는 이 대화창으로 "
+            f"안내된다고 알리세요. {DONT_CALL}",
+            LOOKED_UP,
+        ),
+        # No space after a full stop, so one sentence; spaces moved and another ending.
+        (f"{LOOKED_UP} {REAL_TURN}{DONT_CALL}", LOOKED_UP),
+        (f"{LOOKED_UP} 담당자확인 후처리되며 결과는 이대화창으로 안내된다고 알려드릴게요.", LOOKED_UP),
+        # Cut over two lines; markdown and a list item without a full stop.
+        (
+            f"{LOOKED_UP}\n고객님께 담당자 확인 후\n"
+            "처리되며 결과는 이 대화창으로 안내된다고 알려드리겠습니다.",
+            LOOKED_UP,
+        ),
+        (
+            f"{LOOKED_UP}\n\n**안내**: 담당자 확인 후 처리되며 결과는 이 대화창으로 안내됩니다.\n"
+            "- 같은 요청은 다시 호출하지 말아 주세요",
+            LOOKED_UP,
+        ),
+        # Clauses that are all instruction, a quoting ending (…다고,), a fragment a comma left behind.
+        (
+            f"{LOOKED_UP} 고객님, 담당자 확인 후 처리되며, 결과는 이 대화창으로 안내된다고 알려 드립니다.",
+            LOOKED_UP,
+        ),
+        (f"{LOOKED_UP} 결과는 이 대화창으로 안내된다고, 고객님께 알려드리겠습니다.", LOOKED_UP),
+        (f"{LOOKED_UP} 확인 후 처리되며, 결과는 이 대화창으로 안내됩니다.", LOOKED_UP),
+        # A condition is never cut off: alone, its main clause would say more than the sentence did.
+        (
+            f"{LOOKED_UP} 담당자 확인 후 처리되며 결과는 이 대화창으로 안내된다면, 환불은 3일 안에 됩니다.",
+            LOOKED_UP,
+        ),
+        # Joined to the lookup by a comma after …고: the lookup's clause stays, the instruction goes.
+        (
+            "주문 O-10097은 배송준비중이고, 고객님께 담당자 확인 후 처리되며 결과는 이 대화창으로 "
+            "안내된다고 알려드리겠습니다.",
+            "주문 O-10097은 배송준비중이고.",
+        ),
+        (
+            "2번 상품은 담당자 확인 후 처리되며, 1번 상품 반품은 접수되었습니다.",
+            "1번 상품 반품은 접수되었습니다.",
+        ),
+        # Nothing to take out: the reply stays as it was, line breaks and all.
+        (f"{LOOKED_UP}\n\n다른 주문도 확인해 드릴까요?", f"{LOOKED_UP}\n\n다른 주문도 확인해 드릴까요?"),
+    ],
+)
+def test_the_instructions_for_the_agent_never_reach_the_customer(said, kept):
+    assert without_agent_only(said) == kept
 
 
 def test_approval_carries_the_write_out_and_tells_the_customer(engine):
@@ -545,6 +672,28 @@ def test_a_turn_that_also_wrote_keeps_the_models_words_without_the_agent_only_on
     )
     assert "호출" not in text and "알려드리겠습니다" not in text
     assert all(part in text for part in ("O-10086", "36,700원", "AP-1"))
+
+
+def test_a_sentence_that_reports_a_filed_write_keeps_that_clause(engine):
+    """The review of 972317b: a sentence reporting line 1 and repeating the instruction for line 2 was
+    dropped whole. Its clauses are divided by a comma after …고, so only the instruction goes."""
+    name, phone, order_id = SPLIT
+    said = (
+        "1번 상품 반품은 접수되었고(환불 예정 90,400원), "
+        "2번 상품은 담당자 확인 후 처리되며 결과는 이 대화창으로 안내됩니다."
+    )
+    script = [
+        ToolCall("find_customer", {"name": name, "contact": phone}),
+        ToolCall("request_return", {"order_id": order_id, "line_nos": [1], "reason": "defective"}),
+        ToolCall("request_return", {"order_id": order_id, "line_nos": [2], "reason": "defective"}),
+        said,
+    ]
+    with make_client(engine, script) as client:
+        session_id = client.post("/api/sessions").json()["session_id"]
+        reply = dict(say(client, session_id, f"{name}, {phone}입니다. {order_id} 불량이라 반품해 주세요."))
+    text = reply["reply"]["text"]
+    assert text.startswith("1번 상품 반품은 접수되었고(환불 예정 90,400원).\n주문 O-10086의 반품 요청")
+    assert "처리되며" not in text
 
 
 def test_the_notice_the_agent_reads_is_unchanged():
