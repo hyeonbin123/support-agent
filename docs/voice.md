@@ -53,6 +53,8 @@ uv run --group voice uvicorn support_agent.service.app:create_app --factory --po
 
 `voice/degrade.py`는 합성 음성에 전화 통화 조건을 얹는다: 발화의 20%에 먹먹함(500 ms를 1500 Hz 저역 통과), 분홍·갈색 생성 잡음(전화 대역 안에서 SNR 15 dB ±3 dB), 분당 1회의 돌발 소음(−5 ~ +10 dB), 300–3400 Hz·8 kHz·8비트 μ-law(whisper-ko-ft의 `telephone()`과 같은 구현), 20 ms 프레임의 Gilbert–Elliott 손실(평균 2%, 100 ms 묶음, 잃은 프레임은 무음). 값은 τ-Voice (arXiv 2603.13686)의 Realistic이고, 다르게 정한 것과 이유는 [experiments.md](experiments.md)의 "11단계"에 있다. 무작위는 (기본 seed, 과제, 시도, "degrade", 순번)에서 나온다.
 
+2026-10-08 A단계 결과 (9단계 V4 개발용 929발화, `reports/20261008-145519-v4r-a-dev`, 판정 없음): 깨끗한 음성 → 열화한 음성으로 글자 오류율 4.40% → 6.39% (+2.00%p [+1.11, +3.25]), 이름 정확 생존 99/165 → 84/165, 주문·접수 번호 생존 80/126 → 74/126. 깨끗한 쪽은 9단계 기록과 받아쓰기가 99.7% 같다. 에피소드(B단계)는 재지 않았다.
+
 ```bash
 uv run --no-sync python -m support_agent.voice_real plan reports/<V4 개발용 실행>          # CPU: 뽑힌 조건만 확인
 uv run --no-sync python -m support_agent.voice_real run reports/<V4 개발용 실행> --official --label dev   # GPU
