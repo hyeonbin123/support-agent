@@ -13,6 +13,10 @@ record:
   far. A number is also found when it is part of a longer one (the last digits of a phone number).
 
 Reported only: a STOP with a gold write left, utterances in another script, simulator format problems.
+
+Rule change of 2026-10-09 (after the counts on the earlier records, before the GPU run): the next-round rule
+reads "stop before values" as a share of the episodes that never heard every value (an agent that delivers
+more values lowers the plain count by itself), and asks U1 for no more invented values than U0 (U0 has none).
 """
 
 from __future__ import annotations
@@ -163,6 +167,14 @@ def stop_before_values(episode: dict[str, Any], task: Task) -> bool | None:
     return not all(value_found(value, seen) for value in task.required_values)
 
 
+def values_never_heard(episode: dict[str, Any], task: Task) -> bool | None:
+    """True when the simulator never read every required value, however the episode ended."""
+    if episode["status"] == "infra_error" or not task.required_values:
+        return None
+    seen = [m["content"] for m in episode["user_messages"] if m["role"] == "user"]
+    return not all(value_found(value, seen) for value in task.required_values)
+
+
 def stop_with_writes_left(episode: dict[str, Any], task: Task) -> bool | None:
     """None when the task has no gold write (or the episode was an infra error)."""
     if episode["status"] == "infra_error" or not task.gold_actions:
@@ -208,6 +220,7 @@ def run_counts(run_dir: Path) -> dict[str, Any]:
             ["stop_with_writes_left", "utterances", "invented_utterances", "invented_episodes"], 0
         ),
         **dict.fromkeys(["invented_values", "other_language", "format_utterances", "prompts_over_limit"], 0),
+        "values_never_heard": 0,
         "max_prompt_tokens": 0,
     }
     formats: Counter[str] = Counter()
@@ -223,6 +236,7 @@ def run_counts(run_dir: Path) -> dict[str, Any]:
         before = stop_before_values(episode, task)
         counts["value_tasks"] += before is not None
         counts["stop_before_values"] += bool(before)
+        counts["values_never_heard"] += bool(values_never_heard(episode, task))
         left = stop_with_writes_left(episode, task)
         counts["write_tasks"] += left is not None
         counts["stop_with_writes_left"] += bool(left)
@@ -256,7 +270,8 @@ def _rate(n: int, d: int) -> float:
 
 
 COUNT_HEADER = (
-    "| 실행 | 시뮬레이터 | 에피소드 | 값 전 STOP | 지어낸 값이 든 발화 (에피소드당) | 그런 에피소드 "
+    "| 실행 | 시뮬레이터 | 에피소드 | 값 전 STOP | 값을 끝내 못 들은 에피소드 중 STOP "
+    "| 지어낸 값이 든 발화 (에피소드당) | 그런 에피소드 "
     "| 지어낸 값 | 쓰기가 남은 채 STOP | 시뮬레이터 발화 | 한자·가나 2자 이상 | 형식 문제 "
     "| 프롬프트 최대 토큰 (한도 95% 넘음) | 과제 바뀜 · infra |"
 )
@@ -267,6 +282,7 @@ def count_row(name: str, c: dict[str, Any]) -> str:
     return (
         f"| {name} | {c['simulator']} | {c['episodes']} "
         f"| {_share(c['stop_before_values'], c['value_tasks'])} "
+        f"| {_share(c['stop_before_values'], c['values_never_heard'])} "
         f"| {c['invented_utterances']} ({_rate(c['invented_utterances'], c['episodes']):.2f}) "
         f"| {_share(c['invented_episodes'], c['episodes'])} | {c['invented_values']} "
         f"| {_share(c['stop_with_writes_left'], c['write_tasks'])} | {c['utterances']} "
@@ -393,23 +409,29 @@ def check(base_dir: Path, cand_dir: Path) -> tuple[str, dict[str, Any]]:
     lines += ["", COUNT_HEADER, "|---|" + "---|" * (COUNT_HEADER.count("|") - 2)]
     lines += [count_row(name, counts[name]) for name in names]
 
-    def stop_rate(c: dict[str, Any]) -> float:
-        return _rate(c["stop_before_values"], c["value_tasks"])
+    def stop_share(c: dict[str, Any]) -> float | None:
+        """STOP among the episodes that never heard every value: the simulator's choice when they do not
+        come. None when every episode heard them (nothing to read)."""
+        return c["stop_before_values"] / c["values_never_heard"] if c["values_never_heard"] else None
 
     def invented_rate(c: dict[str, Any]) -> float:
         return _rate(c["invented_utterances"], c["episodes"])
 
     large = low > 0 or high < 0
-    counts_lower = stop_rate(counts[cand]) < stop_rate(counts[base]) and invented_rate(
-        counts[cand]
-    ) < invented_rate(counts[base])
+    shares = {name: stop_share(counts[name]) for name in names}
+    known = shares[base] is not None and shares[cand] is not None
+    counts_lower = (
+        known and shares[cand] < shares[base] and invented_rate(counts[cand]) <= invented_rate(counts[base])
+    )
     next_round = large and counts_lower
     over = {name: counts[name]["prompts_over_limit"] for name in names}
     lines += [
         "",
         f"- 큰 차이 (pass^1 차이의 95% 구간이 0을 벗어남): {'예' if large else '아니오'}",
-        "- 자동 계수가 U1에서 낮음 (값 전 STOP 비율과 에피소드당 지어낸 값이 든 발화가 모두 U0보다 낮음): "
-        + ("예" if counts_lower else "아니오"),
+        "- 자동 계수가 U1에서 낮음 (값을 끝내 못 들은 에피소드 중 STOP으로 끝낸 비율이 U0보다 낮고, "
+        "에피소드당 지어낸 값이 든 발화가 U0 이하. 2026-10-09 규칙 변경): "
+        + ("예" if counts_lower else "아니오")
+        + ("" if known else " (값을 끝내 못 들은 에피소드가 없는 실행이 있어 비율을 알 수 없음)"),
         "- 한도 95%를 넘은 시뮬레이터 호출: "
         + ", ".join(f"{name} {n}" for name, n in over.items())
         + (" (프롬프트 앞부분이 잘렸을 수 있다)" if any(over.values()) else ""),
@@ -428,5 +450,6 @@ def check(base_dir: Path, cand_dir: Path) -> tuple[str, dict[str, Any]]:
         "counts_lower": counts_lower,
         "next_round": next_round,
         "prompts_over_limit": over,
+        "stop_share": shares,
     }
     return "\n".join(lines), outcome

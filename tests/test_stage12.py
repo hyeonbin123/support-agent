@@ -13,7 +13,7 @@ from pathlib import Path
 import httpx
 import pytest
 from test_stage8 import NEW, SIM, RecordingOllama
-from test_tasks import CONTACTS
+from test_tasks import CONTACTS, say_values
 
 from support_agent import analyze, run, sim_report
 from support_agent.agent import load_policy
@@ -376,16 +376,35 @@ EARLY = [
 ]
 
 
+# The simulator keeps asking until the turn limit: it never heard the values and did not stop.
+ASKING = [
+    (FIRST_AGENT_MESSAGE, "환불 금액이 궁금해요.", []),
+    ("확인 중입니다.", "환불 금액을 알려 주세요.", []),
+]
+ASKING_INVENTED = [
+    (FIRST_AGENT_MESSAGE, "환불 금액이 궁금해요. 주문은 O-91999예요.", []),
+    ("확인 중입니다.", "환불 금액을 알려 주세요.", []),
+]
+
+
+def heard(n):
+    """Turns in which the agent says every required value of the n-th dev task before the STOP."""
+    task = DEV[sorted(DEV)[n]]
+    return [(FIRST_AGENT_MESSAGE, "문의드립니다.", []), (say_values(task), "###STOP###", [])]
+
+
 def runs(tmp_path, base_pattern, cand_pattern, **cand):
-    """Two runs over the same 24 dev tasks x 4 trials; a pattern says per task index (success, turns)."""
+    """Two runs over the same 24 dev tasks x 4 trials; a pattern says per task index
+    (success, turns) or (success, turns, termination)."""
     tasks = sorted(DEV)
 
     def make(pattern):
         out = []
         for n, task_id in enumerate(tasks):
-            success, turns = pattern(n)
+            success, turns, *ending = pattern(n)
+            termination = ending[0] if ending else "user_stop"
             for trial in range(4):
-                out.append(episode(task_id, turns, trial=trial, success=success))
+                out.append(episode(task_id, turns, trial=trial, success=success, termination=termination))
         return out
 
     base = write_run(tmp_path, "u0", make(base_pattern))
@@ -409,6 +428,7 @@ def test_the_counts_of_a_run(tmp_path):
     counts = sim_report.run_counts(run_dir)
     assert counts["episodes"] == 3 and counts["infra"] == 1 and counts["changed_tasks"] == 0
     assert (counts["stop_before_values"], counts["value_tasks"]) == (2, 3)  # dev-007 has a value too
+    assert counts["values_never_heard"] == 2  # EARLY and dev-007; every one of them ended with a STOP
     assert (counts["invented_utterances"], counts["invented_episodes"], counts["invented_values"]) == (
         1,
         1,
@@ -443,17 +463,50 @@ def test_the_sensitivity_report_pairs_the_runs_and_reports_the_difference(tmp_pa
 
 
 def test_a_large_difference_with_lower_counts_on_u1_names_a_next_round_candidate(tmp_path):
-    base, other = runs(tmp_path, lambda n: (n % 4 == 0, EARLY), lambda n: (True, GOOD))
+    base, other = runs(tmp_path, lambda n: (n % 4 == 0, EARLY), lambda n: (True, ASKING, "max_user_turns"))
     report, outcome = sim_report.check(base, other)
     assert outcome["large"] and outcome["counts_lower"] and outcome["next_round"]
     assert "다음 라운드 후보: " in report
 
 
 def test_lower_counts_without_a_large_difference_name_no_candidate(tmp_path):
-    base, other = runs(tmp_path, lambda n: (n % 2 == 0, EARLY), lambda n: (n % 2 == 0, GOOD))
+    base, other = runs(
+        tmp_path, lambda n: (n % 2 == 0, EARLY), lambda n: (n % 2 == 0, ASKING, "max_user_turns")
+    )
     _, outcome = sim_report.check(base, other)
     assert outcome["difference"] == 0 and not outcome["large"] and outcome["counts_lower"]
     assert outcome["next_round"] is False
+
+
+def test_the_stop_share_is_read_among_episodes_that_never_heard_the_values(tmp_path):
+    # Rule change 2026-10-09: an agent that delivers more values lowers "stop before values" by itself.
+    # Both simulators stop at once whenever the values do not come; U1's agent delivers half of them.
+    base, other = runs(
+        tmp_path, lambda n: (False, EARLY), lambda n: (True, heard(n)) if n % 2 == 0 else (False, GOOD)
+    )
+    _, outcome = sim_report.check(base, other)
+    base_counts, cand_counts = (sim_report.run_counts(d) for d in (base, other))
+    assert cand_counts["stop_before_values"] < base_counts["stop_before_values"]
+    assert outcome["stop_share"] == {"u0": 1.0, "u1": 1.0}
+    assert outcome["counts_lower"] is False
+
+
+def test_when_u0_invents_nothing_u1_must_invent_nothing_too(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    asking = runs(tmp_path / "a", lambda n: (True, GOOD), lambda n: (True, ASKING, "max_user_turns"))
+    inventing = runs(
+        tmp_path / "b", lambda n: (True, GOOD), lambda n: (True, ASKING_INVENTED, "max_user_turns")
+    )
+    assert sim_report.check(*asking)[1]["counts_lower"] is True
+    assert sim_report.check(*inventing)[1]["counts_lower"] is False
+
+
+def test_without_an_episode_that_missed_a_value_the_stop_share_cannot_be_lower(tmp_path):
+    base, other = runs(tmp_path, lambda n: (False, EARLY), lambda n: (True, heard(n)))
+    report, outcome = sim_report.check(base, other)
+    assert outcome["stop_share"]["u1"] is None and outcome["counts_lower"] is False
+    assert "알 수 없음" in report
 
 
 def test_only_the_simulator_may_differ(tmp_path):
