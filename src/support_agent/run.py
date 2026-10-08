@@ -5,6 +5,8 @@ Usage:
     uv run python -m support_agent.run --tasks smoke --model qwen2.5:14b-instruct --policy P1 --label p1-14b
     uv run python -m support_agent.run --tasks smoke --policy P1 --model qwen3:4b-instruct-2507-q4_K_M
         --think off --num-ctx 12288 --user-num-ctx 12288 --label smoke-m2a   (one command line)
+    stage 12 (another simulator): add --user-model qwen3:4b-instruct-2507-q4_K_M --user-think off
+        --user-num-ctx 8192
 
 Records go to outputs/runs/<run_id>/ (git-ignored). Pass --official to write to reports/ (committed); that
 needs a clean working tree, and test task files also need --allow-test. The GPU is shared with other
@@ -202,6 +204,12 @@ def main() -> None:
         help="send think to the agent model only (default: not sent; models without thinking refuse it)",
     )
     parser.add_argument(
+        "--user-think",
+        choices=["on", "off"],
+        default=None,
+        help="send think to the simulator model (stage 12; default: not sent, as for the 7B simulator)",
+    )
+    parser.add_argument(
         "--voice",
         choices=["V0", "V1", "V2", "V4"],
         default="V0",
@@ -242,6 +250,7 @@ def main() -> None:
             "drop --user-num-ctx/--user-on-cpu/--user-num-gpu or use another simulator model"
         )
     think = None if args.think is None else args.think == "on"
+    user_think = None if args.user_think is None else args.user_think == "on"
 
     config = RunConfig(
         model=args.model,
@@ -269,11 +278,16 @@ def main() -> None:
         config.model, num_ctx=config.num_ctx, **({} if think is None else {"think": think})
     )
     # One provider object when both roles use the same model and nothing differs: equal runner options.
-    same = config.user_model == config.model and think is None
+    same = config.user_model == config.model and think is None and user_think is None
     user_provider = (
         provider
         if same
-        else OllamaProvider(config.user_model, num_ctx=config.user_num_ctx, num_gpu=user_num_gpu)
+        else OllamaProvider(
+            config.user_model,
+            num_ctx=config.user_num_ctx,
+            num_gpu=user_num_gpu,
+            **({} if user_think is None else {"think": user_think}),
+        )
     )
 
     others = gpu_used_by_others_mib(provider)

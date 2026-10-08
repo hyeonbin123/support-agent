@@ -22,6 +22,9 @@ Usage:
     uv run python -m support_agent.analyze confirm-check reports/<M2b run> reports/<R2 run> [--test]
     uv run python -m support_agent.analyze confirm-sheet reports/<R2 dev run> --n 20 --out <dir>
     uv run python -m support_agent.analyze confirm-marks <dir>
+    uv run python -m support_agent.analyze sim-counts reports/<run> [...]   (stage 12: simulator slips, P5(b))
+    uv run python -m support_agent.analyze sim-smoke outputs/runs/<smoke run with another simulator>
+    uv run python -m support_agent.analyze sim-check reports/<run, 7B simulator> reports/<other simulator>
 
 `table` prints the markdown tables that go into docs/experiments.md. `misses` lists episodes whose database
 matched but whose required value was not found, so that a person can check the value matcher. `sample` draws
@@ -909,6 +912,18 @@ def _confirm_command(args: argparse.Namespace) -> None:
         print(confirm_report.unblind(args.out_dir))
 
 
+def _sim_command(args: argparse.Namespace) -> None:
+    """Stage 12 (simulator sensitivity) commands; the code is in sim_report.py."""
+    from support_agent import sim_report
+
+    if args.command == "sim-counts":
+        print(sim_report.counts_table(args.run_dirs))
+    elif args.command == "sim-smoke":
+        print(sim_report.smoke_report(args.run_dir))
+    else:
+        print(sim_report.check(args.base_dir, args.run_dir)[0])
+
+
 def main() -> None:
     from support_agent.tools import NAME_TOLERANCE
 
@@ -965,6 +980,11 @@ def main() -> None:
     sheeting.add_argument("--n", type=int, default=20)
     sheeting.add_argument("--out", type=Path, required=True)
     commands.add_parser("confirm-marks").add_argument("out_dir", type=Path)
+    commands.add_parser("sim-counts").add_argument("run_dirs", nargs="+", type=Path)
+    commands.add_parser("sim-smoke").add_argument("run_dir", type=Path)
+    sim_checking = commands.add_parser("sim-check")
+    sim_checking.add_argument("base_dir", type=Path, help="the development run with the 7B simulator (U0)")
+    sim_checking.add_argument("run_dir", type=Path, help="the same setup with another simulator")
     args = parser.parse_args()
 
     sys.stdout.reconfigure(encoding="utf-8")  # Korean on a Windows console
@@ -1002,6 +1022,8 @@ def main() -> None:
         print(caller_id_table({d.name: load_episodes(d) for d in args.run_dirs}))
     elif args.command.startswith("confirm"):
         _confirm_command(args)
+    elif args.command.startswith("sim-"):
+        _sim_command(args)
     elif args.command == "same-setup":
         differences = setup_differences(args.run_a, args.run_b, tuple(args.ignore), tuple(args.ignore_prompt))
         print("\n".join(differences) or "same setup")
