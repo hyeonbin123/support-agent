@@ -68,13 +68,17 @@ _IDENT = re.compile(r"(?<![A-Za-z])[A-Za-z]{1,3}(?:-[A-Za-z0-9]+)+")
 # '-숫자'는 음수 부호로 읽는다.
 _ISO_DATE = re.compile(r"(?<![\d./-])(\d{4})([-./])(\d{1,2})\2(\d{1,2})(?![\d/-])")
 _MINUS = re.compile(r"(?<![\w가-힣)])-(?=\d)")
+# 숫자만으로 된 묶음이 하이픈으로 셋 이상 이어진 번호(송장 번호 5551-0914-9121, 지역 번호 전화 02-1234-5678).
+# 범위는 수 두 개라 묶음이 셋 이상이면 범위가 아니다. 연월일(2026-09-14)은 _ISO_DATE가 먼저 바꾼다.
+_DIGIT_GROUPS = re.compile(r"(?<![\d.-])\d+(?:-\d+){2,}(?![\d-]|\.\d)")
 # _DATE: 'N월 N일'. _MONTH: 일 없이 'N월'. _CLOCK: 'HH:MM' 시각.
 _DATE = re.compile(r"(?<!\d)(\d{1,2})월(\s*)(\d{1,2})일")
 _MONTH = re.compile(r"(?<!\d)(\d{1,2})월")
 _CLOCK = re.compile(r"(?<!\d)(\d{1,2}):(\d{2})(?!\d)")
 # '3-5일', '2~3개'처럼 단위나 %가 뒤따르는 범위. 앞 수만 바꾸고 '에서'로 이은 뒤, 뒤 수는 단위와 함께
-# _NUMBER가 읽는다.
-_RANGE = re.compile(r"(?<!\d)(\d+)\s*[-~]\s*(\d+)(?=\s*[가-힣%])")
+# _NUMBER가 읽는다. 앞을 보는 묶음(3번)은 뒤따르는 단위로, 앞 수를 고유어로 읽을지 정하는 데만 쓴다(_range).
+# 숫자 묶음이 셋 이상인 번호는 이보다 먼저 _DIGIT_GROUPS가 바꾸므로 여기에 오지 않는다.
+_RANGE = re.compile(r"(?<!\d)(\d+)\s*[-~]\s*(\d+)(?=\s*([가-힣]+|%))")
 # 수 하나: 쉼표 천 단위(38,900) 또는 숫자열, 소수부, 뒤의 공백, 단위(% 또는 바로 뒤의 한글 낱말). 단위를 함께
 # 잡아야 '2개'와 '2월'을 다르게 읽을 수 있다.
 _NUMBER = re.compile(r"(?<![\d.])(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(\s*)(%|[가-힣]+)?")
@@ -169,6 +173,15 @@ def _identifier(match: re.Match[str]) -> str:
     return " " + " 다시 ".join(parts) + " "  # "-" is said "다시"
 
 
+# 숫자만으로 된 묶음 번호를 소리로: 전화번호와 같이 묶음마다 한 자리씩 읽고 쉼표로 끊는다. 예:
+# 5551-0914-9121 → 오오오일, 공구일사, 구일이일. 영문이 든 식별자(O-91010)는 _identifier가 '다시'로 잇는다.
+# 2026-10-13 전에는 이 규칙이 없어 범위 규칙이 뒤 두 묶음을 잡았다: '5551-0914-9121입니다' →
+# '오천오백오십일 구백십사에서 구천백이십일 입니다'. 커밋된 음성 기록에서 이것으로 바뀌는 고객 발화 21개는
+# tests/test_voice.py에 위치를 적었고, 그 기록의 수치를 다시 재는 계획은 docs/experiments.md 9단계 끝에 있다.
+def _digit_groups(match: re.Match[str]) -> str:
+    return " " + ", ".join(digits(group) for group in match.group().split("-")) + " "
+
+
 # 수 하나를 단위에 맞게 읽는다. 위에서부터 처음 맞는 규칙을 쓴다.
 # - 16자리를 넘으면 조 위의 단위가 없으므로 한 자리씩.
 # - 소수: 한자어 수 + '점' + 소수부를 한 자리씩.
@@ -198,8 +211,22 @@ def _number(match: re.Match[str]) -> str:
     return f"{sino(int(plain))}{' ' if unit else ''}{unit}"
 
 
-# 글 → 말로 푼 글. NFKC 정규화 뒤 이메일 → 전화번호 → 식별자 → 날짜(연월일, 월일, 월) → 시각 → 범위 → 음수 →
-# 수 → 남은 로마자 순서로 바꾸고, 말하지 않는 기호를 지운 뒤 공백을 정리한다.
+# 범위의 앞 수를 읽는다. 뒤따르는 단위가 세는 말이면 _number()와 같은 규칙으로 앞 수도 고유어로 읽고 세는 말을
+# 한 번 더 붙인다: '2~3개' → '두 개에서 세 개'. 그 밖의 단위는 한자어 수 뒤에 바로 '에서'를 붙인다: '3-5일' →
+# '삼에서 오 일'. 고유어 수의 세는 꼴('두')은 세는 말 없이 홀로 쓰지 않으므로 세는 말을 되풀이한다.
+# 2026-10-13 전에는 앞 수를 늘 한자어로 읽어 '2~3개'가 '이에서 세 개'가 됐다. 커밋된 음성 기록의 고객 발화에는
+# 세는 말 앞의 범위가 없어 기록의 말로 푼 글은 바뀌지 않는다(tests/test_voice.py, docs/experiments.md
+# 5단계 끝).
+def _range(match: re.Match[str]) -> str:
+    first, second, unit = int(match[1]), match[2], match[3]
+    counter = next((c for c in NATIVE_COUNTERS if unit.startswith(c)), None)
+    if counter and counter not in _SINO_ONLY:
+        return f"{native(first)} {counter}에서 {second}"
+    return f"{sino(first)}에서 {second}"
+
+
+# 글 → 말로 푼 글. NFKC 정규화 뒤 이메일 → 전화번호 → 식별자 → 연월일 → 숫자 묶음 번호 → 날짜(월일, 월) →
+# 시각 → 범위 → 음수 → 수 → 남은 로마자 순서로 바꾸고, 말하지 않는 기호를 지운 뒤 공백을 정리한다.
 # 호출 위치: voice/channel.py SpeechChannel.hear(), service/voice_frontend.py(답을 읽어 줄 때).
 def verbalize(text: str) -> str:
     """The spoken form of `text`: Hangul, spaces and `.,?!~` only."""
@@ -211,13 +238,14 @@ def verbalize(text: str) -> str:
     text = _IDENT.sub(_identifier, text)
     # 도구 출력의 날짜 형식(2026-09-14)을 'N년 N월 N일'로 바꿔 아래 날짜 규칙과 수 규칙이 읽게 한다.
     text = _ISO_DATE.sub(lambda m: f"{m[1]}년 {int(m[3])}월 {int(m[4])}일", text)  # the tools write dates so
+    text = _DIGIT_GROUPS.sub(_digit_groups, text)
     text = _DATE.sub(lambda m: f"{_MONTHS.get(int(m[1]), sino(int(m[1])))}월 {sino(int(m[3]))}일", text)
     text = _MONTH.sub(lambda m: f"{_MONTHS.get(int(m[1]), sino(int(m[1])))}월", text)
     # 시각: 시는 고유어(열 시), 분은 한자어(삼십 분), 0분이면 분을 읽지 않는다.
     text = _CLOCK.sub(
         lambda m: f"{native(int(m[1]))} 시" + (f" {sino(int(m[2]))} 분" if int(m[2]) else ""), text
     )
-    text = _RANGE.sub(lambda m: f"{sino(int(m[1]))}에서 {m[2]}", text)
+    text = _RANGE.sub(_range, text)
     text = _MINUS.sub("마이너스 ", text)
     text = _NUMBER.sub(_number, text)
     text = _LATIN.sub(lambda m: " " + letters(m.group()) + " ", text)

@@ -168,8 +168,8 @@ def run_tool(engine, customer_id, name, args, *, enforce=True):
     return execute(REGISTRY, engine, ctx, name, args)
 
 
-# find_customer는 사람들이 쓰는 여러 표기를 받아야 한다: +82 국가번호, 이름 끝의 '님'·'고객님', 전각 숫자,
-# 이름 안의 공백, 대소문자가 섞인 이메일과 앞말. 표기만 다른 정답 고객을 '없는 고객'으로 거절하면 본인
+# find_customer는 사람들이 쓰는 여러 표기를 받아야 한다: +82 국가번호, 이름 끝의 '님'·'고객님'·'고객', 전각
+# 숫자, 이름 안의 공백, 대소문자가 섞인 이메일과 앞말. 표기만 다른 정답 고객을 '없는 고객'으로 거절하면 본인
 # 확인에서 과제가 끝난다 (docs/design.md 본인 확인 규칙).
 @pytest.mark.parametrize(
     ("name", "contact"),
@@ -177,6 +177,7 @@ def run_tool(engine, customer_id, name, args, *, enforce=True):
         ("김하준", "+82 10-0000-9001"),
         ("김하준님", "010-0000-9001"),
         ("김하준 고객님", "０１０－００００－９００１"),
+        ("김하준 고객", "010-0000-9001"),
         ("김 하준", "이메일: Hajun.Kim@example.com"),
     ],
 )

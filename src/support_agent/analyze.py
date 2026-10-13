@@ -25,6 +25,8 @@ Usage:
     uv run python -m support_agent.analyze sim-counts reports/<run> [...]   (stage 12: simulator slips, P5(b))
     uv run python -m support_agent.analyze sim-smoke outputs/runs/<smoke run with another simulator>
     uv run python -m support_agent.analyze sim-check reports/<run, 7B simulator> reports/<other simulator>
+    uv run python -m support_agent.analyze respelled reports/<voice run> [...]   (after a spoken-form fix)
+    uv run python -m support_agent.analyze stitch reports/<voice run> reports/<rerun> [--out <dir>]
 
 `table` prints the markdown tables that go into docs/experiments.md. `misses` lists episodes whose database
 matched but whose required value was not found, so that a person can check the value matcher. `sample` draws
@@ -44,6 +46,8 @@ episodes with a fixed seed for the simulator check ("시뮬레이터 점검").
 # - 9단계: 이름 허용 오차 충돌 관문(name-collisions), 본인 확인 표(caller-id)
 # - 8단계: 스모크 관문(smoke), 선택(select), 시험용 판정(verdict), 결과를 가린 시뮬레이터 점검(blind/unblind)
 # - 10단계(confirm_report.py)·12단계(sim_report.py) 명령은 그 모듈로 넘긴다
+# - 말로 풀어 쓰기를 고친 뒤의 재측정(respell.py): 바뀐 발화가 든 에피소드(respelled), 다시 잰 에피소드를
+#   원래 기록에 끼워 넣기(stitch)
 # [설계 이유] 문턱값과 판정표는 docs/experiments.md에 측정 전에 적은 규칙을 그대로 코드로 옮긴 것이다.
 # 부트스트랩은 고정 seed라 같은 기록은 언제나 같은 구간을 낸다. 시험용 기록으로는 무엇도 만들지 않는다는
 # 규칙을 is_test_run 검사로 지킨다.
@@ -1076,6 +1080,23 @@ def _sim_command(args: argparse.Namespace) -> None:
         print(sim_report.check(args.base_dir, args.run_dir)[0])
 
 
+# 말로 풀어 쓰기를 고친 뒤의 재측정 명령을 respell.py로 넘긴다. respell.py도 이 모듈을 가져다 쓰므로 함수
+# 안에서 가져온다. stitch는 끼워 넣을 수 없으면 이유를 내고 종료 코드 1로 끝난다.
+def _respell_command(args: argparse.Namespace) -> None:
+    """Measuring again after a spoken-form fix; the code is in respell.py."""
+    from support_agent import respell
+
+    if args.command == "respelled":
+        print(respell.respelled_table(args.run_dirs))
+        return
+    out = args.out or args.original.parent / f"{args.original.name}-respelled"
+    problems = respell.stitch_problems(args.original, args.rerun)
+    if problems:
+        sys.exit("cannot stitch:\n" + "\n".join(problems))
+    replaced = respell.stitch(args.original, args.rerun, out)
+    print(f"wrote {out}: {', '.join(f'{task}#{trial}' for task, trial in replaced)} from {args.rerun.name}")
+
+
 # 하위 명령 정의와 분기. 명령 목록과 쓰임은 모듈 docstring에 있다. name-collisions와 same-setup은 관문·검사
 # 명령이라 통과하지 못하면 종료 코드 1을 내, 스크립트에서 바로 멈출 수 있게 한다.
 def main() -> None:
@@ -1139,6 +1160,11 @@ def main() -> None:
     sim_checking = commands.add_parser("sim-check")
     sim_checking.add_argument("base_dir", type=Path, help="the development run with the 7B simulator (U0)")
     sim_checking.add_argument("run_dir", type=Path, help="the same setup with another simulator")
+    commands.add_parser("respelled").add_argument("run_dirs", nargs="+", type=Path)
+    stitching = commands.add_parser("stitch")
+    stitching.add_argument("original", type=Path, help="the voice run as it was measured")
+    stitching.add_argument("rerun", type=Path, help="its changed episodes, run again with run --episode")
+    stitching.add_argument("--out", type=Path, default=None, help="default: <original>-respelled")
     args = parser.parse_args()
 
     # Windows 콘솔의 기본 인코딩으로는 한국어 표가 깨지거나 오류가 나므로 표준 출력을 UTF-8로 바꾼다.
@@ -1182,6 +1208,8 @@ def main() -> None:
         _confirm_command(args)
     elif args.command.startswith("sim-"):
         _sim_command(args)
+    elif args.command in ("respelled", "stitch"):
+        _respell_command(args)
     elif args.command == "same-setup":
         differences = setup_differences(args.run_a, args.run_b, tuple(args.ignore), tuple(args.ignore_prompt))
         print("\n".join(differences) or "same setup")

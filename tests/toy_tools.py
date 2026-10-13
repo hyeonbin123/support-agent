@@ -42,7 +42,7 @@ class HandoffArgs(ToolArgs):
 
 
 # 읽기 도구: 주문을 조회한다. 없는 주문이면 ctx.require로 order_not_found 오류를 낸다. 읽기 도구는
-# before_write 훅(승인·확인)을 지나지 않으므로, 쓰기 도구와 다르게 다뤄지는지 확인할 때 쓰인다.
+# before_write 훅을 지나지 않으므로, 쓰기 도구와 다르게 다뤄지는지 확인할 때 쓰인다.
 @tool(write=False)
 def toy_get_order(session: Session, ctx: ToolContext, args: OrderArgs) -> dict:
     """주문 상태를 조회한다."""

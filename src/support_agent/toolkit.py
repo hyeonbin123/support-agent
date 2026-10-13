@@ -1,8 +1,10 @@
 """Tool contracts: argument base class, context with the policy checks, the @tool decorator and execute().
 
-execute() is the single path of every caller (agent loop, gold replay, later the service and the MCP server):
+execute() is the single path of every caller (agent loop, gold replay, the service and the MCP server):
 look up -> validate -> before_write hook -> handler and on_success hook in one DB session -> commit or
-roll back. A dry run (R2's preview, confirm.py) rolls back what the handler did and skips the hooks.
+roll back. Both hooks run only when a caller passes them: the service passes on_success (approval gate and
+audit row, service/core.py); no caller in this package passes before_write. A dry run (R2's preview,
+confirm.py) rolls back what the handler did and skips the hooks.
 """
 
 # [파일 역할] 도구 계약 모듈. 도구 인자의 기반 클래스(ToolArgs), 대화 상태·규정 검사를 담은 문맥(ToolContext),
@@ -181,7 +183,8 @@ class ToolResult:
 
 
 # 도구 이름 → 정의. BeforeWrite는 쓰기 도구의 핸들러 실행 전에 부르는 훅으로, ToolResult를 돌려주면 그것이
-# 거절 결과가 된다.
+# 거절 결과가 된다. 지금 이 패키지에서 이 훅을 넘기는 호출자는 없고 계약은 테스트(test_toolkit.py)가 확인한다.
+# 서비스의 승인 관문은 핸들러가 계산한 실제 환불액을 봐야 해서 이 훅이 아니라 OnSuccess 훅에 있다(a5717ce).
 Registry = dict[str, ToolSpec]
 BeforeWrite = Callable[[ToolSpec, dict[str, Any]], ToolResult | None]
 # Runs after the handler, inside its transaction: (session, spec, canonical args, the handler's answer).
@@ -304,7 +307,8 @@ def canonical_args(spec: ToolSpec, args: ToolArgs) -> dict[str, Any]:
 
 
 # 도구 호출 한 번을 실행한다. 순서: 이름 확인 → 인자 검증 → (쓰기 도구면) before_write 훅 → DB 세션 하나에서
-# 핸들러 → on_success 훅 → commit, 실패하면 rollback.
+# 핸들러 → on_success 훅 → commit, 실패하면 rollback. 두 훅은 넘겼을 때만 돈다. 평가(에이전트 루프, 정답
+# 재실행)는 둘 다 넘기지 않고, 서비스는 on_success만 넘긴다(service/core.py _run_tool).
 # 예상한 실패는 ToolResult로 돌려주고, 핸들러 버그는 ToolBugError로 올린다.
 def execute(
     registry: Registry,

@@ -106,6 +106,44 @@ def test_written_forms_are_spelled_out_the_way_they_are_said(written, spoken):
     assert verbalize(written) == spoken
 
 
+# 범위의 앞 수도 뒤 수와 같은 수 체계로 읽는지 본다. 세는 말(개, 시간 등) 앞이면 앞 수도 고유어로 읽고 세는
+# 말을 한 번 더 붙인다("2~3개" → "두 개에서 세 개"). 고치기 전에는 앞 수를 늘 한자어로 읽어 "이에서 세 개"가
+# 됐다. 한자어 단위(일, 개월, %)의 범위는 그대로 "삼에서 오 일"이다.
+@pytest.mark.parametrize(
+    ("written", "spoken"),
+    [
+        ("2~3개 남았어요", "두 개에서 세 개 남았어요"),
+        ("1-2시간 걸려요", "한 시간에서 두 시간 걸려요"),
+        ("3 ~ 4명이요", "세 명에서 네 명이요"),
+        ("10~20개씩", "열 개에서 스무 개씩"),
+        ("3-5일 안에", "삼에서 오 일 안에"),
+        ("2~3개월 전", "이에서 삼 개월 전"),
+        ("10~20% 할인", "십에서 이십 퍼센트 할인"),
+    ],
+)
+def test_a_range_reads_both_numbers_the_same_way(written, spoken):
+    assert verbalize(written) == spoken
+
+
+# 숫자만으로 된 묶음이 하이픈으로 셋 이상 이어지면(송장 번호 5551-0914-9121 같은 것) 범위가 아니라 번호다.
+# 전화번호와 같이 묶음마다 한 자리씩 읽고 쉼표로 끊는지 본다. 고치기 전에는 뒤 두 묶음을 범위 규칙이 잡아
+# "오천오백오십일 구백십사에서 구천백이십일 입니다"가 됐다. 묶음이 둘인 진짜 범위와 날짜는 그대로다.
+@pytest.mark.parametrize(
+    ("written", "spoken"),
+    [
+        ("송장 번호는 5551-0914-9121입니다.", "송장 번호는 오오오일, 공구일사, 구일이일 입니다."),
+        ("5552-1914-9230이고, 택배사는", "오오오이, 일구일사, 구이삼공 이고, 택배사는"),
+        ("02-1234-5678로 전화", "공이, 일이삼사, 오육칠팔 로 전화"),
+        ("1234-5678-9012-3456 맞아요?", "일이삼사, 오육칠팔, 구공일이, 삼사오육 맞아요?"),
+        ("3-5일 안에", "삼에서 오 일 안에"),
+        ("2~3개 남았어요", "두 개에서 세 개 남았어요"),
+        ("2026-09-13에 주문", "이천이십육 년 구월 십삼일에 주문"),
+    ],
+)
+def test_digit_only_numbers_in_three_or_more_groups_are_read_like_phone_numbers(written, spoken):
+    assert verbalize(written) == spoken
+
+
 # 커밋된 개발용 기준선 기록(*-baseline3)의 고객 발화 400개 이상을 모두 풀어 썼을 때 한글·공백·문장부호만
 # 남는지 본다. 숫자나 영문이 하나라도 남으면 합성기가 읽는 방식이 정해지지 않으므로, 실제 측정 말뭉치 전체로
 # 빠진 표기가 없는지 확인한다. 하니스 안내문(harness)은 고객 발화가 아니라서 뺀다.
@@ -124,6 +162,54 @@ def test_every_recorded_customer_utterance_becomes_pronounceable():
         spoken = verbalize(text)
         assert re.fullmatch(r"[가-힣 .,?!~]*", spoken), (text, spoken)
         assert not re.search(r"\d|[A-Za-z]", spoken)
+
+
+# 송장 번호를 범위로 읽던 풀어 쓰기로 합성된 기록의 발화 21개: (실행, 과제, 시도, 발화 순번). 5단계 1, 9단계
+# 12, 11단계 8(9단계 V4 개발용과 같은 발화를 다시 합성한 것)이다. 이 기록들의 수치는 수정 전 코드로 낸
+# 값이고, 이 발화가 든 에피소드만 다시 재는 계획이 docs/experiments.md 9단계 끝에 있다. 다시 잰 기록은 지금
+# 코드로 풀어 쓴 것이라 이 목록에 들지 않는다. 원래 기록은 지우지 않으므로 목록도 그대로 남는다.
+_V2_DEV_5 = "20260921-145634-qwen2.5-7b-instruct-P0-R0-G0-F0-V2-v2"
+_V2_DEV_9 = "20261004-131932-qwen3.5-4b-P0-R0-G0-F0-V2-v2-4b-stage9"
+_V4_DEV_9 = "20261004-154016-qwen3.5-4b-P0-R0-G0-F0-V4-v4-k0"
+_V2_TEST_9 = "20261009-101009-qwen3.5-4b-P0-R0-G0-F0-V2-test-v2-4b-stage9"
+_V4R_A_11 = "20261008-145519-v4r-a-dev"
+_V4_DEV_UTTERANCES = [
+    ("dev-002", 0, 3), ("dev-002", 2, 6), ("dev-002", 3, 3),
+    ("dev-018", 0, 6), ("dev-018", 0, 9), ("dev-018", 0, 12), ("dev-018", 0, 15), ("dev-018", 0, 18),
+]  # fmt: skip
+SPELLED_BEFORE_THE_DIGIT_GROUP_FIX = sorted(
+    [
+        (_V2_DEV_5, "dev-018", 1, 7),
+        (_V2_DEV_9, "dev-018", 1, 16),
+        (_V2_DEV_9, "dev-018", 2, 9),
+        (_V2_DEV_9, "dev-018", 2, 10),
+        *[(_V4_DEV_9, *where) for where in _V4_DEV_UTTERANCES],
+        *[(_V4R_A_11, *where) for where in _V4_DEV_UTTERANCES],
+        (_V2_TEST_9, "test-025", 2, 16),
+    ]
+)
+
+
+# 커밋된 음성 측정 기록(5·9단계의 episodes.jsonl voice 항목, 11단계의 utterances.jsonl)의 고객 발화를 지금
+# 코드로 다시 풀어 쓰면, 위 21개를 빼고는 기록의 spoken과 모두 같아야 한다. 같으면 그 실행을 지금 코드로 다시
+# 돌려도 합성기에 들어가는 글이 같아, 풀어 쓰기를 고쳐도 그 발화의 결과가 바뀌지 않는다는 뜻이다. 2026-10-13
+# 범위 규칙을 고칠 때(docs/experiments.md 5단계 끝)는 바뀌는 발화가 0개였고, 같은 날 숫자 묶음 번호(송장 번호)
+# 규칙을 더해 21개가 바뀌었다. 앞으로 풀어 쓰기를 고쳐 이 목록 밖의 발화가 바뀌면 이 테스트가 실패하므로, 그
+# 고침이 바꾸는 기록과 수치를 먼저 적어야 한다. 시험용 기록도 읽지만 규칙을 만드는 데 쓰지 않도록 실패
+# 메시지에는 발화 글 없이 위치만 낸다.
+def test_recorded_voice_utterances_are_spelled_out_as_they_were():
+    mismatched, seen = [], 0
+    for path in sorted([*REPORTS.glob("*/episodes.jsonl"), *REPORTS.glob("*/utterances.jsonl")]):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            record = json.loads(line)
+            items = record.get("voice") or [] if path.name == "episodes.jsonl" else [record]
+            for index, item in enumerate(items):
+                seen += 1
+                if verbalize(item["said"]) != item["spoken"]:
+                    where = item.get("index", index)  # utterances.jsonl keeps the turn number
+                    mismatched.append((path.parent.name, record["task_id"], record["trial"], where))
+    assert seen > 14_000, "the committed voice records are the corpus of this test"
+    assert sorted(mismatched) == SPELLED_BEFORE_THE_DIGIT_GROUP_FIX
 
 
 # 채널: 풀어 쓰기 → 합성 → 인식 → (정규화)를 한 번에 하고, 같은 입력의 결과는 캐시한다.

@@ -7,6 +7,8 @@ Usage:
         --think off --num-ctx 12288 --user-num-ctx 12288 --label smoke-m2a   (one command line)
     stage 12 (another simulator): add --user-model qwen3:4b-instruct-2507-q4_K_M --user-think off
         --user-num-ctx 8192
+    a few episodes of a full run again (after a spoken-form fix): the run's options plus
+        --episode dev-018:1 --episode dev-018:2, then `analyze stitch` (docs/experiments.md, stage 9)
 
 Records go to outputs/runs/<run_id>/ (git-ignored). Pass --official to write to reports/ (committed); that
 needs a clean working tree, and test task files also need --allow-test. The GPU is shared with other
@@ -202,6 +204,23 @@ def build_channel(config: RunConfig, tts_device: str, stt_device: str):
     )
 
 
+# --episode 값('dev-018:1')을 (과제, 시도) 집합으로 바꾼다. 과제 파일에 없는 과제나 --trials 밖의 시도는
+# 오류다(ValueError, main이 parser.error로 낸다).
+def parse_episodes(values: list[str], task_ids: list[str], trials: int) -> set[tuple[str, int]]:
+    """'dev-018:1' -> ('dev-018', 1): episodes of the full run, checked against the task file and --trials."""
+    picked = set()
+    for value in values:
+        task_id, sep, trial = value.rpartition(":")
+        if not sep or not trial.isdigit():
+            raise ValueError(f"--episode wants TASK:TRIAL, not {value!r}")
+        if task_id not in task_ids:
+            raise ValueError(f"--episode {value}: no task {task_id!r} in the task file")
+        if int(trial) >= trials:
+            raise ValueError(f"--episode {value}: trial {trial} is not below --trials {trials}")
+        picked.add((task_id, int(trial)))
+    return picked
+
+
 # 명령줄 진입점. 옵션 이름은 실험 축 이름과 같다(--policy P1, --reasoning R1 …). README '다시 재는 방법'에
 # 단계별 옵션이 있다.
 def main() -> None:
@@ -209,6 +228,13 @@ def main() -> None:
     parser.add_argument("--tasks", default="smoke", help="task file name in tasks/ (without .yaml) or a path")
     parser.add_argument("--task-id", action="append", help="run only these task ids (repeatable)")
     parser.add_argument("--trials", type=int, default=1)
+    parser.add_argument(
+        "--episode",
+        action="append",
+        metavar="TASK:TRIAL",
+        help="run only these episodes of the full run (repeatable): same seeds, and the manifest describes "
+        "the full run (task and prompt hashes, trials) and lists them",
+    )
     parser.add_argument("--model", default=RunConfig.model)
     parser.add_argument("--user-model", default=None, help="simulator model (default: qwen2.5:7b-instruct)")
     parser.add_argument("--policy", choices=["P0", "P1"], default="P0")
@@ -324,6 +350,19 @@ def main() -> None:
         if unknown:
             parser.error(f"unknown task ids: {unknown}")
         tasks = [t for t in tasks if t.id in set(args.task_id)]
+    # --episode는 전체 실행(과제 파일 × --trials) 가운데 고른 에피소드만 다시 돈다. 말로 풀어 쓰기를 고친 뒤
+    # 글이 바뀐 발화가 든 에피소드만 다시 재는 데 쓴다(docs/experiments.md 9단계 끝). 시도 번호가 같으면
+    # seed도 같고, manifest의 과제·프롬프트 해시와 시도 수는 전체 실행의 것을 적어 원래 기록과 짝지을 수 있게
+    # 한다(analyze stitch).
+    manifest_tasks, only = tasks, None
+    if args.episode:
+        if args.task_id:
+            parser.error("--episode picks the tasks itself; drop --task-id")
+        try:
+            only = parse_episodes(args.episode, [t.id for t in tasks], args.trials)
+        except ValueError as error:
+            parser.error(str(error))
+        tasks = [t for t in tasks if t.id in {task_id for task_id, _ in only}]
     if not tasks:
         parser.error("no tasks selected")
 
@@ -410,14 +449,14 @@ def main() -> None:
         "config": config.to_dict(),
         "trials": args.trials,
         "tasks_file": str(args.tasks),
-        "task_sha256": {t.id: t.sha256() for t in tasks},
+        "task_sha256": {t.id: t.sha256() for t in manifest_tasks},
         "seed_hash": db.state_hash(seed_dump),
         "prompt_sha256": {
             "policy": text_sha256(policy_text),
             "agent_system": text_sha256(
-                build_system_prompt(policy_text, tasks[0].now, caller_id=config.caller_id)
+                build_system_prompt(policy_text, manifest_tasks[0].now, caller_id=config.caller_id)
             ),
-            "user_sim": text_sha256(build_user_prompt(tasks[0])),
+            "user_sim": text_sha256(build_user_prompt(manifest_tasks[0])),
             "tools": text_sha256(tools_json),
         },
         "agent_provider": provider.describe(),
@@ -432,6 +471,8 @@ def main() -> None:
         | {name: version(name) for name in ("sqlalchemy", "pydantic", "httpx", "pyyaml")}
         | (speech_versions("faster-whisper", "ctranslate2", "melotts", "torch") if channel else {}),
     }
+    if only:
+        manifest["only_episodes"] = [[task_id, trial] for task_id, trial in sorted(only)]
     (run_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n"
     )
@@ -443,7 +484,8 @@ def main() -> None:
         seed_file.parent.mkdir(parents=True, exist_ok=True)
         seed_file.write_text(json.dumps(seed_dump, ensure_ascii=False), encoding="utf-8", newline="\n")
 
-    print(f"run {run_id}: {len(tasks)} tasks x {args.trials} trials -> {run_dir}")
+    picked = f" (only {len(only)} episodes)" if only else ""
+    print(f"run {run_id}: {len(tasks)} tasks x {args.trials} trials{picked} -> {run_dir}")
     results: list[EpisodeResult] = []
     # 실행 도중 Ctrl+C나 오류로 멈춰도 finally에서 그때까지의 summary를 쓴다. 끝날 때의 ollama ps도 남겨
     # 모델이 쫓겨났거나 CPU로 옮겨졌는지 보이게 한다.
@@ -462,6 +504,7 @@ def main() -> None:
             gold_dumps,
             run_id,
             channel,
+            only,
         )
     finally:  # also after Ctrl-C or a crash: what was measured so far stays readable
         summary = summarise(results)
@@ -488,12 +531,16 @@ def _run_all(
     gold_dumps,
     run_id,
     channel=None,
+    only=None,
 ) -> None:
     infra_streak = 0
     with (run_dir / "episodes.jsonl").open("a", encoding="utf-8", newline="\n") as out:
         for task in tasks:
             gold_dump = gold_dumps[task.id]
             for trial in range(trials):
+                # --episode면 고른 (과제, 시도)만 돈다. 건너뛴 시도도 번호는 그대로라 seed가 전체 실행과 같다.
+                if only is not None and (task.id, trial) not in only:
+                    continue
                 result = run_episode(
                     task,
                     trial,

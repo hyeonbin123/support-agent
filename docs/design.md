@@ -34,12 +34,13 @@ tasks/smoke.yaml, dev.yaml, test.yaml
 
 ## 실행 경로 하나
 
-모든 도구 호출은 `toolkit.execute()`를 지난다. 에이전트 루프, 정답 재실행, 나중의 서비스와 MCP 서버가 모두 같다.
+모든 도구 호출은 `toolkit.execute()`를 지난다. 에이전트 루프, 정답 재실행, 서비스와 MCP 서버가 모두 같다.
 
 ```
-이름 확인 → 인자 검증(pydantic) → before_write 훅(쓰기 도구만) → DB 세션 하나 안에서 핸들러 → commit / rollback
+이름 확인 → 인자 검증(pydantic) → before_write 훅(쓰기 도구만) → DB 세션 하나 안에서 핸들러 → on_success 훅 → commit / rollback
 ```
 
+- 두 훅은 호출하는 쪽이 넘겼을 때만 돈다. 평가(에이전트 루프, 정답 재실행)는 둘 다 넘기지 않는다. 서비스는 `on_success`만 넘겨 큰 환불의 승인 관문과 감사 행을 도구와 같은 트랜잭션에서 처리한다 ([service.md](service.md) "사람 승인"). `before_write`는 지금 넘기는 호출자가 없다: 서비스의 승인 관문이 처음에는 이 자리에 있었지만, 핸들러가 계산한 실제 환불액을 보려고 `on_success`로 옮겼다 (`a5717ce`). 계약은 테스트(`tests/test_toolkit.py`)가 확인한다
 - 예상한 실패는 `Error: [code] 메시지` 문자열로 모델에 돌려준다. 메시지에는 이유만 적고 "다음에 무엇을 하라"는 힌트는 넣지 않는다 (P1의 효과에 "가르쳐 줌"이 섞이지 않게)
 - 핸들러의 예상 못 한 예외는 `ToolBugError`다. 에이전트 실패가 아니라 우리 버그이므로 에피소드는 `infra_error`가 된다
 - 검사는 두 종류다
@@ -80,7 +81,7 @@ tasks/smoke.yaml, dev.yaml, test.yaml
 
 | 코드 | 조건 |
 |---|---|
-| `customer_not_found` | 이름과 연락처가 모두 일치하는 고객이 없음. 연락처는 글에서 뽑은 이메일(소문자) 또는 숫자만 남긴 전화번호(`+82 10…`은 `010…`으로)로, 이름은 공백과 끝의 `님`·`고객님`을 떼고 비교. `get_customer`·`list_orders`의 없는 id도 같은 코드 |
+| `customer_not_found` | 이름과 연락처가 모두 일치하는 고객이 없음. 연락처는 글에서 뽑은 이메일(소문자) 또는 숫자만 남긴 전화번호(`+82 10…`은 `010…`으로)로, 이름은 공백과 끝의 `고객님`·`고객`·`님` 하나를 떼고(뗀 뒤 두 글자 이상 남을 때만) 비교. `get_customer`·`list_orders`의 없는 id도 같은 코드 |
 | `already_verified` | 이 대화에서 이미 다른 고객을 확인함 (대화당 고객 1명) |
 | `name_mismatch`, `caller_not_registered`, `caller_shared`, `no_caller_number` | `verify_caller`: 이름이 발신 번호의 고객과 다름 / 그 번호로 가입한 고객이 없음 / 여럿임 / 발신 번호가 없는 상담 |
 | `identity_not_verified` | 본인 확인 전에 고객·주문 정보를 조회하거나 처리하려 함 (`find_customer`, `verify_caller`, `get_product`, `transfer_to_human`, `think`는 예외) |

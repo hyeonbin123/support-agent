@@ -229,7 +229,8 @@ def create_app(
         if status != "open":
             raise HTTPException(409, f"the session is {status}")
 
-    # Every turn holds a worker thread until the model has answered; more than this many wait outside.
+    # Every turn holds a worker thread until the model has answered; a turn over this many is refused at
+    # once with 503 and Retry-After, it does not wait (tests/test_review_t7.py).
     slots = threading.BoundedSemaphore(settings.max_concurrent_turns)
 
     # 한 턴을 작업 스레드에서 돌리고 그 진행 이벤트를 SSE로 흘리는 공통 함수. 글 메시지와 음성 메시지가 함께

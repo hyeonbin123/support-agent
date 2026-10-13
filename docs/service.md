@@ -33,7 +33,7 @@ uv run uvicorn support_agent.service.app:create_app --factory --port 8062
 브라우저 ── POST /api/sessions/{id}/messages (SSE) ──> app.py ──> core.ChatService.handle()
                                                                     │  agent.agent_turn()   평가와 같은 루프
                                                                     │  toolkit.execute()    평가와 같은 도구, 같은 단일 경로
-                                                                    │    └ before_write = 승인 관문
+                                                                    │    └ on_success = 승인 관문, 감사 행 (도구와 같은 트랜잭션)
                                                                     ▼
                                          PostgreSQL: 쇼핑몰 테이블 13개 + chat_sessions, audit_events, approvals
 ```

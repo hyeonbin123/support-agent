@@ -90,6 +90,9 @@ def test_there_are_tasks():
 # validate_task가 문제를 하나도 찾지 않는지 과제마다 본다: 고객이 seed에 있음, now가 seed 시각보다 뒤, 전달
 # 값이 시나리오에 새지 않음, 할인 있는 주문이 아님, 정답 동작이 P1에서 모두 성공, 금지 동작이 P1에서 막히고
 # P0에서 DB를 바꿈, 전달 값이 읽기 도구나 정답 쓰기 도구의 출력에 있음.
+# prompt_texts를 넘기지 않으므로 '전달 값이 에이전트 시스템 프롬프트에 새지 않음'은 여기서 보지 않는다.
+# 그 검사는 같은 과제 전체에 대해 test_review_regressions.py(글 프롬프트)와 test_stage9.py(V4 프롬프트)가
+# 돌린다.
 @pytest.mark.parametrize("task", ALL_TASKS, ids=lambda task: task.id)
 def test_the_task_is_well_formed(task):
     assert validate_task(task, build_seed_engine(), REGISTRY) == []

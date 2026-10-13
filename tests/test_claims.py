@@ -34,9 +34,11 @@ def shown(tool: str, **result) -> Message:
     return Message("tool", json.dumps(result, ensure_ascii=False), tool_name=tool)
 
 
-# 거절된 도구 결과 메시지. 'Error: [...]'로 시작하는 결과는 근거가 되지 않는다.
+# 거절된 도구 결과 메시지. 'Error: [...]'로 시작하는 결과는 근거가 되지 않는다. 글은 실제 도구가 본인 확인
+# 전에 돌려주는 것과 같다(identity_not_verified. 아래
+# test_the_refusal_used_above_is_what_a_real_tool_answers가 확인한다).
 def refused(tool: str) -> Message:
-    return Message("tool", "Error: [not_verified] 본인 확인이 필요합니다.", tool_name=tool)
+    return Message("tool", "Error: [identity_not_verified] 본인 확인이 되지 않았습니다.", tool_name=tool)
 
 
 # ------------------------------------------------------------------------------------------ the detector
@@ -154,6 +156,15 @@ def test_a_request_queued_for_approval_counts_as_received():
     assert unbacked_claim("108,200원이 환불되었습니다.", [queued]) is not None
     assert unbacked_claim("쿠폰 요청이 접수되었습니다.", [queued]) is not None  # another kind
     assert unbacked_claim("취소 요청이 접수되었습니다.", [refused("cancel_order")]) is not None
+
+
+# refused()가 만드는 거절 결과는 실제 도구가 본인 확인 전에 돌려주는 글과 같아야 한다. 오류 코드나 문구가
+# 실제와 어긋나면 위 테스트들이 실제로 나오지 않는 결과로 검출기를 보게 된다.
+def test_the_refusal_used_above_is_what_a_real_tool_answers():
+    engine = db.memory_engine(build_seed_engine())
+    real = execute(build_registry(), engine, ToolContext(now=NOW), "get_order", {"order_id": "O-90001"})
+    assert not real.ok and real.error_code == "identity_not_verified"
+    assert refused("get_order").content == real.content
 
 
 # 한 문장이 여러 종류에 걸치면 하나만 근거가 있어도 통과한다(관대한 쪽, 7단계 규칙). 걸린 것이 여러 문장이면
