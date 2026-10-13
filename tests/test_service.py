@@ -1,7 +1,20 @@
 """The chat service over a migrated SQLite file, with a scripted model."""
 
+# [테스트 묶음] 3단계 채팅 서비스를 마이그레이션한 SQLite 파일과 대본대로 답하는 가짜 모델로 확인한다: DB
+# 준비와 설정, SSE 채팅 한 턴과 감사 로그, 규정 차단, 이관, 모델 장애, 요청 검증과 한도, 큰 환불의 사람
+# 승인(대기, 실행, 거절, 늦은 승인, 반품 합계), 승인 대기 턴에 에이전트용 지시가 고객에게 새지 않게 하는 처리,
+# 음성 끝점, 모델 없는 오프라인 앱, 완료 주장 가드 (docs/service.md "테스트").
+# [왜 중요한가] 서비스에서 잘못된 처리는 돈이 나가는 일이다. 평가와 같은 에이전트 루프·도구가 서비스에서도
+# 규정을 막고, 큰 환불은 사람을 거치며, 모든 일이 감사 로그에 남는다는 약속을 GPU 없이 확인한다.
+# [연결] 여기의 도우미(ADMIN, BIG, SMALL, verify_and_cancel, make_client, say, ask_for_big_cancel,
+# voice_client 등)와 fixture는 tests/test_review_t7.py와 tests/test_postgres.py도 가져다 쓴다.
+
 from __future__ import annotations
 
+# httpx: 서비스가 직접 만드는 Ollama 제공자 앞에 가짜 서버(MockTransport)를 끼운다. yaml: compose.yaml의 기본
+# 모델 설정을 읽는다. alembic compare_metadata: 마이그레이션 결과와 테이블 선언 비교. TestClient: 서버 없이
+# FastAPI 앱을 부른다. 서비스 모듈에서는 앱, DB 준비, 한 턴 처리(ChatService)와 고정 안내 문장, 오프라인 대역,
+# 설정, 음성 앞단을 가져온다.
 import json
 from pathlib import Path
 
@@ -34,11 +47,14 @@ from support_agent.service.settings import DEFAULT_MODEL, DEMO_NOW, Settings
 from support_agent.service.voice_frontend import VoiceFrontEnd, repair_heard
 from support_agent.voice.speech import Audio
 
+# 관리자 API 헤더와 두 시나리오의 고객: BIG은 환불액 108,200원으로 승인 기준(10만 원) 이상인 취소, SMALL은
+# 89,100원으로 기준 아래인 취소다. (이름, 전화, 주문, 환불액).
 ADMIN = {"X-Admin-Token": "test-token"}
 BIG = ("강정우", "01000006189", "O-10097", 108_200)  # a cancellable order above the approval threshold
 SMALL = ("정예준", "01000009005", "O-90005", 89_100)
 
 
+# 본인 확인 → 단순 변심 취소, 두 도구 호출로 된 대본 앞부분.
 def verify_and_cancel(who: tuple) -> list:
     name, phone, order_id, _ = who
     return [
@@ -47,6 +63,7 @@ def verify_and_cancel(who: tuple) -> list:
     ]
 
 
+# 마이그레이션과 seed 복사를 한 SQLite 파일을 모듈에서 한 번 만든다(1초쯤 걸린다).
 @pytest.fixture(scope="module")
 def seeded_template(tmp_path_factory):
     """Migrating and seeding takes a second; do it once and copy the file for every test."""
@@ -55,6 +72,7 @@ def seeded_template(tmp_path_factory):
     return path
 
 
+# 테스트마다 템플릿 파일을 복사한 새 DB. 승인 대기열과 세션이 테스트 사이에 섞이지 않는다.
 @pytest.fixture
 def engine(seeded_template, tmp_path):
     path = tmp_path / "service.db"
@@ -64,11 +82,13 @@ def engine(seeded_template, tmp_path):
     engine.dispose()
 
 
+# 관리자 토큰과 대본 제공자를 넣은 앱의 테스트 클라이언트. 다른 설정은 키워드로 덮어쓴다.
 def make_client(engine, script, **overrides) -> TestClient:
     settings = Settings(admin_token="test-token", **overrides)
     return TestClient(create_app(settings, provider=ScriptedProvider(script), engine=engine))
 
 
+# SSE 응답 본문을 (이벤트 이름, 데이터) 목록으로 푼다. 응답은 200이고 text/event-stream이어야 한다.
 def events_of(response) -> list[tuple[str, dict]]:
     assert response.status_code == 200, response.text
     assert response.headers["content-type"].startswith("text/event-stream")
@@ -79,10 +99,12 @@ def events_of(response) -> list[tuple[str, dict]]:
     return out
 
 
+# 고객 메시지 하나를 보내고 그 턴의 이벤트 목록을 돌려준다.
 def say(client: TestClient, session_id: str, text: str) -> list[tuple[str, dict]]:
     return events_of(client.post(f"/api/sessions/{session_id}/messages", json={"text": text}))
 
 
+# DB에서 주문 상태 값을 직접 읽는다 (화면이 아니라 실제로 바뀌었는지 확인).
 def order_status(engine, order_id: str) -> str:
     with Session(engine) as session:
         return session.get(db.Order, order_id).status.value
@@ -91,6 +113,8 @@ def order_status(engine, order_id: str) -> str:
 # -------------------------------------------------------------------- database
 
 
+# Alembic 마이그레이션 결과가 쇼핑몰·서비스 테이블 선언과 똑같은지 확인한다. 모델만 고치고 마이그레이션을
+# 빠뜨리면 여기서 실패한다.
 def test_migrations_build_exactly_the_declared_tables(engine):
     with engine.connect() as connection:
         context = MigrationContext.configure(connection)
@@ -99,11 +123,16 @@ def test_migrations_build_exactly_the_declared_tables(engine):
     assert {"orders", "chat_sessions", "audit_events", "approvals"} <= set(inspect(engine).get_table_names())
 
 
+# 서비스의 쇼핑몰 데이터는 평가의 seed DB와 같고, 이미 데이터가 있으면 다시 복사하지 않는다(재시작해도 주문이
+# 초기화되지 않게).
 def test_the_shop_is_a_copy_of_the_seed_and_is_not_copied_twice(engine):
     assert db.dump_db(engine) == db.dump_db(build_seed_engine())
     assert copy_seed(engine) is False
 
 
+# 설정은 SUPPORT_AGENT_ 접두사 환경 변수에서 온다. 기본 시계는 시연용 고정 시각(DEMO_NOW)이고 NOW=real이면
+# 실제 시계다. 생성 데이터가 2026-09-14 무렵에 맞춰져 있어 실제 시계를 쓰면 곧 모든 주문이 반품 기한을 넘기기
+# 때문이다 (docs/service.md "고정 시계"). 기본 규정은 P1(도구가 막음)이다.
 def test_settings_come_from_the_environment():
     settings = Settings.from_env(
         {"SUPPORT_AGENT_MODEL": "m", "SUPPORT_AGENT_APPROVAL_REFUND_WON": "5000", "SUPPORT_AGENT_NOW": "real"}
@@ -114,12 +143,17 @@ def test_settings_come_from_the_environment():
     assert Settings.from_env({}).policy == "P1"
 
 
+# 서비스의 기본 모델은 qwen3.5:4b이고 think는 off다. 8단계 측정 결과를 보고 2026-10-04에 바꾼 기본값이다
+# (README 8단계).
 def test_the_service_runs_qwen35_4b_without_thinking_by_default():
     settings = Settings.from_env({})
     assert (settings.model, settings.think, settings.agent_think()) == ("qwen3.5:4b", "off", False)
     assert (Settings().model, Settings().think) == (DEFAULT_MODEL, "off")
 
 
+# 이전 모델(qwen2.5 7B)을 고르면 think를 보내지 않는다(omit). 사고 모드가 없는 모델은 think 값을 받으면 거절할
+# 수 있기 때문이다. Compose가 넘기는 빈 문자열은 '설정 안 함'이고, 명시한 값(on/off/omit)이 모델 기본값보다
+# 우선하며, 그 밖의 값은 설정 오류다.
 def test_the_old_model_stays_selectable_and_is_sent_no_think_field():
     old = Settings.from_env({"SUPPORT_AGENT_MODEL": "qwen2.5:7b-instruct"})
     assert (old.model, old.think, old.agent_think()) == ("qwen2.5:7b-instruct", "omit", None)
@@ -136,6 +170,7 @@ def test_the_old_model_stays_selectable_and_is_sent_no_think_field():
         Settings.from_env({"SUPPORT_AGENT_THINK": "false"})
 
 
+# MockTransport 뒤의 가짜 Ollama 서버. /api/chat 요청 본문을 모두 기록하고 정해진 인사로 답한다.
 class RecordingOllama:
     """An Ollama server behind httpx.MockTransport that records every /api/chat body."""
 
@@ -151,6 +186,9 @@ class RecordingOllama:
         return httpx.Response(200, json={"model": body["model"], "message": message, "done": True})
 
 
+# 대역 없이 서비스가 직접 만드는 OllamaProvider로, 모든 에이전트 요청에 모델 이름과 think 값이 설정대로
+# 들어가는지(기본 모델은 think false, 이전 모델은 think 칸 없음) 확인한다. /healthz와 감사 로그의 세션 시작
+# 기록에도 같은 값이 남는다.
 @pytest.mark.parametrize(
     ("overrides", "model", "think"),
     [({}, "qwen3.5:4b", False), ({"model": "qwen2.5:7b-instruct"}, "qwen2.5:7b-instruct", None)],
@@ -179,6 +217,8 @@ def test_the_think_setting_reaches_the_ollama_request(engine, monkeypatch, overr
     assert (started["model"], started["think"]) == (model, settings.think)
 
 
+# compose.yaml과 .env.example이 코드의 기본 모델과 같은 이름을 쓰는지 확인한다. 기본 모델을 바꿀 때 한쪽만
+# 고치는 실수를 막는다.
 def test_compose_and_the_env_example_name_the_service_default_model():
     root = Path(__file__).resolve().parents[1]
     compose = yaml.safe_load((root / "compose.yaml").read_text(encoding="utf-8"))
@@ -192,6 +232,9 @@ def test_compose_and_the_env_example_name_the_service_default_model():
 # -------------------------------------------------------------------- chat
 
 
+# 작은 취소 한 턴: 진행 이벤트(status, tool, tool_result)가 먼저 흐르고 reply와 end로 끝나며, 주문이 실제로
+# 취소된다. 대화 조회에는 상담원·고객·상담원 순서로 남고, 감사 로그에는 세션 시작, 고객 메시지, 도구 호출(쓰기
+# 여부, 확인된 고객), LLM 호출 3번, 답이 남는다. 관리자 세션 목록에도 확인된 고객이 보인다.
 def test_a_turn_streams_progress_and_the_reply_and_is_audited(engine):
     script = [*verify_and_cancel(SMALL), "주문 O-90005를 취소했습니다. 89,100원이 환불됩니다."]
     with make_client(engine, script) as client:
@@ -226,6 +269,8 @@ def test_a_turn_streams_progress_and_the_reply_and_is_audited(engine):
         assert listed[0]["session_id"] == session_id and listed[0]["customer_id"] == "C-9005"
 
 
+# 대화 상태는 요청 사이에 DB에 저장된다: 두 턴 뒤 턴 수, 확인된 고객, 모델이 보는 메시지 전체(시스템, 도구
+# 호출과 결과 포함)가 세션 행에 남는다.
 def test_the_conversation_survives_between_requests(engine):
     script = [
         ToolCall("find_customer", {"name": "정예준", "contact": "01000009005"}),
@@ -243,6 +288,8 @@ def test_the_conversation_survives_between_requests(engine):
     assert roles == ["system", "assistant", "user", "assistant", "tool", "assistant", "user", "assistant"]
 
 
+# 모델이 무엇을 시도하든 도구가 막는다: 다른 고객으로 확인된 세션이 남의 주문을 취소하려 하면 거절되고 주문은
+# 그대로다.
 def test_the_service_refuses_what_the_policy_forbids(engine):
     # O-90005 belongs to C-9005; another verified customer must not cancel it, whatever the model tries.
     script = [
@@ -257,6 +304,7 @@ def test_the_service_refuses_what_the_policy_forbids(engine):
     assert order_status(engine, "O-90005") == "preparing"
 
 
+# 상담원 이관이 성공하면 세션이 handoff로 닫히고, 그 뒤의 메시지는 409다. 이관 행이 하나 남는다.
 def test_hand_off_ends_the_session(engine):
     script = [
         ToolCall("find_customer", {"name": "정예준", "contact": "01000009005"}),
@@ -273,6 +321,8 @@ def test_hand_off_ends_the_session(engine):
         assert session.scalar(select(func.count()).select_from(db.Handoff)) == 1
 
 
+# 모델 서버 오류가 나면 error 이벤트와 고정 안내(FALLBACK_REPLY)로 그 턴을 끝내고 감사 로그에 오류를 남긴다.
+# 세션은 닫히지 않아 다음 메시지는 정상 처리된다.
 def test_a_failing_model_gives_a_fallback_reply_and_keeps_the_session_usable(engine):
     class Broken(ScriptedProvider):
         def chat(self, *args, **kwargs):
@@ -292,6 +342,8 @@ def test_a_failing_model_gives_a_fallback_reply_and_keeps_the_session_usable(eng
         assert dict(say(client, session_id, "주문 조회요"))["reply"]["text"] == "다시 말씀해 주세요."
 
 
+# 요청 검증과 보안 헤더: 빈 메시지와 길이 한도를 넘는 메시지는 422, 없는 세션은 404. 응답에는 nosniff,
+# 'self'만 허용하는 CSP, 대화 조회에는 no-store 캐시 헤더가 붙는다.
 def test_requests_are_validated(engine):
     with make_client(engine, [], max_message_chars=10) as client:
         session_id = client.post("/api/sessions").json()["session_id"]
@@ -307,6 +359,8 @@ def test_requests_are_validated(engine):
         assert client.get(f"/api/sessions/{session_id}").headers["Cache-Control"] == "no-store"
 
 
+# 세션당 턴 한도에 닿으면 그 턴의 답 뒤에 고정 안내(CLOSED_REPLY)를 붙이고 세션을 닫는다. 닫힌 세션의 메시지는
+# 409다 (docs/service.md "한도": 세션당 40턴, 닫으면 새 상담을 권한다).
 def test_a_long_session_is_closed(engine):
     with make_client(engine, ["네.", "네."], max_turns_per_session=2) as client:
         session_id = client.post("/api/sessions").json()["session_id"]
@@ -319,6 +373,8 @@ def test_a_long_session_is_closed(engine):
         assert client.post(f"/api/sessions/{session_id}/messages", json={"text": "셋"}).status_code == 409
 
 
+# 도구 오류 한도는 턴마다 센다. 없는 주문을 11턴 동안 조회해 거절이 쌓여도(세션 전체 누계 11) 각 턴은 오류
+# 없이 답을 받는다. 누계로 세면 오래된 세션이 이유 없이 '처리하지 못했습니다'만 받게 된다.
 def test_tool_errors_of_earlier_turns_do_not_end_a_later_turn(engine):
     """The limit of tool errors is per turn, like the limit of LLM calls: a session that met refusals over
     many turns (not found, not verified, held for approval) still gets its answers."""
@@ -342,6 +398,8 @@ def test_tool_errors_of_earlier_turns_do_not_end_a_later_turn(engine):
         assert session.get(store.ChatSession, session_id).state["tool_errors"] == 11  # the session total
 
 
+# 한 세션은 한 번에 메시지 하나만 처리한다. 세션 잠금을 미리 잡아 두면 다음 처리는 BusyError다. 프로세스 안의
+# 잠금이라 앱은 프로세스 하나로 띄운다 (docs/service.md).
 def test_one_session_answers_one_message_at_a_time(engine):
     service = ChatService(Settings(), engine, ScriptedProvider([]))
     session_id = service.new_session()["session_id"]
@@ -353,6 +411,8 @@ def test_one_session_answers_one_message_at_a_time(engine):
 # -------------------------------------------------------------------- approvals
 
 
+# 관리자 API는 X-Admin-Token이 맞아야 하고(없거나 틀리면 401), 토큰을 설정하지 않은 앱은 관리자 API 전체를
+# 503으로 끈다. 빈 토큰으로 통과되는 일이 없게 한다.
 def test_the_admin_api_needs_its_token(engine):
     with make_client(engine, []) as client:
         assert client.get("/api/admin/approvals").status_code == 401
@@ -362,11 +422,15 @@ def test_the_admin_api_needs_its_token(engine):
         assert client.get("/api/admin/approvals", headers=ADMIN).status_code == 503
 
 
+# 새 세션을 열고 강정우 고객의 큰 취소(O-10097)를 한 메시지로 요청한다. (세션 id, 이벤트)를 돌려준다.
 def ask_for_big_cancel(client: TestClient) -> tuple[str, list]:
     session_id = client.post("/api/sessions").json()["session_id"]
     return session_id, say(client, session_id, "강정우, 01000006189입니다. O-10097 취소해 주세요.")
 
 
+# 환불액이 기준 이상이면 도구 트랜잭션을 롤백하고 승인 대기(AP-1)에 올린다. approval 이벤트와
+# approval_required 도구 결과가 나오고 DB는 그대로다. 관리자 대기 목록과 고객의 대화 조회에 같은 승인이
+# 보인다.
 def test_a_large_refund_waits_for_a_person_and_nothing_is_written(engine):
     script = [*verify_and_cancel(BIG), "담당자 확인 후 처리됩니다."]
     with make_client(engine, script) as client:
@@ -385,6 +449,7 @@ def test_a_large_refund_waits_for_a_person_and_nothing_is_written(engine):
         assert client.get(f"/api/sessions/{session_id}").json()["pending_approvals"] == [approval]
 
 
+# 모델이 같은 취소를 다시 호출해도 대기열에는 하나만 남고, 고객이 받는 답에도 승인 안내가 한 번만 들어간다.
 def test_asking_again_does_not_queue_the_same_write_twice(engine):
     cancel = verify_and_cancel(BIG)[1]
     with make_client(engine, [*verify_and_cancel(BIG), cancel, "담당자 확인 후 처리됩니다."]) as client:
@@ -395,6 +460,7 @@ def test_asking_again_does_not_queue_the_same_write_twice(engine):
 
 # The qwen3.5:4b reply in the real service turn of 2026-10-04 (docs/service.md): the tool's instructions
 # for the agent ("…알리세요", "같은 요청을 다시 호출하지 마세요") passed on to the customer.
+# 실제 서비스 확인에서 나온 답을 그대로 옮긴 대본. 도구가 에이전트에게만 준 지시를 고객에게 옮겨 말했다.
 LEAKED_REPLY = (
     "주문 O-10097의 환불액 108,200원은 담당자 승인이 필요하여 승인 대기열에 올렸습니다. "
     "고객님께 담당자 확인 후 처리되며 결과는 이 대화창으로 안내된다고 알려드리겠습니다. "
@@ -402,6 +468,10 @@ LEAKED_REPLY = (
 )
 
 
+# 승인 대기에 걸린 턴: 모델은 지시가 든 도구 결과를 그대로 읽지만, 고객이 받는 답과 대화 조회에는 '호출',
+# '알리세요' 같은 지시가 없다. 고객은 모델의 첫 문장 뒤에 서비스의 정해진 안내(주문, 취소, 금액, 승인 번호,
+# 담당자)를 받는다. 다음 턴의 모델이 읽는 대화에도 고객이 받은 글만 남고, 모델의 원래 답은 감사 로그의
+# not_delivered에만 남는다 (docs/service.md "사람 승인").
 def test_the_customer_never_reads_the_instructions_a_held_write_gives_the_agent(engine):
     with make_client(engine, [*verify_and_cancel(BIG), LEAKED_REPLY]) as client:
         session_id, events = ask_for_big_cancel(client)
@@ -432,6 +502,7 @@ def test_the_customer_never_reads_the_instructions_a_held_write_gives_the_agent(
     assert (reply_event["text"], reply_event["not_delivered"]) == (replies[0], LEAKED_REPLY)
 
 
+# 승인 대기 턴이 지난 뒤의 답은 안내를 붙이지 않은 모델 자신의 답이다.
 def test_a_later_reply_after_a_held_write_is_the_models_own(engine):
     later = "담당자 확인을 기다리고 있습니다. 결과는 이 대화창으로 알려 드리겠습니다."
     with make_client(engine, [*verify_and_cancel(BIG), LEAKED_REPLY, later]) as client:
@@ -439,12 +510,16 @@ def test_a_later_reply_after_a_held_write_is_the_models_own(engine):
         assert dict(say(client, session_id, "언제 처리되나요?"))["reply"]["text"] == later
 
 
+# 큰 취소에 붙는 서비스의 정해진 안내 문장.
 BIG_NOTICE = (
     "주문 O-10097의 취소 요청(환불 예정 108,200원)은 담당자 승인이 필요해 아직 처리되지 않았습니다. "
     "승인 번호는 AP-1이며, 담당자가 확인한 뒤 결과를 이 대화창으로 안내해 드립니다."
 )
 
 
+# 회귀 테스트(972317b 리뷰): 조회와 질문이 있던 승인 대기 턴에서 모델 답 전체를 버려 조회 결과가 고객에게 가지
+# 않던 문제. 이제 지시만 뺀 모델 답 + 정해진 안내가 고객에게 가고, 다음 턴의 모델도 정확히 그 글을 자기 답으로
+# 읽는다.
 def test_a_held_turn_keeps_what_the_model_looked_up_and_asks(engine):
     """The review of 972317b: find_customer, get_order and a held cancel in one turn dropped the whole
     model reply, so the lookup never reached the customer, while the next turn's model read that reply
@@ -494,11 +569,16 @@ def test_a_held_turn_keeps_what_the_model_looked_up_and_asks(engine):
     assert [(p["text"], p.get("not_delivered")) for p in told] == [(delivered, said), (later, None)]
 
 
+# without_agent_only 표 테스트의 재료: 조회 결과 문장, 실제 턴에서 나온 지시 문장, 다시 호출하지 말라는 지시.
 LOOKED_UP = "주문 O-10097은 배송준비중입니다."
 REAL_TURN = "고객님께 담당자 확인 후 처리되며 결과는 이 대화창으로 안내된다고 알려드리겠습니다."
 DONT_CALL = "같은 요청을 다시 호출하지 마세요."
 
 
+# 지시를 빼는 규칙(without_agent_only)의 사례 표: 실제 턴의 문장, 도구의 원문, 띄어쓰기·줄바꿈·마크다운 목록이
+# 달라진 것은 빼고, 쉼표로 나뉜 절은 지시와 같은 절만 뺀다. 조건(…면)으로 이어진 절은 떼어 내면 남은 말이
+# 원래보다 많은 것을 말하므로 문장째 뺀다. 뺄 것이 없으면 줄바꿈까지 그대로 둔다 (docs/service.md "빼는
+# 규칙").
 @pytest.mark.parametrize(
     ("said", "kept"),
     [
@@ -563,6 +643,8 @@ def test_the_instructions_for_the_agent_never_reach_the_customer(said, kept):
     assert without_agent_only(said) == kept
 
 
+# 관리자가 승인하면 그때 도구가 실행되어 주문이 취소되고, 결과(환불액)가 정해진 문장으로 고객 대화에 들어가며
+# 대기 목록에서 빠진다. 이미 결정된 승인을 다시 결정하면 409이고, 감사 로그에 승인 요청과 결정이 남는다.
 def test_approval_carries_the_write_out_and_tells_the_customer(engine):
     with make_client(engine, [*verify_and_cancel(BIG), "담당자 확인 후 처리됩니다."]) as client:
         session_id, _ = ask_for_big_cancel(client)
@@ -583,6 +665,7 @@ def test_approval_carries_the_write_out_and_tells_the_customer(engine):
         assert kinds[-1] == "approval_decided" and "approval_requested" in kinds
 
 
+# 거절하면 아무것도 쓰지 않고, 담당자의 메모가 고객 대화에 안내로 들어간다. 없는 승인 번호는 409다.
 def test_rejection_writes_nothing(engine):
     with make_client(engine, [*verify_and_cancel(BIG), "담당자 확인 후 처리됩니다."]) as client:
         session_id, _ = ask_for_big_cancel(client)
@@ -596,6 +679,8 @@ def test_rejection_writes_nothing(engine):
         assert client.post("/api/admin/approvals/9/decision", headers=ADMIN, json=body).status_code == 409
 
 
+# 승인을 기다리는 사이 주문 상태가 바뀌면(출고됨) 승인 시점에 도구가 거절해 failed로 남고, 고객에게는 처리하지
+# 못했다는 안내가 간다. 승인 행은 하나뿐이다.
 def test_an_approval_that_comes_too_late_fails_cleanly(engine):
     with make_client(engine, [*verify_and_cancel(BIG), "담당자 확인 후 처리됩니다."]) as client:
         session_id, _ = ask_for_big_cancel(client)
@@ -611,6 +696,7 @@ def test_an_approval_that_comes_too_late_fails_cleanly(engine):
         assert session.scalar(select(func.count()).select_from(store.Approval)) == 1
 
 
+# 기준을 20만 원으로 올리면 같은 취소(108,200원)는 승인 없이 바로 실행된다. 관문이 설정값을 따르는지 본다.
 def test_a_refund_below_the_threshold_needs_nobody(engine):
     with make_client(
         engine, [*verify_and_cancel(BIG), "취소했습니다."], approval_refund_won=200_000
@@ -620,9 +706,16 @@ def test_a_refund_below_the_threshold_needs_nobody(engine):
         assert order_status(engine, "O-10097") == "cancelled"
 
 
+# 줄 두 개인 수령 주문(1번 90,400원, 2번 36,700원, 합계 127,100원). 반품을 줄마다 나눠 접수하는 시나리오에
+# 쓴다.
 SPLIT = ("조시우", "01000007605", "O-10086")  # delivered, in its window: line 1 90,400 + line 2 36,700 won
 
 
+# 반품은 같은 주문에 이미 접수된 반품의 환불액을 더해 기준과 비교한다. 1번 줄(90,400원)은 기준 아래라 바로
+# 접수되고, 2번 줄은 합계 127,100원이 기준 이상이라 승인 대기로 간다. 감사 로그에 줄 환불액과 주문 합계가 함께
+# 남고, 같은 턴에 1번 줄을 접수한 모델의 말이 안내 앞에 남는다. 승인하면 관문이 다시 막지 않고 2번 줄이
+# 접수된다. 줄을 나눠 승인을 피하는 길을 막는 규칙이다 (docs/service.md "사람 승인"). test_postgres.py가 이
+# 함수를 PostgreSQL 엔진으로 다시 부른다.
 def test_lines_of_one_order_returned_one_at_a_time_add_up_against_the_threshold(engine):
     name, phone, order_id = SPLIT
     script = [
@@ -657,6 +750,8 @@ def test_lines_of_one_order_returned_one_at_a_time_add_up_against_the_threshold(
         assert session.get(db.ServiceRequest, "RT-O-10086-2").refund_won == 36_700
 
 
+# 한 턴에 1번 줄은 접수되고 2번 줄은 승인 대기일 때, 1번 줄에 대한 모델의 말은 고객에게 가고 지시를 옮긴
+# 문장은 빠지며, 2번 줄의 정해진 안내가 뒤에 붙는다.
 def test_a_turn_that_also_wrote_keeps_the_models_words_without_the_agent_only_ones(engine):
     """Line 1 is filed and line 2 is held in one turn: the model's account of line 1 reaches the customer,
     the sentences that pass on the notice's instructions to the agent do not, and the service's notice
@@ -684,6 +779,8 @@ def test_a_turn_that_also_wrote_keeps_the_models_words_without_the_agent_only_on
     assert all(part in text for part in ("O-10086", "36,700원", "AP-1"))
 
 
+# 회귀 테스트(972317b 리뷰): 1번 줄 접수를 알리는 절과 2번 줄의 지시를 되풀이한 절이 '…고,'로 이어진 문장이
+# 통째로 버려지던 문제. 이제 지시가 든 절만 빠지고 접수를 알린 절은 남는다.
 def test_a_sentence_that_reports_a_filed_write_keeps_that_clause(engine):
     """The review of 972317b: a sentence reporting line 1 and repeating the instruction for line 2 was
     dropped whole. Its clauses are divided by a comma after …고, so only the instruction goes."""
@@ -706,6 +803,9 @@ def test_a_sentence_that_reports_a_filed_write_keeps_that_clause(engine):
     assert "처리되며" not in text
 
 
+# 모델이 읽는 승인 대기 도구 결과 문구는 고객용 안내를 만들기 전과 바이트까지 같아야 한다. 그래야 서비스
+# 모델의 입력과 완료 주장 가드가 근거로 읽는 형식이 바뀌지 않는다 (docs/service.md "이렇게 한 이유"). 반품이면
+# 같은 주문의 합계도 함께 적힌다.
 def test_the_notice_the_agent_reads_is_unchanged():
     """The model-facing text of a held write is what it was before the customer got a notice of its own
     (core.py before 2026-10-05), so the agent's inputs and the claim guard's evidence stay the same."""
@@ -722,6 +822,8 @@ def test_the_notice_the_agent_reads_is_unchanged():
     )
 
 
+# 정적 화면(index.html, admin.html)에는 인라인 style·onclick·인라인 스크립트가 없고 스크립트는 모두 src로
+# 불러와야 한다. CSP가 인라인 스크립트를 막으므로, 화면 코드는 외부 파일에만 있어야 동작한다.
 def test_static_pages_carry_no_inline_code():
     from support_agent.service.app import STATIC
 
@@ -734,6 +836,7 @@ def test_static_pages_carry_no_inline_code():
 # -------------------------------------------------------------------- voice
 
 
+# 가짜 합성기: 말로 푼 글을 그대로 'WAV' 바이트에 담는다. 테스트가 합성 전에 무엇이 풀어 쓰였는지 볼 수 있다.
 class FakeSpeaker:
     def describe(self):
         return {"tts": "fake"}
@@ -742,6 +845,8 @@ class FakeSpeaker:
         return Audio(b"RIFF" + spoken_text.encode("utf-8"), seconds=1.0)
 
 
+# 가짜 인식기: 녹음 바이트를 UTF-8 글로 그대로 읽는다. b"static"은 알아들을 수 없는 녹음(빈 글), b"broken"은
+# 풀 수 없는 녹음(예외)을 흉내 낸다.
 class FakeListener:
     """The 'recording' is UTF-8 text; b"static" stands for a recording with nothing intelligible."""
 
@@ -754,12 +859,16 @@ class FakeListener:
         return "" if audio == b"static" else audio.decode("utf-8")
 
 
+# 가짜 합성기·인식기를 단 음성 앞단으로 앱을 만든다 (음성 모델 없이 음성 끝점을 시험).
 def voice_client(engine, script, **overrides) -> TestClient:
     settings = Settings(admin_token="test-token", **overrides)
     front_end = VoiceFrontEnd(FakeSpeaker(), FakeListener())
     return TestClient(create_app(settings, provider=ScriptedProvider(script), engine=engine, voice=front_end))
 
 
+# 음성 메시지는 heard 이벤트로 인식 결과를 먼저 보낸 뒤 글로 보낸 메시지와 같은 길을 간다. 음성을 켜면
+# Permissions-Policy에 microphone=(self), CSP에 media-src 'self' blob:이 붙는다. 감사 로그의 고객 메시지에
+# 음성 경로(인식 원문, 녹음 크기)가 남는다.
 def test_a_spoken_message_takes_the_same_path_as_a_typed_one(engine):
     script = [ToolCall("find_customer", {"name": "정예준", "contact": "01000009005"}), "확인되었습니다."]
     with voice_client(engine, script) as client:
@@ -780,6 +889,8 @@ def test_a_spoken_message_takes_the_same_path_as_a_typed_one(engine):
         assert message["via"] == {"voice": True, "heard": message["text"], "audio_bytes": len(recording)}
 
 
+# 알아들을 수 없거나 풀 수 없는 녹음은 error와 end로 끝나고 턴을 쓰지 않는다. 대화에도 아무것도 더해지지
+# 않는다.
 def test_unintelligible_or_broken_audio_costs_no_turn(engine):
     with voice_client(engine, []) as client:
         session_id = client.post("/api/sessions").json()["session_id"]
@@ -791,6 +902,8 @@ def test_unintelligible_or_broken_audio_costs_no_turn(engine):
         assert session.get(store.ChatSession, session_id).turns == 0
 
 
+# 음성 요청 검증: 녹음 크기 한도를 넘으면 413, 빈 본문은 422, 없는 세션은 404. 합성 글자 한도를 넘는 글은
+# 422다.
 def test_voice_requests_are_validated(engine):
     with voice_client(engine, [], max_audio_bytes=10, max_tts_chars=5) as client:
         session_id = client.post("/api/sessions").json()["session_id"]
@@ -802,6 +915,9 @@ def test_voice_requests_are_validated(engine):
         assert client.post("/api/sessions/nope/speech", json={"text": "네"}).status_code == 404
 
 
+# 답 읽어 주기: 합성 전에 말로 풀어 쓰고('38,900원' → '삼만 팔천구백 원'), WAV로 돌려준다. 이 세션에서
+# 상담원이 한 말(전체 또는 일부, 띄어쓰기 무관)만 읽고 다른 글은 403이다. 세션 번호만 있으면 아무 글이나
+# 합성하는 서비스가 되지 않게 한다 (docs/voice.md).
 def test_replies_can_be_read_aloud(engine):
     reply = "환불액은 38,900원입니다." + chr(10) + "3~5일 안에 들어옵니다."
     with voice_client(engine, [reply]) as client:
@@ -817,6 +933,7 @@ def test_replies_can_be_read_aloud(engine):
         assert client.post(url, json={"text": "  "}).status_code == 403
 
 
+# 음성을 켜지 않으면 /healthz에 voice false, 마이크 권한은 막히고(microphone=()), 음성 끝점은 503이다.
 def test_without_the_voice_front_end_the_endpoints_say_so(engine):
     with make_client(engine, []) as client:
         assert client.get("/healthz").json()["voice"] is False
@@ -829,6 +946,8 @@ def test_without_the_voice_front_end_the_endpoints_say_so(engine):
 # -------------------------------------------------------------------- without a model
 
 
+# API 설명(/openapi.json)은 평소에는 404이고, 보안 스캔 때만 설정으로 내놓는다 (docs/service.md "모델 없이
+# 띄우기, 보안 스캔").
 def test_the_api_description_is_served_only_on_request(engine):
     with make_client(engine, []) as client:
         assert client.get("/openapi.json").status_code == 404
@@ -837,6 +956,8 @@ def test_the_api_description_is_served_only_on_request(engine):
         assert "/api/sessions/{session_id}/messages" in paths and "/api/admin/approvals" in paths
 
 
+# 모델 자리에 규칙 대역(OfflineProvider)을 넣은 앱이 실제 웹 계층과 도구를 지나는지 확인한다: 인사 →
+# 이름·전화로 본인 확인 → 취소 → 남의 주문 조회는 도구가 거절. 보안 스캔과 화면 작업을 GPU 없이 하는 바탕이다.
 def test_the_offline_stand_in_drives_the_real_web_layer(engine):
     settings = Settings(admin_token="test-token")
     with TestClient(create_app(settings, provider=OfflineProvider(), engine=engine)) as client:
@@ -851,6 +972,8 @@ def test_the_offline_stand_in_drives_the_real_web_layer(engine):
         assert [(d["name"], d["ok"]) for n, d in events if n == "tool_result"] == [("get_order", False)]
 
 
+# 오프라인 앱을 음성 켜고 띄우면 음성 끝점도 음성 모델 없는 대역으로 응답한다: 인식(UTF-8 글을 그대로), 풀 수
+# 없는 녹음은 error, 합성은 WAV 머리(RIFF)로 시작하는 응답.
 def test_the_offline_app_answers_the_voice_endpoints_without_speech_models(tmp_path, monkeypatch):
     monkeypatch.setenv("SUPPORT_AGENT_DATABASE_URL", f"sqlite:///{(tmp_path / 'offline.db').as_posix()}")
     monkeypatch.setenv("SUPPORT_AGENT_VOICE", "1")
@@ -866,6 +989,8 @@ def test_the_offline_app_answers_the_voice_endpoints_without_speech_models(tmp_p
         assert spoken.status_code == 200 and spoken.content[:4] == b"RIFF"
 
 
+# 서비스의 인식 보정(repair_heard)은 V2 정규화 뒤에 사람이 부른 번호를 숫자로 되돌린다. 에이전트와 heard
+# 이벤트는 고친 글을 받고, 감사 로그에는 인식 원문이 그대로 남는다.
 def test_the_service_repairs_what_was_heard_before_the_agent_reads_it(engine):
     assert repair_heard("강정월구 공일공 공공공공 육일팔구입니다") == "강정월구 010-0000-6189입니다"
     assert repair_heard("주문번호는 5-91001이고 메일은 yunseo.heo-example.com입니다.") == (
@@ -889,10 +1014,13 @@ def test_the_service_repairs_what_was_heard_before_the_agent_reads_it(engine):
 
 # -------------------------------------------------------------------- the claim guard
 
+# 완료 주장 가드 시험용: 근거 없이 '취소가 완료되었습니다'라고 하는 답과, 작은 취소의 두 도구 호출.
 DONE = "주문 O-90005의 취소가 완료되었습니다. 89,100원이 환불됩니다."
 VERIFY_SMALL, CANCEL_SMALL = verify_and_cancel(SMALL)
 
 
+# C1을 켜면 도구 결과에 근거가 없는 완료 안내는 고객에게 보내지 않고 다시 시킨다. 다시 시킨 뒤 실제로 취소하면
+# 같은 문장이 그때 한 번만 전달되고, 감사 로그의 LLM 호출에 돌려보낸 기록(unbacked_claim)이 남는다.
 def test_a_claim_that_no_tool_result_shows_is_not_delivered_and_the_retry_does_the_work(engine):
     with make_client(engine, [VERIFY_SMALL, DONE, CANCEL_SMALL, DONE], claims="C1") as client:
         session_id = client.post("/api/sessions").json()["session_id"]
@@ -904,6 +1032,8 @@ def test_a_claim_that_no_tool_result_shows_is_not_delivered_and_the_retry_does_t
         assert held == [None, "unbacked_claim", None, None]
 
 
+# 세 번 모두 같은 주장이면 그 말은 전달하지 않고 고정 안내('처리하지 못했습니다')를 보낸다. 주문은 그대로이고
+# 세션은 열려 있어 다음 메시지를 받는다.
 def test_when_the_model_insists_the_customer_hears_that_nothing_was_done(engine):
     with make_client(engine, [VERIFY_SMALL, DONE, DONE, DONE, "무엇을 도와드릴까요?"], claims="C1") as client:
         session_id = client.post("/api/sessions").json()["session_id"]
@@ -918,6 +1048,8 @@ def test_when_the_model_insists_the_customer_hears_that_nothing_was_done(engine)
         assert dict(say(client, session_id, "여보세요?"))["reply"]["text"] == "무엇을 도와드릴까요?"
 
 
+# 가드를 끄면(C0, 서비스 기본값) 같은 거짓 완료 안내가 그대로 고객에게 가고 주문은 바뀌지 않는다. 가드가 막는
+# 상황을 보여 준다.
 def test_without_the_guard_the_same_claim_reaches_the_customer(engine):
     with make_client(engine, [VERIFY_SMALL, DONE], claims="C0") as client:
         session_id = client.post("/api/sessions").json()["session_id"]
@@ -925,6 +1057,9 @@ def test_without_the_guard_the_same_claim_reaches_the_customer(engine):
         assert dict(events)["reply"]["text"] == DONE and order_status(engine, "O-90005") == "preparing"
 
 
+# 승인 대기 중인 취소를 '완료되었다'고 하면 가드가 막는다(대기 오류는 '접수'의 근거일 뿐). 승인으로 실행된
+# 결과는 도구 결과로 대화에 남으므로 그 뒤의 같은 말은 근거가 있어 전달된다. 도구 결과 JSON은 고객 화면에
+# 나오지 않는다.
 def test_a_write_that_waits_for_a_person_is_not_done_until_it_was_carried_out(engine):
     done = "주문 O-10097의 취소가 완료되었습니다."
     waiting = "아직 담당자 확인을 기다리고 있습니다."

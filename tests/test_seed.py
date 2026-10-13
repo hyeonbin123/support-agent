@@ -1,7 +1,17 @@
 """The seed database: determinism, the fixture rows tasks rely on, and consistency of every row."""
 
+# [테스트 묶음] seed DB(seed.py가 만드는 가상 쇼핑몰 데이터)를 세 방향에서 확인한다: (1) 결정성(같은 seed면
+# 같은 DB, 현재 시각·uuid·전역 난수를 쓰지 않음), (2) 과제가 기대는 고정 행(고객 C-9001~9005, 주문
+# O-90001~90006)이 docs/design.md 표와 같은지, (3) 모든 행이 서로 모순이 없는지(금액 합, 상태와 결제·배송,
+# 접수와 줄 상태, 쿠폰과 할인, 시각의 범위).
+# [왜 중요한가] 판정은 '정답만 실행한 seed 복사본'과 비교하고, 실행마다 seed DB의 해시를 manifest에 남겨
+# 짝지을 수 있는지 본다. seed가 실행마다 달라지거나 행끼리 모순되면 같은 과제가 다른 결과를 내고, 정답 재실행
+# 자체가 틀어진다.
+# [방법] 모듈에서 seed 엔진을 한 번 만들고(만드는 데 시간이 들고 결과는 같으므로) 테스트마다 세션을 연다.
+
 from __future__ import annotations
 
+# ast: seed.py 소스를 구문 트리로 읽어 금지된 호출(현재 시각, uuid, 전역 random)이 없는지 검사한다.
 import ast
 import re
 from datetime import UTC, date, datetime
@@ -15,6 +25,7 @@ from support_agent import db, seed
 from support_agent.clock import KST
 
 
+# seed 엔진은 프로세스마다 한 번 만들어 공유된다(build_seed_engine은 캐시된 함수). 이 DB에는 절대 쓰지 않는다.
 @pytest.fixture(scope="module")
 def engine():
     return seed.build_seed_engine()
@@ -26,6 +37,7 @@ def session(engine):
         yield s
 
 
+# 2026년 KST 시각을 만드는 도우미 (기본 자정).
 def kst(month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
     return datetime(2026, month, day, hour, minute, tzinfo=KST)
 
@@ -33,6 +45,8 @@ def kst(month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
 # --- determinism ---
 
 
+# 캐시를 우회해(__wrapped__) 새로 두 번 만들어도 상태 해시가 같아야 한다. 같은 명령이 같은 seed DB에서
+# 시작한다는 재현성의 바탕이다.
 def test_two_fresh_builds_have_the_same_hash():
     first = seed.build_seed_engine.__wrapped__()
     second = seed.build_seed_engine.__wrapped__()
@@ -40,17 +54,22 @@ def test_two_fresh_builds_have_the_same_hash():
     assert db.state_hash(db.dump_db(first)) == db.state_hash(db.dump_db(second))
 
 
+# 캐시된 엔진은 같은 객체로 공유되고, 새로 만든 것과 차이가 없어야 한다.
 def test_cached_build_is_shared_and_equal_to_a_fresh_one(engine):
     assert seed.build_seed_engine() is engine
     fresh = seed.build_seed_engine.__wrapped__()
     assert db.diff_dumps(db.dump_db(engine), db.dump_db(fresh)) == {}
 
 
+# memory_engine으로 만든 복사본(에피소드마다 쓰는 DB)의 해시가 원본과 같아야 한다.
 def test_copy_of_seed_is_equal(engine):
     copy = db.memory_engine(engine)
     assert db.state_hash(db.dump_db(copy)) == db.state_hash(db.dump_db(engine))
 
 
+# seed.py가 현재 시각(now, utcnow, today), uuid, faker, secrets, time, 모듈 수준 random 함수를 쓰지 않는지
+# 소스의 구문 트리로 검사한다. random.Random(SEED)처럼 seed를 준 생성기만 허용한다. 도구·seed·판정 코드는 현재
+# 시각, uuid, 난수를 쓰지 않는다는 설계(README "구조", docs/design.md "결정성")를 코드로 지킨다.
 def test_seed_source_has_no_clock_uuid_or_global_random():
     tree = ast.parse(Path(seed.__file__).read_text(encoding="utf-8"))
 
@@ -87,6 +106,8 @@ def test_seed_source_has_no_clock_uuid_or_global_random():
 # --- fixtures ---
 
 
+# seed 값, 생성 데이터의 마지막 시각(9월 10일 23:59 KST, 시간대가 붙은 값), 고정 고객·주문 id 목록을 고정한다.
+# 과제의 now(9월 14일)는 이 시각보다 뒤다.
 def test_constants():
     assert seed.SEED == 20260919
     assert seed.SEED_END == kst(9, 10, 23, 59)
@@ -95,6 +116,8 @@ def test_constants():
     assert seed.FIXTURE_ORDER_IDS == ("O-90001", "O-90002", "O-90003", "O-90004", "O-90005", "O-90006")
 
 
+# 고정 고객 다섯 명의 이름·전화·이메일·주소가 docs/design.md 표와 같고, 기본 주소는 하나(-1)이며 받는 사람은
+# 본인 이름이다. 과제의 시나리오와 정답이 이 값을 그대로 쓴다.
 @pytest.mark.parametrize(
     ("customer_id", "name", "phone", "email", "address_labels"),
     [
@@ -119,6 +142,8 @@ def test_fixture_customers(session, customer_id, name, phone, email, address_lab
     assert all(a.recipient == name for a in customer.addresses)
 
 
+# 고정 고객에게는 쿠폰·티켓·반품 접수가 없어야 한다. 있으면 쿠폰 한도나 '이미 접수된 줄' 같은 규정이 과제의
+# 정답을 바꾼다.
 def test_fixture_customers_have_no_coupons_tickets_or_requests(session):
     ids = seed.FIXTURE_CUSTOMER_IDS
     assert session.scalars(select(db.Coupon).where(db.Coupon.customer_id.in_(ids))).all() == []
@@ -127,6 +152,8 @@ def test_fixture_customers_have_no_coupons_tickets_or_requests(session):
     assert session.scalars(requests).all() == []
 
 
+# 고정 주문의 주인, 할인 0원(반품 환불 규칙이 할인을 다루지 않으므로), 기본 주소로 배송, 그리고 고정 고객에게
+# 다른 주문이 섞여 있지 않은지 확인한다.
 def test_fixture_orders_belong_to_the_right_customers(session):
     owners = {order_id: session.get(db.Order, order_id).customer_id for order_id in seed.FIXTURE_ORDER_IDS}
     assert owners == {
@@ -145,6 +172,8 @@ def test_fixture_orders_belong_to_the_right_customers(session):
     assert sorted(session.scalars(fixture_orders)) == list(seed.FIXTURE_ORDER_IDS)
 
 
+# O-90001: 배송 중인 무선 이어폰 38,900원. 택배사·송장 번호·출고일·도착 예정일(9월 15일)이 조회·배송 과제의
+# 전달 값이다.
 def test_o90001_in_transit(session):
     order = session.get(db.Order, "O-90001")
     assert order.status == db.OrderStatus.SHIPPED
@@ -161,6 +190,8 @@ def test_o90001_in_transit(session):
     assert order.payment.status == db.PaymentStatus.PAID
 
 
+# O-90002: 9월 11일 단순 변심 취소, 결제 47,300원이 환불 대기, 모든 줄 취소, 출고 전. '이미 취소된 주문'
+# 과제의 바탕이다.
 def test_o90002_cancelled(session):
     order = session.get(db.Order, "O-90002")
     assert order.status == db.OrderStatus.CANCELLED
@@ -178,6 +209,7 @@ def test_o90002_cancelled(session):
     assert order.shipment.shipped_at is None
 
 
+# O-90003: 결제 완료(취소 가능), 텀블러 2개 × 14,700원 + 배송비 3,000원 = 32,400원, 카드.
 def test_o90003_paid(session):
     order = session.get(db.Order, "O-90003")
     assert order.status == db.OrderStatus.PAID
@@ -189,6 +221,8 @@ def test_o90003_paid(session):
     assert order.shipment.status == db.ShipmentStatus.READY
 
 
+# O-90004: 9월 2일 14:20 수령한 블루투스 스피커 56,800원. 반품 기한(9월 9일)이 지난 거절 과제의 바탕이고, 제때
+# 도착해 배송 지연 보상 자격이 없다.
 def test_o90004_delivered(session):
     order = session.get(db.Order, "O-90004")
     assert order.status == db.OrderStatus.DELIVERED
@@ -203,6 +237,7 @@ def test_o90004_delivered(session):
     assert shipment.promised_by >= date(2026, 9, 2)  # on time: no delay compensation
 
 
+# O-90005: 상품 준비 중인 러닝화 89,100원, 배송지 AD-C-9005-1. 취소·배송지 변경이 가능한 상태다.
 def test_o90005_preparing(session):
     order = session.get(db.Order, "O-90005")
     assert order.status == db.OrderStatus.PREPARING
@@ -213,6 +248,7 @@ def test_o90005_preparing(session):
     assert order.shipment.status == db.ShipmentStatus.READY
 
 
+# O-90006: 결제 완료, 양말 세트 3개 × 7,300원 + 배송비 3,000원 = 24,900원.
 def test_o90006_paid(session):
     order = session.get(db.Order, "O-90006")
     assert order.status == db.OrderStatus.PAID
@@ -221,6 +257,8 @@ def test_o90006_paid(session):
     assert (order.items_won, order.shipping_fee_won, order.total_won) == (21900, 3000, 24900)
 
 
+# 고정 주문의 상품은 고정 상품(P-9…)만 쓰고, 상품마다 재고 있는 옵션이 둘 이상이라 교환 과제를 만들 수 있다.
+# 배경 주문은 이 옵션을 쓰지 않아, 배경 데이터가 고정 상품의 재고를 흔들지 않는다.
 def test_fixture_products_are_dedicated_and_exchangeable(session):
     fixture_variants = set()
     for order_id in seed.FIXTURE_ORDER_IDS:
@@ -237,6 +275,8 @@ def test_fixture_products_are_dedicated_and_exchangeable(session):
 # --- every row ---
 
 
+# 개발용·시험용 과제를 위해 손으로 넣은 행인지 id의 9xxx 번호로 가린다. 아래 수 세기와 시각 범위 검사에서 이
+# 행들은 빼고 생성 행만 본다.
 def _is_task_row(value) -> bool:
     """Hand-written rows of the smoke, dev and test tasks: their ids carry a 9xxx number."""
     import re
@@ -244,6 +284,8 @@ def _is_task_row(value) -> bool:
     return isinstance(value, str) and re.search(r"(?:^|-)9\d{3,4}(?:-|$)", value) is not None
 
 
+# 생성 행의 수와 범위(고객 40, 상품 25, 주문 120, 티켓 15, 이관 0 등)와, 주문 상태·접수 종류·쿠폰 종류가 모두
+# 한 번 이상 나오는지 확인한다. 배경 데이터가 모든 상태를 덮어야 도구가 여러 경우를 만난다.
 def test_row_counts(session):
     def count(model) -> int:
         # Generated rows only; the hand-written task rows (90xx, 91xx, 92xx) are checked by the task tests.
@@ -264,6 +306,8 @@ def test_row_counts(session):
     assert {c.kind for c in session.scalars(select(db.Coupon))} == set(db.CouponKind)
 
 
+# 모든 행 id의 형식을 고정한다(C-, AD-C-, P-, V-, O-, RT-/EX-, CP-, TK-). 반품·교환 id가 내용에서 만들어지는
+# 규칙과, 주소·옵션 id가 부모 id로 시작하는지도 본다 (docs/design.md "결정성").
 def test_id_formats(session):
     patterns = {
         db.Customer: r"C-\d{4}",
@@ -284,6 +328,9 @@ def test_id_formats(session):
         assert variant.id.startswith(f"V-{variant.product_id[2:]}-")
 
 
+# 고객은 가상이다: 전화번호는 0100000XXXX 형식, 이메일은 소문자 @example.com. 전화·이메일·(이름, 전화)가
+# 겹치지 않아 본인 확인이 한 사람만 가리키고, 고정 고객의 이름이 배경 고객과 겹치지 않는다. 고객마다 기본
+# 주소는 하나다.
 def test_customers_are_fictional_and_unique(session):
     customers = session.scalars(select(db.Customer)).all()
     for customer in customers:
@@ -299,6 +346,9 @@ def test_customers_are_fictional_and_unique(session):
         assert [a.is_default for a in customer.addresses].count(True) == 1
 
 
+# 모든 주문의 금액이 맞는지 본다: 줄 번호 1부터 연속, 상품 금액 = Σ(단가 × 수량), 총액 = 상품 금액 + 배송비 −
+# 할인, 배송비는 seed 규칙대로, 결제액 = 총액. 주문의 배송지 복사본과 줄의 상품명·옵션·단가가 원래 행과 같아야
+# 한다.
 def test_order_totals_payments_and_snapshots(session):
     for order in session.scalars(select(db.Order)):
         assert order.items, order.id
@@ -325,6 +375,9 @@ def test_order_totals_payments_and_snapshots(session):
             assert item.quantity >= 1
 
 
+# 주문 상태와 배송·결제 상태가 맞물리는지 본다: 출고 전 상태는 배송 READY, 출고는 배송 중, 수령은 배송
+# 완료이고, 출고·수령 시각의 유무와 순서가 상태와 맞는다. 취소 주문은 취소 시각·사유, 환불 대기 또는 환불
+# 완료, 환불액 = 결제액, 모든 줄 취소다. 송장 번호는 겹치지 않는다.
 def test_status_matches_payment_and_shipment(session):
     ready, moving, done = db.ShipmentStatus.READY, db.ShipmentStatus.IN_TRANSIT, db.ShipmentStatus.DELIVERED
     expected = {
@@ -360,6 +413,9 @@ def test_status_matches_payment_and_shipment(session):
     assert len(set(tracking)) == len(tracking)
 
 
+# 반품·교환 접수와 주문 줄 상태가 맞는지 본다: 수령한 주문에만, 수령 뒤에 접수되고, 반품 배송비는 단순 변심
+# 3,000원·그 밖 0원, 반품 환불액 = 상품 금액 − 배송비, 교환은 한 줄·같은 상품의 다른 옵션. 접수된 줄만 접수
+# 상태이고 한 줄이 두 번 접수되지 않는다.
 def test_requests_match_item_statuses(session):
     requested: dict[tuple[str, int], db.ItemStatus] = {}
     for request in session.scalars(select(db.ServiceRequest)):
@@ -401,6 +457,9 @@ def test_requests_match_item_statuses(session):
             assert item.status not in special
 
 
+# 쿠폰과 티켓의 일관성: 보상 쿠폰은 주문당 1장(CP-주문-1), 금액은 2,000·3,000·5,000원, 유효 30일, 불량 사유는
+# 불량 접수가 있을 때만, 지연 사유는 실제로 늦었고 금액이 늦은 일수 구간과 맞을 때만이다. 쓴 쿠폰은 같은
+# 고객·금액·시각의 주문 할인과 일대일로 맞아야 한다. 티켓의 주문은 그 고객의 것이다.
 def test_coupons_and_tickets(session):
     for coupon in session.scalars(select(db.Coupon)):
         assert coupon.amount_won > 0
@@ -440,6 +499,9 @@ def test_coupons_and_tickets(session):
             assert session.get(db.Order, ticket.order_id).customer_id == ticket.customer_id
 
 
+# 생성 행의 모든 시각(쿠폰 만료 포함)이 2026-06-01 ~ SEED_END 안에 있다. 그래야 과제의 now(9월 14일)가 모든
+# 생성 데이터보다 뒤라 미래의 데이터를 보고 판정하지 않는다. 검사한 시각이 500개를 넘는지도 본다(검사가 실제로
+# 돌았는지).
 def test_bulk_datetimes_are_inside_the_window(engine):
     """Every datetime of a generated row (coupon expiry included) is in [2026-06-01, SEED_END]."""
     start, end = seed.BULK_START.astimezone(UTC), seed.SEED_END.astimezone(UTC)
@@ -458,6 +520,7 @@ def test_bulk_datetimes_are_inside_the_window(engine):
     assert checked > 500
 
 
+# 고정 주문·고객의 모든 시각이 스모크 과제의 now(9월 14일 10:00)보다 앞이다.
 def test_fixture_datetimes_are_before_the_smoke_now(session):
     now = kst(9, 14, 10, 0)
     for order_id in seed.FIXTURE_ORDER_IDS:
@@ -469,6 +532,7 @@ def test_fixture_datetimes_are_before_the_smoke_now(session):
         assert session.get(db.Customer, customer_id).joined_at < now
 
 
+# 제외 칸 없이 전체를 덤프해도 값은 None·bool·int·str뿐이다(금액은 정수 원). 이관 행은 seed에 없다.
 def test_dump_has_no_floats_and_handoffs_are_empty(engine):
     dump = db.dump_db(engine, ignore=frozenset())  # _plain raises TypeError on a float
     assert dump["handoffs"] == []
@@ -477,6 +541,8 @@ def test_dump_has_no_floats_and_handoffs_are_empty(engine):
             assert all(value is None or isinstance(value, bool | int | str) for value in row.values())
 
 
+# 택배사는 모두 지어낸 이름 목록(CARRIERS) 안에 있다. 데이터는 모두 가상이고 실제 회사나 사람의 정보가 없다는
+# 것(README "데이터")을 확인한다.
 def test_no_real_company_names(engine):
     dump = db.dump_db(engine, ignore=frozenset())
     carriers = {row["carrier"] for row in dump["shipments"]}

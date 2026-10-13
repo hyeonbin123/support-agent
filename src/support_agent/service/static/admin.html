@@ -1,8 +1,15 @@
 <!doctype html>
 <html lang="ko">
+<!-- [파일 역할] 담당자용 관리 화면(GET /admin). 환불액이 큰 취소·반품의 승인 대기열을 처리하고, 상담 -->
+<!-- 기록과 감사 로그를 본다. 동작은 /static/admin.js가 맡는다. -->
+<!-- [구조] 관리자 토큰 입력(로그인) → 탭 두 개: 승인 대기열(담당자 이름, 처리된 항목 보기, 카드 목록)과 -->
+<!-- 상담 기록(최근 세션 목록 + 선택한 세션의 대화·감사 로그). -->
+<!-- [설계 이유] 관리자 인증은 공유 토큰 하나뿐이고, 토큰은 쿠키가 아니라 요청마다 X-Admin-Token 헤더로 -->
+<!-- 보낸다(docs/service.md "하지 않은 것"). 인라인 스크립트는 CSP가 막으므로 별도 파일을 쓴다. -->
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- 관리 화면이 검색 엔진에 색인되지 않게 한다. -->
   <meta name="robots" content="noindex">
   <title>상담 관리</title>
   <link rel="stylesheet" href="/static/style.css">
@@ -15,6 +22,8 @@
   </header>
 
   <main class="admin">
+    <!-- 토큰 입력. 확인을 누르면 admin.js가 실제 API를 한 번 불러 토큰이 맞는지 본 뒤에 본 화면을 연다. -->
+    <!-- 토큰은 탭을 닫으면 사라지는 sessionStorage에만 둔다. -->
     <section id="login" class="panel login" aria-labelledby="login-title">
       <h2 id="login-title">관리자 확인</h2>
       <form id="login-form" autocomplete="off">
@@ -27,6 +36,8 @@
       <p id="login-message" class="error-line" role="alert" hidden></p>
     </section>
 
+    <!-- 로그인 뒤의 본 화면. 탭은 WAI-ARIA tablist 형태이고, 좌우 화살표 키로 탭을 옮길 수 -->
+    <!-- 있다(admin.js). -->
     <div id="app" hidden>
       <div class="tabs" role="tablist" aria-label="관리 메뉴">
         <button type="button" role="tab" id="tab-approvals" class="tab" aria-controls="panel-approvals" aria-selected="true">
@@ -37,6 +48,7 @@
         </button>
       </div>
 
+      <!-- 승인 대기열. 담당자 이름은 결정과 함께 입력한 그대로 기록된다. 목록은 5초마다 다시 읽는다. -->
       <section id="panel-approvals" role="tabpanel" aria-labelledby="tab-approvals" tabindex="0">
         <div class="toolbar">
           <div class="field">
@@ -52,9 +64,13 @@
         <p id="approvals-result" class="flash" role="status" hidden></p>
         <p id="approvals-error" class="error-line" role="alert" hidden></p>
         <p id="approvals-empty" class="empty" hidden>승인을 기다리는 요청이 없습니다.</p>
+        <!-- 승인 카드(승인 번호, 상태, 주문, 고객, 환불 예정액, 메모 입력, 승인·반려 버튼)는 admin.js가 -->
+        <!-- 그린다. -->
         <div id="approvals" class="cards"></div>
       </section>
 
+      <!-- 상담 기록. 최근 세션 50건(서버 ChatService.sessions의 기본 한도) 목록과 고른 세션의 대화·감사 -->
+      <!-- 로그 표. 넓은 화면(900px 이상)에서는 둘이 나란히 놓인다(style.css .split). -->
       <section id="panel-sessions" role="tabpanel" aria-labelledby="tab-sessions" tabindex="0" hidden>
         <div class="toolbar">
           <button type="button" id="sessions-refresh" class="btn">새로 고침</button>
@@ -74,6 +90,8 @@
             <ul id="detail-chips" class="chips"></ul>
             <h3>감사 로그</h3>
             <div class="table-wrap">
+              <!-- 감사 로그 표: 시각(KST로 표시), 종류(customer_message, llm_call, tool_call 등), -->
+              <!-- 내용(JSON 그대로). -->
               <table class="audit">
                 <thead>
                   <tr><th scope="col">시각</th><th scope="col">종류</th><th scope="col">내용</th></tr>

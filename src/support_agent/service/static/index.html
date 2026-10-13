@@ -1,14 +1,23 @@
 <!doctype html>
 <html lang="ko">
+<!-- [파일 역할] 고객용 채팅 화면(GET /). 서버가 이 파일을 그대로 내보내고, 동작은 모두 /static/chat.js가 -->
+<!-- 맡는다. -->
+<!-- [구조] 상단 바(새 상담) → 대화 영역(체험 안내, 말풍선, 진행 표시, 승인 대기 칩) → 종료 안내 → 오류 줄 -->
+<!-- → 음성 막대(음성 모드에서만) → 입력창. -->
+<!-- [설계 이유] CSP가 인라인 스크립트를 막으므로(app.py의 SECURITY_HEADERS) 스크립트와 스타일은 모두 별도 -->
+<!-- 파일로 둔다. 화면의 글은 chat.js가 textContent로만 넣는다. -->
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- 시연용 페이지라 검색 엔진에 색인되지 않게 한다. -->
   <meta name="robots" content="noindex">
   <title>고객센터 상담</title>
   <link rel="stylesheet" href="/static/style.css">
+  <!-- defer: HTML을 다 읽은 뒤에 실행되므로 chat.js가 바로 요소를 id로 찾을 수 있다. -->
   <script src="/static/chat.js" defer></script>
 </head>
 <body class="page-chat">
+  <!-- 상단 바. "새 상담"은 지금 세션을 버리고 새 세션을 만든다(chat.js startSession). -->
   <header class="topbar">
     <h1>고객센터 상담</h1>
     <button type="button" id="new-session" class="btn">새 상담</button>
@@ -16,6 +25,8 @@
 
   <main class="chat">
     <div id="scroll" class="chat-scroll">
+      <!-- 체험 안내. 고정 시각은 서비스의 고정 시계(settings.py DEMO_NOW)와 같다. 시험해 볼 가상 고객 -->
+      <!-- 목록은 chat.js가 /static/demo.json을 읽어 채우고, 목록이 있을 때만 소개 문장을 보인다. -->
       <details class="hint" open>
         <summary>체험 안내</summary>
         <p>
@@ -26,15 +37,20 @@
         <ul id="demo-hints"></ul>
       </details>
 
+      <!-- 말풍선 목록. role="log"와 aria-live="polite"로 새 답이 붙을 때 화면 낭독기가 읽어 준다. -->
       <div id="messages" class="messages" role="log" aria-live="polite" aria-label="대화 내용"></div>
+      <!-- 진행 표시("답변 작성 중…", "주문 조회 중…"). SSE의 status·tool 이벤트로 바뀐다. -->
       <p id="progress" class="progress" role="status" hidden></p>
+      <!-- 담당자 승인을 기다리는 요청(승인 번호, 환불 예정 금액)을 칩으로 보인다. -->
       <ul id="chips" class="chips" aria-label="승인 대기 중인 요청"></ul>
     </div>
 
+    <!-- 세션이 상담원 연결(handoff)이나 한도로 닫혔을 때만 나타나는 종료 안내와 새 상담 버튼. -->
     <div id="notice" class="notice" hidden>
       <span id="notice-text"></span>
       <button type="button" id="notice-new" class="btn btn-primary">새 상담 시작</button>
     </div>
+    <!-- 오류 줄. role="alert"라 나타나면 바로 낭독된다. -->
     <p id="error" class="error-line" role="alert" hidden></p>
 
     <!-- Voice: chat.js shows this bar and the microphone button only when /healthz reports voice. -->
@@ -44,18 +60,22 @@
         <label for="speak-replies">답변을 음성으로 듣기</label>
       </span>
       <button type="button" id="speak-stop" class="btn btn-small" aria-label="음성 재생 멈춤" hidden>■ 멈춤</button>
+      <!-- 녹음 중 상태(경과 시간)와 녹음 취소 버튼. 녹음 중에만 보인다. -->
       <span class="rec-panel">
         <span id="rec-status" class="rec-status" hidden></span>
         <button type="button" id="rec-cancel" class="btn btn-small" hidden>취소 (Esc)</button>
       </span>
     </div>
 
+    <!-- 입력창. 세션을 불러오기 전에는 비활성이고, Enter는 보내기, Shift+Enter는 줄바꿈이다. 글자 수 -->
+    <!-- 표시는 800자부터 보이고 1,000자(서버 기본 한도)를 넘으면 보내기가 막힌다. -->
     <form id="composer" class="composer" autocomplete="off">
       <label for="input" class="sr-only">메시지 입력</label>
       <textarea id="input" rows="2" placeholder="메시지를 입력하세요 (Enter 전송, Shift+Enter 줄바꿈)" disabled></textarea>
       <div class="composer-side">
         <span id="counter" class="counter" aria-live="polite" hidden></span>
         <div class="composer-buttons">
+          <!-- 말하기 버튼. 서버가 음성 모드일 때만 보인다(/healthz의 voice). -->
           <button type="button" id="mic" class="btn" aria-label="음성으로 말하기" hidden disabled>말하기</button>
           <button type="submit" id="send" class="btn btn-primary" disabled>보내기</button>
         </div>

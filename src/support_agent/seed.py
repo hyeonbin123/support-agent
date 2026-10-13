@@ -4,8 +4,24 @@ Everything is derived from one random.Random(SEED) instance and explicit timesta
 the same state hash. Build once with build_seed_engine(), copy per episode with db.memory_engine(seed).
 """
 
+# [파일 역할] 평가와 서비스가 쓰는 가상 쇼핑몰의 seed DB를 만든다. 두 종류의 행이 있다. (1) 고정 seed 난수로
+# 만든 배경 행(고객 40, 상품 25, 주문 120, 반품·교환, 쿠폰, 티켓)과 (2) 과제가 실제로 가리키는 손으로 쓴 고정
+# 행(fixtures)이다. 스모크 과제용 고정 행은 이 파일에, 개발용·시험용은 fixtures_dev.py·fixtures_test.py에
+# 있다.
+# [설계 이유] 모든 값을 random.Random(SEED) 하나와 명시한 시각에서 만들므로 두 번 만들어도 상태 해시가 같다.
+# 그래서 manifest의 seed_hash로 두 실행이 같은 DB에서 시작했는지 확인할 수 있다. 시각·uuid·모듈 수준 random을
+# 쓰지 않는 것은 tests/test_seed.py가 소스를 검사해 지킨다. 과제는 고정 행만 참조하고, 배경 행은 과제가 직접
+# 가리키지 않는 배경이다(docs/design.md 과제용 고정 행).
+# [흐름] build_seed_engine: 배경 고객 → 상품 → 주문(결제·배송 포함) → 반품·교환 → 쿠폰 → 티켓 → 스모크 고정 행
+# → 개발용·시험용 고정 행 → 메모리 SQLite에 외래 키 순서대로 넣기.
+# [연결] run.py·analyze.py·voice_real.py·service/bootstrap.py가 build_seed_engine을 부르고(서비스는 이것을
+# PostgreSQL로 복사), 에피소드마다 db.memory_engine으로 복사해 쓴다. fixtures_dev.py·fixtures_test.py는
+# Rows·kst·new_order 등 이 파일의 도우미를 쓴다.
+
 from __future__ import annotations
 
+# functools.lru_cache: seed DB를 프로세스에서 한 번만 만든다. random: 모듈 수준 함수가 아니라 Random(SEED)
+# 인스턴스 하나만 쓴다.
 import functools
 import random
 from datetime import date, datetime, timedelta
@@ -16,13 +32,19 @@ from sqlalchemy.orm import Session
 from support_agent import db
 from support_agent.clock import KST, kst_date
 
+# 배경 데이터의 고정 난수 seed와 시간 범위. 배경 행의 모든 시각은 2026-06-01 ~ 2026-09-10 23:59(KST) 안에
+# 있다. 과제의 now는 이 끝보다 뒤라 '수령 후 7일' 같은 규정이 과제 시각 기준으로 계산된다(docs/design.md
+# 과제용 고정 행).
 SEED = 20260919
 BULK_START = datetime(2026, 6, 1, 0, 0, tzinfo=KST)
 SEED_END = datetime(2026, 9, 10, 23, 59, tzinfo=KST)  # no generated row has a datetime after this
 
+# 스모크 과제용 고정 고객·주문 id. tests/test_seed.py가 이 행들이 docs/design.md의 표와 같은지 검사한다.
 FIXTURE_CUSTOMER_IDS = ("C-9001", "C-9002", "C-9003", "C-9004", "C-9005")
 FIXTURE_ORDER_IDS = ("O-90001", "O-90002", "O-90003", "O-90004", "O-90005", "O-90006")
 
+# 배경 행 수와 금액 규칙. 상품 합계 30,000원 이상이면 배송비 무료, 아니면 3,000원. 반품 배송비 3,000원은
+# rules.RETURN_FEE_WON과 같은 값이다.
 N_CUSTOMERS = 40
 N_ORDERS = 120
 N_REQUESTS = 8
@@ -32,6 +54,8 @@ FREE_SHIPPING_FROM_WON = 30000
 SHIPPING_FEE_WON = 3000
 RETURN_FEE_WON = 3000
 
+# 가상 이름 재료. 배경 고객 이름은 성 + 이름을 무작위로 조합하되, 스모크 고정 고객의 이름(FIXTURE_NAMES)과는
+# 겹치지 않게 다시 뽑는다.
 SURNAMES = ("김", "이", "박", "최", "정", "강", "조", "윤", "장", "임", "한", "오", "서", "신", "권", "황")
 GIVEN_NAMES = (
     "민준", "서준", "도현", "시우", "주원", "지호", "건우", "우진", "선우", "현우",
@@ -40,12 +64,15 @@ GIVEN_NAMES = (
 )  # fmt: skip
 FIXTURE_NAMES = frozenset({"김하준", "이서연", "박도윤", "최지우", "정예준"})
 
+# 가상 주소·택배사 이름. 실제 지명·회사 이름을 쓰지 않는다(tests/test_seed.py가 실제 회사 이름이 없는지 검사).
 CITIES = ("가온시", "누리시", "다솜시", "라온시", "마루시")
 DISTRICTS = ("한빛구", "새별구", "푸른구", "은하구", "솔내구", "달빛구")
 ROADS = ("가상로", "새싹길", "너울로", "도담길", "미르로", "소담길", "아름로", "하늘길")
 ADDRESS_LABELS = ("집", "회사", "부모님 댁")
 CARRIERS = ("한빛택배", "새벽택배", "나래택배", "두루택배")
 
+# 배경 상품 25개와 옵션별 가격. 상품마다 옵션이 둘 이상이라 배경 교환 요청(_bulk_requests)이 같은 상품의 다른
+# 옵션을 고를 수 있다.
 # (name, category, ((option_label, price_won), ...))
 PRODUCTS = (
     ("블루투스 키보드", "전자기기", (("블랙", 32900), ("화이트", 32900))),
@@ -75,6 +102,7 @@ PRODUCTS = (
     ("수면 안대", "생활용품", (("그레이", 6400), ("네이비", 6400))),
 )  # fmt: skip
 
+# 배경 티켓의 분류별 본문 예. 티켓 본문은 판정 비교에서 빠지는 자유 글이다.
 TICKET_BODIES = {
     db.TicketCategory.DELIVERY: ("배송이 언제 오는지 문의", "부재 시 문 앞에 놓아 달라는 요청"),
     db.TicketCategory.REFUND: ("환불 입금 시점 문의", "환불 금액 확인 요청"),
@@ -88,19 +116,26 @@ _HOUR = timedelta(hours=1)
 _DAY = timedelta(days=1)
 
 
+# start~end(양 끝 포함) 사이에서 분 단위로 떨어지는 시각을 고른다.
 def _between(rng: random.Random, start: datetime, end: datetime) -> datetime:
     """A whole-minute time in [start, end]."""
     return start + rng.randrange((end - start) // _MINUTE + 1) * _MINUTE
 
 
+# 2026년의 KST 시각을 짧게 쓰는 도우미. 고정 행 표를 읽기 쉽게 한다.
 def kst(month: int, day: int, hour: int, minute: int) -> datetime:
     return datetime(2026, month, day, hour, minute, tzinfo=KST)
 
 
+# 상품 합계에 따른 배송비(30,000원 이상 무료).
 def shipping_fee(items_won: int) -> int:
     return 0 if items_won >= FREE_SHIPPING_FROM_WON else SHIPPING_FEE_WON
 
 
+# 주문 한 건과 주문 줄들을 만든다. 합계(items_won), 배송비, 총액(= 합계 + 배송비 − 할인)과
+# 주소·상품명·옵션명의 복사본(snapshot)을 원본 행에서 계산해 넣어, 손으로 쓴 고정 행에서도 금액이 서로
+# 어긋나지 않게 한다. 취소된 주문이면 모든 줄도 cancelled로 둔다.
+# 호출 위치: 이 파일의 배경 주문·고정 주문, fixtures_dev.py, fixtures_test.py.
 def new_order(
     order_id: str,
     customer_id: str,
@@ -148,6 +183,8 @@ def new_order(
     return order, items
 
 
+# 만든 행을 테이블별로 모아 두는 그릇. 행을 다 만든 뒤 외래 키 순서(고객 → 주소 → 상품 → 옵션 → 주문 →
+# 줄·결제·배송 → 요청 → 요청 줄 → 쿠폰·티켓)대로 넣는다. 고정 행 모듈들도 같은 그릇에 행을 더한다.
 class Rows:
     """Rows grouped by table, flushed in foreign-key order."""
 
@@ -179,6 +216,9 @@ class Rows:
         ]
 
 
+# 배경 고객 40명과 주소. 전화번호는 01000001000~01000008999에서 겹치지 않게 뽑는다(고정 고객은 9001 이후를
+# 쓴다). 이메일은 user0001@example.com 형식이다. 15%는 VIP, 주소는 1~3개(첫 주소가 기본, 셋째 주소는 다른
+# 수령인)이다.
 def _bulk_customers(rng: random.Random, rows: Rows) -> None:
     phones = rng.sample(range(1000, 9000), N_CUSTOMERS)  # fixtures use 9001..9005
     for i in range(1, N_CUSTOMERS + 1):
@@ -212,6 +252,7 @@ def _bulk_customers(rng: random.Random, rows: Rows) -> None:
             )
 
 
+# 배경 상품과 옵션. 옵션의 약 10%는 재고 0이라 교환 도구의 out_of_stock 검사가 걸릴 수 있다.
 def _bulk_products(rng: random.Random, rows: Rows) -> None:
     for i, (name, category, options) in enumerate(PRODUCTS, start=1):
         rows.products.append(db.Product(id=f"P-{i:04d}", name=name, category=category))
@@ -228,6 +269,7 @@ def _bulk_products(rng: random.Random, rows: Rows) -> None:
             )
 
 
+# 배경 주문 상태의 비율: 배송완료 60, 취소 12, 배송중 10, 배송준비 9, 결제완료 9.
 _STATUS_WEIGHTS = (
     (db.OrderStatus.DELIVERED, 60),
     (db.OrderStatus.CANCELLED, 12),
@@ -237,6 +279,8 @@ _STATUS_WEIGHTS = (
 )
 
 
+# 주문 상태에 맞는 주문 시각을 고른다. 그 상태의 뒤 사건(출고, 수령, 취소)이 SEED_END 안에 들어가도록 상태별로
+# 범위를 정한다. 예: 배송완료는 SEED_END 6일 전까지, 결제완료는 마지막 하루 안.
 def _ordered_at(rng: random.Random, status: db.OrderStatus, joined_at: datetime) -> datetime:
     """Early enough that every later event of this status still fits before SEED_END."""
     if status == db.OrderStatus.DELIVERED:
@@ -250,6 +294,7 @@ def _ordered_at(rng: random.Random, status: db.OrderStatus, joined_at: datetime)
     return _between(rng, SEED_END - _DAY, SEED_END - _HOUR)
 
 
+# 배경 주문 120건과 그 결제·배송, 할인에 쓰인 프로모션 쿠폰을 만든다.
 def _bulk_orders(rng: random.Random, rows: Rows) -> None:
     products = {p.id: p for p in rows.products}
     addresses: dict[str, list[db.CustomerAddress]] = {}
@@ -258,6 +303,8 @@ def _bulk_orders(rng: random.Random, rows: Rows) -> None:
     statuses = [status for status, _ in _STATUS_WEIGHTS]
     weights = [weight for _, weight in _STATUS_WEIGHTS]
 
+    # 먼저 (주문 시각, 고객, 상태)를 모두 정하고 시각순으로 정렬한 뒤 O-10001부터 번호를 매긴다. 그래서 주문
+    # 번호가 시간 순서와 같다.
     plans = []
     for _ in range(N_ORDERS):
         customer = rng.choice(rows.customers)
@@ -269,10 +316,13 @@ def _bulk_orders(rng: random.Random, rows: Rows) -> None:
     promo_count: dict[str, int] = {}
     for number, (ordered_at, customer_id, status) in enumerate(plans, start=10001):
         order_id = f"O-{number}"
+        # 주문당 상품 1~3종(60/30/10%), 종마다 수량 1~2개(80/20%).
         variants = rng.sample(rows.variants, rng.choices((1, 2, 3), (60, 30, 10))[0])
         lines = [(products[v.product_id], v, rng.choices((1, 2), (80, 20))[0]) for v in variants]
         items_won = sum(v.price_won * qty for _, v, qty in lines)
 
+        # 할인은 SEED_END 30일 이전 주문의 20%에만, 상품 합계의 절반 이하 금액으로 준다. 그 할인에 쓰인
+        # 프로모션 쿠폰(사용됨) 행을 함께 만들어, 할인이 근거 없이 생기지 않게 한다.
         # A discount always comes from a promo coupon that expired (or was used) before SEED_END.
         discount = 0
         if ordered_at <= SEED_END - 30 * _DAY and rng.random() < 0.2:
@@ -295,6 +345,7 @@ def _bulk_orders(rng: random.Random, rows: Rows) -> None:
                     )
                 )
 
+        # 취소 주문은 주문 뒤 10분~20시간 사이에 취소되고, 사유는 무작위다.
         cancelled = status == db.OrderStatus.CANCELLED
         cancelled_at = ordered_at + rng.randrange(10, 20 * 60) * _MINUTE if cancelled else None
         order, items = new_order(
@@ -311,6 +362,8 @@ def _bulk_orders(rng: random.Random, rows: Rows) -> None:
         rows.orders.append(order)
         rows.items.extend(items)
 
+        # 결제 상태: 취소가 아니면 결제완료, 취소된 지 5일이 넘었으면 환불완료, 아니면 환불진행중. 취소면
+        # 환불액은 결제 금액 전액이다(docs/design.md 금액 규칙의 취소 환불액과 같다).
         if not cancelled:
             pay_status = db.PaymentStatus.PAID
         elif cancelled_at <= SEED_END - 5 * _DAY:
@@ -328,6 +381,10 @@ def _bulk_orders(rng: random.Random, rows: Rows) -> None:
             )
         )
 
+        # 배송: 배송중·배송완료 주문은 주문 18~47시간 뒤 출고, 배송완료는 출고 20~72시간 뒤 수령. 도착
+        # 예정일은 주문일(KST) + 3일이라, 그보다 늦게 수령한 주문은 지연 보상 쿠폰의 대상이 된다. 송장 번호
+        # 앞자리는 5549 이하라, 5550·5551·5552로 시작하는 스모크·개발용·시험용 고정 행의 송장 번호와 겹치지
+        # 않는다.
         shipped_at = delivered_at = None
         ship_status = db.ShipmentStatus.READY
         if status in (db.OrderStatus.SHIPPED, db.OrderStatus.DELIVERED):
@@ -349,6 +406,8 @@ def _bulk_orders(rng: random.Random, rows: Rows) -> None:
         )
 
 
+# 배경 반품·교환 요청 8건. 할인이 없는 배송완료 주문에서만 고른다. 앞 5건은 반품, 뒤 3건은 다른 옵션의 재고가
+# 있으면 교환이다. 요청 id는 도구와 같은 규칙(RT-주문-가장 작은 줄 번호, EX-주문-줄 번호)으로 만든다.
 def _bulk_requests(rng: random.Random, rows: Rows) -> None:
     """A few returns and exchanges on delivered orders; at most one request per order."""
     shipments = {s.order_id: s for s in rows.shipments}
@@ -360,6 +419,7 @@ def _bulk_requests(rng: random.Random, rows: Rows) -> None:
 
     for index, order in enumerate(rng.sample(candidates, N_REQUESTS)):
         delivered_at = shipments[order.id].delivered_at
+        # 접수 시각은 수령 1시간 뒤부터 수령 5일 뒤(또는 SEED_END)까지라 반품 기한(7일) 안이다.
         latest = min(delivered_at + 5 * _DAY, SEED_END)
         created_at = _between(rng, delivered_at + _HOUR, latest)
         reason = rng.choice(list(db.RequestReason))
@@ -384,6 +444,8 @@ def _bulk_requests(rng: random.Random, rows: Rows) -> None:
             request_id = f"EX-{order.id}-{line.line_no}"
             kind, refund, chosen = db.RequestKind.EXCHANGE, 0, [(line, new_variant.id)]
         else:
+            # 반품은 주문 줄 중 1개 이상을 골라 한 요청으로 접수한다. 환불액 = Σ(단가 × 수량) − 반품 배송비로
+            # rules.return_refund_won과 같은 계산이다.
             picked = sorted(rng.sample(lines, rng.randrange(1, len(lines) + 1)), key=lambda it: it.line_no)
             for line in picked:
                 line.status = db.ItemStatus.RETURN_REQUESTED
@@ -413,6 +475,8 @@ def _bulk_requests(rng: random.Random, rows: Rows) -> None:
             )
 
 
+# 배경 쿠폰. 먼저 규정상 자격이 있는 곳에 보상 쿠폰을 주고(불량 요청이 있는 주문, 늦게 수령한 주문 중 4건),
+# 나머지는 사용하지 않은 프로모션 쿠폰으로 30장까지 채운다.
 def _bulk_coupons(rng: random.Random, rows: Rows) -> None:
     """Compensation coupons where the rule allows one, then unused promo coupons up to N_COUPONS.
 
@@ -420,6 +484,8 @@ def _bulk_coupons(rng: random.Random, rows: Rows) -> None:
     """
     shipments = {s.order_id: s for s in rows.shipments}
     orders = {o.id: o for o in rows.orders}
+    # 보상 쿠폰은 근거 사건이 SEED_END 31일 전 이전인 것만 준다. 발급은 근거 뒤 하루 안이라 만료(발급 +
+    # 30일)가 SEED_END를 넘지 않는다.
     limit = SEED_END - 31 * _DAY
     grants: list[tuple[db.Order, db.CompensationReason, int, datetime]] = []
     for request in rows.requests:
@@ -430,12 +496,14 @@ def _bulk_coupons(rng: random.Random, rows: Rows) -> None:
     for order in rows.orders:
         shipment = shipments[order.id]
         if shipment.delivered_at is not None and shipment.delivered_at <= limit:
+            # 늦은 일수와 금액은 rules.py와 같은 규칙이다(1~2일 2,000원, 3일 이상 5,000원).
             days_late = (kst_date(shipment.delivered_at) - shipment.promised_by).days
             if days_late >= 1:
                 late.append((order, 2000 if days_late <= 2 else 5000, shipment.delivered_at))
     for order, amount, delivered_at in rng.sample(late, min(4, len(late))):
         grants.append((order, db.CompensationReason.DELIVERY_DELAY, amount, delivered_at))
 
+    # 고객당 보상 쿠폰 1장만 준다. 그러면 '주문당 1장, 30일에 2장' 한도가 배경 데이터에서 저절로 지켜진다.
     seen_customers: set[str] = set()
     for order, reason, amount, base in grants:
         if order.customer_id in seen_customers:  # keeps "one per order, two per 30 days" trivially true
@@ -460,6 +528,8 @@ def _bulk_coupons(rng: random.Random, rows: Rows) -> None:
     for coupon in rows.coupons:
         if coupon.kind == db.CouponKind.PROMO:
             promo_count[coupon.customer_id] = promo_count.get(coupon.customer_id, 0) + 1
+    # 남은 수는 쓰지 않은 프로모션 쿠폰(유효 14일 또는 30일)으로 채운다. 만료가 SEED_END를 넘지 않게 발급
+    # 시각을 고른다. id는 CP-고객-P순번이다.
     while len(rows.coupons) < N_COUPONS:
         customer = rng.choice(rows.customers)
         valid_days = rng.choice((14, 30))
@@ -480,6 +550,8 @@ def _bulk_coupons(rng: random.Random, rows: Rows) -> None:
         )
 
 
+# 배경 상담 티켓 15건. 70%는 그 고객의 주문 하나에 묶고, 접수 시각은 주문(또는 가입) 뒤 3일 안이다. id는
+# 도구와 같은 TK-고객-순번이다.
 def _bulk_tickets(rng: random.Random, rows: Rows) -> None:
     orders: dict[str, list[db.Order]] = {}
     for order in rows.orders:
@@ -504,6 +576,10 @@ def _bulk_tickets(rng: random.Random, rows: Rows) -> None:
         )
 
 
+# 스모크 과제 5개가 가리키는 고정 행. 난수 없이 손으로 쓴 값이고 docs/design.md '과제용 고정 행' 표와
+# 같다(C-9001~C-9005, O-90001~O-90006). 주문마다 스모크 과제의 상황이 하나씩 있다: 배송중 주문의 송장
+# 조회(O-90001), 이미 취소된 주문의 환불액 조회(O-90002), 결제완료 주문 취소(O-90003), 기한이 지난 반품
+# 거절(O-90004), 한 고객의 배송지 변경과 취소(O-90005, O-90006).
 # --- fixtures: the rows tasks refer to (docs/design.md). Hand-written, no random numbers. ---
 
 # (customer_id, name, phone, email, joined_at, ((label, postal_code, address), ...))
@@ -521,6 +597,8 @@ _FIXTURE_CUSTOMERS = (
       ("회사", "50852", "마루시 달빛구 소담길 5, 가상빌딩 8층"))),
 )  # fmt: skip
 
+# 고정 상품. 배경 상품과 따로 두어 배경 주문이 이 상품의 재고를 건드리지 않는다. 옵션이 둘 이상이고 재고가
+# 있어 교환 과제에 쓸 수 있다.
 # (product_id, name, category, ((option_label, price_won, stock), ...)); variant ids are V-900n-01, -02, ...
 _FIXTURE_PRODUCTS = (
     ("P-9001", "무선 이어폰", "전자기기", (("블랙", 38900, 12), ("화이트", 38900, 8))),
@@ -535,6 +613,8 @@ _FIXTURE_PRODUCTS = (
 _CARD = db.PaymentMethod.CARD
 _SIMPLE_PAY = db.PaymentMethod.SIMPLE_PAY
 
+# 예: O-90004는 9월 2일 14:20 수령이라 반품 기한이 9월 9일이고, 스모크 과제의 now(9월 14일)에는 기한이 지났다.
+# O-90001은 도착 예정 9월 15일인 배송중 주문이다.
 # order_id: customer, status, ordered_at, address, variant, quantity, payment method, tracking number,
 # shipped_at, delivered_at, promised_by
 _FIXTURE_ORDERS = (
@@ -554,6 +634,9 @@ _FIXTURE_ORDERS = (
 _FIXTURE_CANCELLED_AT = kst(9, 11, 9, 5)  # O-90002
 
 
+# 스모크 고정 행을 Rows에 더한다. 고객(기본 등급, 첫 주소가 기본 배송지) → 상품·옵션(V-900n-0m) →
+# 주문·결제·배송 순서다. 결제는 주문 2분 뒤, 취소 주문은 환불진행중이다. 배송 상태는 수령·출고 시각이 있는지로
+# 정한다.
 def _fixtures(rows: Rows) -> None:
     addresses: dict[str, db.CustomerAddress] = {}
     for customer_id, name, phone, email, joined_at, places in _FIXTURE_CUSTOMERS:
@@ -653,6 +736,9 @@ def _fixtures(rows: Rows) -> None:
         )
 
 
+# seed DB를 만들어 돌려준다. lru_cache로 프로세스에서 한 번만 만들고 같은 엔진을 공유하므로, 절대 직접 쓰지
+# 말고 db.memory_engine(...)으로 복사해 쓴다. 테스트는 __wrapped__로 캐시 없이 두 번 만들어 해시가 같은지
+# 확인한다.
 @functools.lru_cache(maxsize=1)
 def build_seed_engine() -> Engine:
     """The seed database, built once per process. Never write to it: copy it with db.memory_engine(...)."""
@@ -665,6 +751,8 @@ def build_seed_engine() -> Engine:
     _bulk_coupons(rng, rows)
     _bulk_tickets(rng, rows)
     _fixtures(rows)
+    # 개발용·시험용 고정 행은 배경과 스모크 행 뒤에 더한다. 두 모듈이 이 파일의 도우미를 가져가므로 순환
+    # import를 피하려고 함수 안에서 가져온다.
     # Rows that the dev and test tasks refer to. Imported here because those modules use this one's helpers.
     from support_agent import fixtures_dev, fixtures_test
 
@@ -673,6 +761,7 @@ def build_seed_engine() -> Engine:
 
     engine = db.memory_engine()
     db.Base.metadata.create_all(engine)
+    # 그룹마다 add_all 뒤 flush해 부모 행이 먼저 들어가게 한다(SQLite 외래 키 검사가 켜져 있다).
     with Session(engine) as session:
         for group in rows.groups():
             session.add_all(group)

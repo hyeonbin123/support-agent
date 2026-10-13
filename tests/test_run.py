@@ -1,9 +1,16 @@
+# [테스트 묶음] 실행기(run.py)의 요약(summary.json)과 에피소드 실행의 오류 처리를 확인한다: 성공·실패를 세는
+# 법, infra_error를 분모에서 빼는 법, 모델 이름을 폴더 이름으로 바꾸는 법.
+# [왜 중요한가] 판정 규칙에서 infra_error(제공자 오류, 도구 버그)는 에이전트의 실패가 아니라 분모에서 뺀다
+# (docs/design.md "에이전트 루프 규칙"). 이것이 틀리면 GPU·서버 문제가 성공률을 깎는다.
+
 from test_tasks import ALL_TASKS, CONTACTS, episode, say_values
 
 from support_agent import run
 from support_agent.chat import ScriptedProvider, ToolCall
 
 
+# 성공 1, 실패 2, infra_error 1인 결과에서 에피소드는 4개로 세되 과제별 성공은 1/3이고 pass^1 = 1/3, pass^3 =
+# 0이어야 한다. infra_error 시도는 분자에도 분모에도 들어가지 않는다.
 def test_summary_counts_successes_failures_and_leaves_infra_errors_out():
     task = next(t for t in ALL_TASKS if t.id == "smoke-action-01")
     name, contact = CONTACTS[task.customer_id]
@@ -20,6 +27,8 @@ def test_summary_counts_successes_failures_and_leaves_infra_errors_out():
     assert summary["pass_hat_k"][1] == 1 / 3 and summary["pass_hat_k"][3] == 0.0
 
 
+# 모델 호출이 제공자 오류(시간 초과)로 실패하면 run_episode가 예외로 죽지 않고 infra_error, 판정 없음(verdict
+# None), 오류 문구를 기록해야 한다. 실제 측정에서 Ollama가 멈추면 이렇게 기록되어 분모에서 빠진다.
 def test_a_script_that_runs_out_is_an_infra_error_not_a_task_failure():
     class Boom(ScriptedProvider):
         def chat(self, *args, **kwargs):
@@ -47,10 +56,14 @@ def test_a_script_that_runs_out_is_an_infra_error_not_a_task_failure():
     assert result.status == "infra_error" and result.verdict is None and "timeout" in result.error
 
 
+# 모델 이름의 ':' 같은 문자는 Windows 폴더 이름에 쓸 수 없으므로 실행 id를 만들 때 '-'로 바꾼다.
 def test_run_ids_are_safe_windows_folder_names():
     assert run.safe_name("qwen2.5:7b-instruct") == "qwen2.5-7b-instruct"
 
 
+# pass^k는 과제마다 유효한 시도 전부(그 과제의 n)로 C(c,k)/C(n,k)를 계산한다. 첫 시도 하나만 보면 0이 되는
+# 경우에도 2/3이 나와야 한다. 모든 시도가 infra_error인 과제는 표에서 조용히 사라지지 않고
+# tasks_without_valid_trials에 이름이 남는다.
 def test_pass_hat_k_uses_every_valid_trial_and_names_tasks_that_were_never_measured():
     task_a = next(t for t in ALL_TASKS if t.id == "smoke-action-01")
     task_b = next(t for t in ALL_TASKS if t.id == "smoke-lookup-01")

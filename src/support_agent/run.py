@@ -13,8 +13,25 @@ needs a clean working tree, and test task files also need --allow-test. The GPU 
 projects: the run refuses to start when something else holds GPU memory (see --force).
 """
 
+# [파일 역할] 평가 실행기 CLI. 과제 × 시도마다 에피소드를 돌려 episodes.jsonl에 한 줄씩 쓰고, 실행의 조건을
+# manifest.json에, 집계를 summary.json에 남긴다.
+# [설계 이유] 이 프로젝트의 측정 규칙(규칙을 먼저 커밋하고 재기, 시험용은 단계마다 한 번, 기록에서 수치를 다시
+# 계산)을 실행기 자체가 지키게 한다.
+# - --official은 작업 트리가 깨끗해야 하고 reports/에 쓴다(커밋 대상). 기록의 커밋 해시가 실제로 돈 코드를
+#   가리키게 하려는 것이다.
+# - 시험용 과제 파일은 --allow-test 없이는 돌지 않는다.
+# - manifest에 커밋, 설정, 모델 digest, Ollama 버전, 프롬프트·도구·과제·seed DB 해시를 남겨, analyze
+#   same-setup이 두 실행을 짝지어도 되는지 확인할 수 있게 한다(README 다시 재는 방법).
+# - GPU를 다른 프로젝트와 나눠 쓰므로 Ollama가 아닌 것이 GPU 메모리를 3 GB 넘게 쓰고 있으면 시작하지 않는다.
+# - 모델 없이 실패할 수 있는 일(과제 로드, 정답 재실행)은 모델을 올리기 전에 모두 해서, 몇 시간의 GPU 시간을
+#   쓴 뒤에 실패하지 않게 한다.
+# [흐름] 인자 확인 → RunConfig → 제공자 준비 → GPU 확인 → 도구·seed·정답 덤프 → 음성 채널 → 모델 적재 →
+# run_id·폴더 → manifest·seed 덤프 → _run_all → summary(Ctrl+C나 오류에도 finally로 씀).
+
 from __future__ import annotations
 
+# subprocess: git(커밋 해시, 작업 트리 상태)과 nvidia-smi(GPU 메모리)를 부른다. importlib.metadata.version:
+# 주요 패키지 버전을 manifest에 남긴다.
 import argparse
 import hashlib
 import json
@@ -26,6 +43,9 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
+# 실행에 필요한 내부 모듈 전부: DB 덤프·해시(db), 프롬프트와 도구 목록(agent), 설정(config), R2 미리보기
+# 코드(confirm), 에피소드(episode), pass^k(judge), Ollama 제공자, 경로(paths), 기록(records), seed DB(seed),
+# 과제(tasks), 도구 등록부(tools), 시뮬레이터(user_sim), 음성 패키지 버전(voice.speech).
 from support_agent import db
 from support_agent.agent import build_system_prompt, load_policy, visible_tools
 from support_agent.config import RunConfig
@@ -41,10 +61,15 @@ from support_agent.tools import NAME_TOLERANCE, build_registry
 from support_agent.user_sim import LLMUser, build_user_prompt
 from support_agent.voice.speech import versions as speech_versions
 
+# infra_error가 3번 잇달아 나면 모델 서버가 죽었다고 보고 멈춘다. 나머지 과제를 모두 infra_error로 태우지 않게
+# 하려는 것이다. GPU 한도 3,000 MiB는 데스크톱 앱이 쓰는 1~2 GiB보다 크면 다른 작업(다른 프로젝트의
+# 학습·측정)이 돈다고 보는 기준이다.
 MAX_CONSECUTIVE_INFRA_ERRORS = 3  # the model server is probably down: stop instead of burning the task list
 OTHER_GPU_USE_LIMIT_MIB = 3000  # desktop apps take 1-2 GiB; more than this means another job is running
 
 
+# 저장소 루트에서 git 명령을 돌려 출력을 돌려준다. git이 없거나 실패하면 빈 문자열(그러면 --official은
+# 거부된다).
 def _git(*args: str) -> str:
     try:
         return subprocess.run(
@@ -54,6 +79,8 @@ def _git(*args: str) -> str:
         return ""
 
 
+# nvidia-smi로 첫 GPU의 사용 중인 메모리(MiB)를 읽는다. nvidia-smi가 없거나 20초 안에 답하지 않으면
+# None(검사를 건너뜀).
 def gpu_memory_used_mib() -> int | None:
     try:
         out = subprocess.run(
@@ -68,6 +95,8 @@ def gpu_memory_used_mib() -> int | None:
         return None
 
 
+# Ollama가 아닌 것이 쓰는 GPU 메모리 = 전체 사용량 − Ollama가 보고한 모델별 GPU 적재량(size_vram).
+# Windows에서는 프로세스별 조회가 쓸모없어 이렇게 뺀다(docstring).
 def gpu_used_by_others_mib(provider: OllamaProvider) -> int | None:
     """GPU memory held by anything but Ollama. `nvidia-smi --query-compute-apps` is useless on Windows
     (it lists every desktop app), so this subtracts what Ollama reports from the total in use."""
@@ -78,12 +107,16 @@ def gpu_used_by_others_mib(provider: OllamaProvider) -> int | None:
     return max(used - ollama_mib, 0)
 
 
+# 서버가 지금 메모리에 들고 있는 모델 목록. manifest(적재 직후)와 summary(끝날 때)에 남겨, 실행 중 모델이
+# 내려가거나 CPU로 옮겨졌는지 기록으로 확인한다. loaded_models가 없는 제공자는 빈 목록이다.
 def ollama_ps(provider: OllamaProvider) -> list[dict[str, Any]]:
     """What the server holds in memory (name, size, size_vram); [] for providers that cannot say."""
     loaded = getattr(provider, "loaded_models", None)
     return loaded() if callable(loaded) else []
 
 
+# 글의 sha256. manifest의 프롬프트·도구 해시에 쓴다. safe_name은 모델 이름·라벨을 폴더 이름에 쓸 수 있는
+# 글자로 바꾼다(qwen2.5:7b-instruct → qwen2.5-7b-instruct).
 def text_sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -92,6 +125,11 @@ def safe_name(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", text).strip("-")
 
 
+# 실행 결과를 summary.json용으로 집계한다. infra_error는 분모에서 빼고(counted), 모든 시도가 infra_error인
+# 과제는 표에서 조용히 사라지지 않게 따로 적는다.
+# 형식 오류 수에서 멈춤(stall)과 근거 없는 완료 주장(unbacked_claim)은 뺀다. 둘은 형식이 맞는 답을 돌려보낸
+# 것이라 따로 세고, analyze table과 같은 기준이다(docs/experiments.md 7단계 코드 검토 뒤에 고친 것). 시간 값은
+# 에피소드당 시간, 에이전트 호출당 시간, 모델 적재 시간 등이다.
 def summarise(results: list[EpisodeResult]) -> dict[str, Any]:
     counted = [r for r in results if r.status != "infra_error"]
     by_task: dict[str, list[bool]] = {}
@@ -141,6 +179,10 @@ def summarise(results: list[EpisodeResult]) -> dict[str, Any]:
     }
 
 
+# 음성 조건(V1·V2·V4)의 음성 채널을 만든다. 음성 패키지(MeloTTS, faster-whisper)는 선택 의존성 그룹 voice에만
+# 있으므로 함수 안에서 가져온다. 그래서 텍스트 실행과 테스트는 그 패키지 없이 돈다.
+# V2·V4는 인식 결과를 규칙 기반 정규화기에 거친다. V4는 듣는 방식이 V2와 같고 본인 확인 방법만 다르다.
+# 합성·인식 결과는 outputs/voice-cache에 캐시한다.
 def build_channel(config: RunConfig, tts_device: str, stt_device: str):
     """The speech channel of V1/V2/V4 (needs the `voice` dependency group), or None for text."""
     if config.voice == "V0":
@@ -160,6 +202,8 @@ def build_channel(config: RunConfig, tts_device: str, stt_device: str):
     )
 
 
+# 명령줄 진입점. 옵션 이름은 실험 축 이름과 같다(--policy P1, --reasoning R1 …). README '다시 재는 방법'에
+# 단계별 옵션이 있다.
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--tasks", default="smoke", help="task file name in tasks/ (without .yaml) or a path")
@@ -228,8 +272,11 @@ def main() -> None:
     parser.add_argument("--force", action="store_true", help="skip the check that the GPU is free")
     args = parser.parse_args()
 
+    # 시험용 과제는 단계가 끝날 때 고른 구성만 한 번 잰다. 실수로 시험용을 돌려 보는 것을 막는다.
     if "test" in Path(args.tasks).stem and not args.allow_test:
         parser.error("test tasks are measured once per stage; pass --allow-test when the stage is done")
+    # 작업 트리가 깨끗한지 볼 때 reports/는 뺀다. 앞선 공식 실행의 기록이 커밋을 기다리며 남아 있을 수 있고,
+    # 그것은 코드가 아니기 때문이다.
     commit = _git("rev-parse", "HEAD")
     # Records of earlier official runs wait in reports/ until they are committed; they are not code.
     dirty = bool(_git("status", "--porcelain", "--", ".", ":(exclude)reports"))
@@ -238,17 +285,23 @@ def main() -> None:
             "--official needs git and a clean working tree, so that the commit describes the code that ran"
         )
 
+    # 시뮬레이터 자리 옵션 정리. --user-on-cpu는 --user-num-gpu 0과 같다(2단계 M1: 14B가 GPU를 차지해
+    # 시뮬레이터를 CPU에서 돌림). --user-num-ctx를 안 주면 에이전트와 같은 컨텍스트를 쓴다.
     if args.user_on_cpu and args.user_num_gpu not in (None, 0):
         parser.error("--user-on-cpu means --user-num-gpu 0")
     user_num_gpu = 0 if args.user_on_cpu else args.user_num_gpu
     user_num_ctx = args.user_num_ctx or args.num_ctx
     user_model = args.user_model or RunConfig.user_model
+    # 두 역할이 같은 모델이면 실행기 옵션이 같아야 한다. Ollama는 모델마다 실행기를 하나 두므로, 옵션이 다르면
+    # 턴마다 모델을 다시 읽게 된다.
     if user_model == args.model and (user_num_ctx != args.num_ctx or user_num_gpu is not None):
         # Ollama keeps one runner per model; other runner options reload it, and here that is every turn.
         parser.error(
             "the agent and the simulator are the same model, so they need the same runner options: "
             "drop --user-num-ctx/--user-on-cpu/--user-num-gpu or use another simulator model"
         )
+    # think는 on/off를 줬을 때만 True/False로 보내고, 안 주면 None(요청에 넣지 않음)이다. 사고 모드가 없는
+    # 모델은 think 값을 거절한다.
     think = None if args.think is None else args.think == "on"
     user_think = None if args.user_think is None else args.user_think == "on"
 
@@ -264,6 +317,7 @@ def main() -> None:
         num_ctx=args.num_ctx,
         user_num_ctx=user_num_ctx,
     )
+    # 과제 파일을 읽고, --task-id가 있으면 그 과제만 남긴다. 모르는 id는 오류다.
     tasks = load_tasks(args.tasks)
     if args.task_id:
         unknown = sorted(set(args.task_id) - {t.id for t in tasks})
@@ -290,6 +344,8 @@ def main() -> None:
         )
     )
 
+    # 다른 작업이 GPU를 쓰고 있으면 시작하지 않는다. 같이 돌리면 두 쪽의 속도·메모리 수치가 모두 흔들린다.
+    # --force는 이 검사를 건너뛴다.
     others = gpu_used_by_others_mib(provider)
     if others is not None and others > OTHER_GPU_USE_LIMIT_MIB and not args.force:
         sys.exit(
@@ -297,6 +353,8 @@ def main() -> None:
             f"{OTHER_GPU_USE_LIMIT_MIB}). Another job is probably running; not starting (--force overrides)."
         )
 
+    # V4면 find_customer 대신 verify_caller가 든 등록부를 만든다. seed DB는 프로세스에서 한 번 만들어 읽기
+    # 전용으로 쓰고, 에피소드마다 복사한다.
     registry = build_registry(caller_id=config.caller_id)
     seed_engine = build_seed_engine()
     seed_dump = db.dump_db(seed_engine)
@@ -304,6 +362,7 @@ def main() -> None:
     # Everything that can fail without the model fails here, before hours of GPU time are spent.
     gold_dumps = {task.id: gold_dump_of(task, seed_engine, registry) for task in tasks}
     channel = build_channel(config, args.tts_device, args.stt_device)
+    # 측정 전에 모델을 올려 둔다. 첫 에피소드의 시간에 모델 적재 시간이 섞이지 않게 하려는 것이다.
     print(f"loading {config.model} ... {provider.preload() / 1000:.1f} s")
     if user_provider is not provider:
         print(f"loading {config.user_model} ... {user_provider.preload() / 1000:.1f} s")
@@ -316,6 +375,8 @@ def main() -> None:
             print(f"{config.model} was evicted by that load; loaded it again ... {seconds:.1f} s")
     if config.user_model != config.model:
         print("warning: two models take turns; if both do not fit in GPU memory every turn reloads one")
+    # run_id = 시작 시각(UTC) + 모델 + 축 코드 + 라벨. 음성 축은 채널이 있을 때만, C 축은 C0가 아닐 때만
+    # 넣는다. 이 실행기는 평가 하니스라 벽시계를 써도 된다(도구·seed·판정 코드만 시각을 읽지 않는다).
     started = datetime.now(UTC)
     run_id = "-".join(
         p
@@ -332,9 +393,13 @@ def main() -> None:
         ]
         if p
     )
+    # 공식 측정은 reports/, 그 밖은 outputs/runs/. 같은 이름의 폴더가 이미 있으면 덮어쓰지 않고 오류를 낸다.
     run_dir = (REPORTS if args.official else OUTPUTS / "runs") / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
 
+    # manifest: 이 실행을 다른 실행과 짝지어도 되는지 판단할 모든 조건. 프롬프트 해시는 첫 과제의 시각으로
+    # 만든 에이전트 시스템 프롬프트와 시뮬레이터 프롬프트, 규정 문서, 모델에게 보인 도구 목록의 해시다. V4면
+    # 발신 번호 확인의 이름 허용 오차도 남긴다.
     tools_json = json.dumps(visible_tools(registry, config), ensure_ascii=False, sort_keys=True)
     manifest: dict[str, Any] = {
         "run_id": run_id,
@@ -370,6 +435,8 @@ def main() -> None:
     (run_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n"
     )
+    # seed 덤프를 해시별로 한 번만 저장한다. seed 생성기가 나중에 바뀌어도 옛 기록을 그때의 seed로 다시 판정할
+    # 수 있게 하려는 것이다.
     # The seed dump is kept once per hash, so that old records can be re-judged after the generator changes.
     seed_file = (REPORTS if args.official else OUTPUTS) / "seeds" / f"{manifest['seed_hash'][:16]}.json"
     if not seed_file.exists():
@@ -378,6 +445,8 @@ def main() -> None:
 
     print(f"run {run_id}: {len(tasks)} tasks x {args.trials} trials -> {run_dir}")
     results: list[EpisodeResult] = []
+    # 실행 도중 Ctrl+C나 오류로 멈춰도 finally에서 그때까지의 summary를 쓴다. 끝날 때의 ollama ps도 남겨
+    # 모델이 쫓겨났거나 CPU로 옮겨졌는지 보이게 한다.
     try:
         _run_all(
             tasks,
@@ -403,6 +472,8 @@ def main() -> None:
         print(json.dumps(summary, ensure_ascii=False, indent=1))
 
 
+# 과제 × 시도를 차례로 돌린다. 에피소드마다 새 시뮬레이터(LLMUser)를 만들고, 결과를 한 줄씩 쓰고 바로 flush해,
+# 실행이 중간에 멈춰도 그때까지의 기록이 남는다. 진행 상황(PASS/fail/infra, 종료 사유, 시간)을 출력한다.
 def _run_all(
     tasks,
     trials,
@@ -441,6 +512,7 @@ def _run_all(
                 out.flush()
                 mark = "infra" if result.verdict is None else ("PASS" if result.verdict.success else "fail")
                 print(f"  {task.id} #{trial}: {mark:5} {result.termination:22} {result.wall_seconds:6.1f} s")
+                # infra_error 연속 횟수를 세고, 정상 에피소드가 나오면 0으로 되돌린다.
                 infra_streak = infra_streak + 1 if result.status == "infra_error" else 0
                 if infra_streak >= MAX_CONSECUTIVE_INFRA_ERRORS:
                     sys.exit(f"{infra_streak} infra errors in a row; stopping. Last: {result.error[:300]}")

@@ -6,6 +6,18 @@ Check order inside a handler: identity -> existence -> ownership -> integrity (`
 Nothing here reads the wall clock, uuid or random numbers: time is `ctx.now`, new ids come from content.
 """
 
+# [파일 역할] 가상 쇼핑몰 고객센터의 도구 14개(조회 6, 쓰기 7, think)와 음성 V4용 verify_caller를 정의한다. 각
+# 도구는 인자 모델(ToolArgs) + 핸들러 함수이고, @tool이 docstring을 모델에게 보이는 도구 설명으로 쓴다.
+# [설계 원칙] (docs/design.md "도구")
+# - 이름은 영문, 설명·오류 메시지는 한국어. enum 인자는 ASCII 코드이고 설명에 "코드=한국어" 목록을 붙인다
+# - 읽기 도구는 사실만 준다. "반품 가능 여부" 같은 계산된 판단은 주지 않아, 규정을 적용하는 일은 에이전트(P0)
+#   또는 쓰기 도구의 검사(P1)에 남긴다
+# - 검사 순서는 본인 확인 → 대상 존재 → 소유 → 무결성(ctx.require) → 규정(ctx.check_policy)
+# - 결정성: 현재 시각·uuid·난수를 쓰지 않는다(테스트가 ast로 검사). 시각은 ctx.now, 새 행 id는 내용이나
+#   개수에서 만든다
+# [연결] 평가(run.py, judge.py의 정답 재실행), 서비스(service/core.py), MCP 서버가 build_registry()로 같은
+# 도구를 쓴다. 규정 검사를 바꾸면 prompts/policy.md, docs/design.md의 표, rules.py를 같이 고친다.
+
 from __future__ import annotations
 
 import re
@@ -17,12 +29,16 @@ from pydantic import Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+# db: 쇼핑몰 테이블과 enum. rules: 반품 기한·환불액·보상 금액 같은 규정 계산(순수 함수). clock: 시각을 KST로
+# 표기하고 KST 날짜를 구한다. labels: enum 코드의 한국어 표기와 "코드=한국어" 선택지 문자열. HANDOFF_MESSAGE:
+# 상담원 이관 때 고객에게 가는 고정 안내.
 from support_agent import db, rules
 from support_agent.clock import format_kst, format_kst_date, kst_date
 from support_agent.config import HANDOFF_MESSAGE
 from support_agent.labels import choices, label
 from support_agent.toolkit import Registry, ToolArgs, ToolContext, make_registry, tool
 
+# 취소와 배송지 변경이 허용되는 주문 상태(결제완료, 상품 준비 중). 출고된 뒤에는 둘 다 규정상 안 된다.
 CANCELLABLE = (db.OrderStatus.PAID, db.OrderStatus.PREPARING)
 # Voice V4: jamo edits allowed between the name the agent heard and the caller's registered name. The first
 # rules took 1 and failed their collision gate (six pairs of seed names one jamo apart); the 2026-10-04 rule
@@ -33,15 +49,20 @@ NAME_TOLERANCE = 0
 # ---------------------------------------------------------------------------------------------- arguments
 
 
+# --- 인자 모델 ---
+# Field의 description은 모델에게 보이는 인자 설명이 된다(한국어). 모든 모델이 ToolArgs를 상속해 지어낸 인자를
+# 거절한다.
 class FindCustomerArgs(ToolArgs):
     name: str = Field(description="고객 이름")
     contact: str = Field(description="가입한 전화번호 또는 이메일")
 
 
+# 음성 V4의 본인 확인 인자. 연락처는 받지 않고 이름만 받는다(번호는 하니스가 문맥의 caller_phone으로 넣는다).
 class VerifyCallerArgs(ToolArgs):
     name: str = Field(description="고객이 말한 이름")
 
 
+# 주문 상품의 줄 번호. 1~999로 묶어 터무니없는 값은 검증 단계에서 거절한다.
 LineNo = Annotated[int, Field(ge=1, le=999)]
 
 
@@ -59,9 +80,13 @@ class ProductArgs(ToolArgs):
 
 class CancelOrderArgs(ToolArgs):
     order_id: str = Field(description="주문 번호")
+    # choices()는 "changed_mind=단순 변심, …" 같은 코드=한국어 목록을 만든다. 모델은 ASCII 코드를 보내고
+    # 고객에게는 한국어로 말한다.
     reason: db.CancelReason = Field(description=f"취소 사유. {choices(db.CancelReason)}")
 
 
+# 반품은 같은 주문의 여러 줄을 한 번에 접수한다. 줄 번호 순서는 의미가 없어 unordered_args로 등록하고(정렬해
+# 비교), 중복은 검증에서 막는다.
 class RequestReturnArgs(ToolArgs):
     order_id: str = Field(description="주문 번호")
     line_nos: list[LineNo] = Field(
@@ -96,6 +121,8 @@ class IssueCouponArgs(ToolArgs):
     reason: db.CompensationReason = Field(description=f"보상 사유. {choices(db.CompensationReason)}")
 
 
+# 티켓 인자. 주문과 관계없는 문의면 order_id에 None이 아니라 빈 문자열을 보낸다(기본값도 빈 문자열). 핸들러가
+# 빈 문자열을 "주문 없음"으로 저장한다.
 class CreateTicketArgs(ToolArgs):
     category: db.TicketCategory = Field(description=f"문의 분류. {choices(db.TicketCategory)}")
     body: str = Field(min_length=1, description="문의 내용")
@@ -107,6 +134,7 @@ class TransferArgs(ToolArgs):
     summary: str = Field(min_length=1, description="상담원에게 남길 대화 요약")
 
 
+# think 도구의 인자. R1(추론 절차 실험)에서만 모델에게 보인다(agent.py).
 class ThinkArgs(ToolArgs):
     thought: str = Field(description="생각한 내용")
 
@@ -114,12 +142,16 @@ class ThinkArgs(ToolArgs):
 # ------------------------------------------------------------------------------------------------ helpers
 
 
+# --- 공통 검사 도우미 ---
+# 본인 확인이 끝났는지 확인하고 확인된 고객 번호를 돌려준다. 확인 전에 고객·주문 정보에 접근하면
+# identity_not_verified로 막는다.
 def _verified(ctx: ToolContext) -> str:
     customer_id = ctx.state.verified_customer_id
     ctx.require(customer_id is not None, "identity_not_verified", "본인 확인이 되지 않았습니다.")
     return customer_id
 
 
+# 본인 확인 → 고객 존재 → 확인된 고객 본인인지 순으로 검사한다. 다른 고객의 정보를 조회하지 못하게 한다.
 def _own_customer(session: Session, ctx: ToolContext, customer_id: str) -> db.Customer:
     verified = _verified(ctx)
     customer = session.get(db.Customer, customer_id)
@@ -128,6 +160,7 @@ def _own_customer(session: Session, ctx: ToolContext, customer_id: str) -> db.Cu
     return customer
 
 
+# 본인 확인 → 주문 존재 → 확인된 고객의 주문인지. 주문을 다루는 모든 도구가 처음에 부른다.
 def _own_order(session: Session, ctx: ToolContext, order_id: str) -> db.Order:
     verified = _verified(ctx)
     order = session.get(db.Order, order_id)
@@ -136,16 +169,19 @@ def _own_order(session: Session, ctx: ToolContext, order_id: str) -> db.Order:
     return order
 
 
+# 주문의 줄 하나를 찾는다. 없으면 line_not_found.
 def _line(ctx: ToolContext, order: db.Order, line_no: int) -> db.OrderItem:
     item = next((x for x in order.items if x.line_no == line_no), None)
     ctx.require(item is not None, "line_not_found", f"주문에 {line_no}번 줄이 없습니다.")
     return item
 
 
+# 이미 취소된 주문에는 취소·반품·교환·배송지 변경을 하지 않는다(무결성 검사라 P0에서도 막는다).
 def _require_open(ctx: ToolContext, order: db.Order) -> None:
     ctx.require(order.status != db.OrderStatus.CANCELLED, "already_cancelled", "이미 취소된 주문입니다.")
 
 
+# 줄이 취소됐거나 이미 반품·교환 접수된 상태면 막는다. 같은 줄을 두 번 접수하지 않게 한다.
 def _require_line_free(ctx: ToolContext, item: db.OrderItem) -> None:
     ctx.require(item.status != db.ItemStatus.CANCELLED, "already_cancelled", "이미 취소된 주문 상품입니다.")
     ctx.require(
@@ -155,6 +191,9 @@ def _require_line_free(ctx: ToolContext, item: db.OrderItem) -> None:
     )
 
 
+# 반품과 교환이 함께 쓰는 규정 두 가지: 배송완료 상태일 것, 수령일 다음 날부터 7일째 되는 날(KST 날짜)까지일
+# 것. 코드 접두사(return/exchange)만 바꿔 같은 검사를 쓴다.
+# 배송완료인데 수령 시각 기록이 없는 것은 데이터 무결성 문제라 규정이 아니라 require로 막는다.
 def _check_delivered_in_window(ctx: ToolContext, order: db.Order, kind: str, word: str) -> None:
     """The two policy rules that returns and exchanges share. `kind` is the code prefix."""
     ctx.check_policy(
@@ -176,6 +215,8 @@ def _check_delivered_in_window(ctx: ToolContext, order: db.Order, kind: str, wor
         )
 
 
+# 개수로 만드는 id(쿠폰, 티켓, 이관)를 start부터 비어 있는 첫 번호로 정한다. 행이 지워져 개수와 번호가
+# 어긋나도 충돌하지 않는다.
 def _free_id(session: Session, model: type[db.Base], prefix: str, start: int) -> str:
     """`{prefix}{n}` with the first unused n from `start`: a count-based id that never collides."""
     n = start
@@ -184,14 +225,18 @@ def _free_id(session: Session, model: type[db.Base], prefix: str, start: int) ->
     return f"{prefix}{n}"
 
 
+# 조건(고객 또는 주문)에 맞는 보상 쿠폰을 id 순으로. 판촉 쿠폰은 세지 않는다.
 def _compensation_coupons(session: Session, **where: str) -> list[db.Coupon]:
     query = select(db.Coupon).filter_by(kind=db.CouponKind.COMPENSATION, **where).order_by(db.Coupon.id)
     return list(session.scalars(query))
 
 
+# 연락처 글에서 이메일 주소를 찾는 패턴. "이메일은 a@b.com이에요"처럼 말 속에 섞여 와도 주소만 뽑는다.
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 
+# 보상 쿠폰 한 장의 사실(번호, 주문, 사유, 금액, 발급 시각). get_order·get_customer가 보여 줘서, 주문당
+# 1장·고객당 30일 2장 같은 한도를 에이전트가 직접 셀 수 있게 한다(docs/design.md).
 def _coupon_fact(coupon: db.Coupon) -> dict:
     """Facts only, so that the agent can apply the coupon limits of the policy itself."""
     return {
@@ -204,6 +249,8 @@ def _coupon_fact(coupon: db.Coupon) -> dict:
     }
 
 
+# 연락처 정규화: NFKC로 전각 문자를 바꾼 뒤, 이메일이 있으면 소문자 이메일로, 없으면 숫자만 남긴 전화번호로
+# 비교한다. 국가 번호로 시작하는 번호(+82 10…)는 010…으로 바꾼다.
 def _normalise_contact(contact: str) -> tuple[str, str]:
     """(column, value): an e-mail in lower case, or a phone number reduced to its digits."""
     text = unicodedata.normalize("NFKC", contact)
@@ -216,6 +263,8 @@ def _normalise_contact(contact: str) -> tuple[str, str]:
     return "phone", digits
 
 
+# 이름 정규화: NFKC 후 공백을 모두 빼고 끝의 "고객님"·"고객"·"님"을 하나 뗀다. 뗀 뒤 두 글자 이상 남을 때만
+# 떼므로 이름 자체가 지워지지 않는다. find_customer와 verify_caller가 같은 기준을 쓴다.
 def _normalise_name(name: str) -> str:
     text = "".join(unicodedata.normalize("NFKC", name).split())
     for suffix in ("고객님", "고객", "님"):
@@ -224,6 +273,8 @@ def _normalise_name(name: str) -> str:
     return text
 
 
+# 두 이름의 자모 단위 편집 거리(레벤슈타인). NFD로 한글 음절을 자모로 풀어 "배성분"과 "배성훈"이 1이 된다.
+# verify_caller의 허용 오차 비교와 analyze.py의 이름 충돌 검사(9단계 관문)가 쓴다.
 def name_distance(said: str, registered: str) -> int:
     """Edit distance of two names in jamo after the find_customer normalisation ("배성분", "배성훈": 1)."""
     a, b = (unicodedata.normalize("NFD", _normalise_name(x)) for x in (said, registered))
@@ -236,6 +287,8 @@ def name_distance(said: str, registered: str) -> int:
     return previous[-1]
 
 
+# 고객을 이 대화의 본인 확인된 고객으로 표시한다. 이미 다른 고객을 확인한 대화면 already_verified로
+# 막는다(대화당 고객 1명). 호출이 거절되면 execute()가 이 상태 변경을 되돌린다.
 def _identified(ctx: ToolContext, customer: db.Customer) -> dict:
     """Mark the customer as verified for this conversation (one customer per conversation)."""
     verified = ctx.state.verified_customer_id
@@ -256,6 +309,9 @@ def _identified(ctx: ToolContext, customer: db.Customer) -> dict:
 # -------------------------------------------------------------------------------------------------- reads
 
 
+# --- 읽기 도구 ---
+# 본인 확인: 이름과 연락처가 모두 맞는 고객을 찾는다. 연락처로 후보를 고르고(같은 번호의 고객이 여럿일 수
+# 있음) 그중 이름이 같은 첫 고객을 쓴다. 어느 한쪽이 비면 찾지 않는다.
 @tool(write=False)
 def find_customer(session: Session, ctx: ToolContext, args: FindCustomerArgs) -> dict:
     """이름과 가입 연락처(전화번호 또는 이메일)로 고객 본인 확인을 한다. 둘 다 일치해야 한다."""
@@ -271,6 +327,10 @@ def find_customer(session: Session, ctx: ToolContext, args: FindCustomerArgs) ->
     return _identified(ctx, found)
 
 
+# 음성 V4(9단계)의 본인 확인: 연락처를 받아 적는 대신, 발신 번호로 가입한 고객 한 명과 이름만 맞춘다. 번호가
+# 없거나, 그 번호의 고객이 없거나, 여럿이면 각각 다른 코드로 막는다.
+# 이름은 그 한 명의 이름과만 비교하므로 다른 고객 이름과 우연히 가까워도 통과하지 않는다. 허용 오차는
+# NAME_TOLERANCE(0)라 정규화 뒤 글자까지 같아야 한다.
 @tool(write=False)
 def verify_caller(session: Session, ctx: ToolContext, args: VerifyCallerArgs) -> dict:
     """전화 상담의 본인 확인. 고객이 말한 이름이 발신 번호로 가입한 고객의 이름과 맞는지 확인한다."""
@@ -289,6 +349,7 @@ def verify_caller(session: Session, ctx: ToolContext, args: VerifyCallerArgs) ->
     return _identified(ctx, owner)
 
 
+# 본인 확인된 고객의 정보와 주소록, 발급된 보상 쿠폰. 배송지 변경 때 address_id를 고르는 근거가 된다.
 @tool(write=False)
 def get_customer(session: Session, ctx: ToolContext, args: CustomerArgs) -> dict:
     """본인 확인된 고객의 연락처, 등급, 주소록을 조회한다."""
@@ -318,6 +379,7 @@ def get_customer(session: Session, ctx: ToolContext, args: CustomerArgs) -> dict
     }
 
 
+# 주문 목록(최근 주문부터). 상품 요약은 "첫 상품명 외 N건" 형식이다.
 @tool(write=False)
 def list_orders(session: Session, ctx: ToolContext, args: CustomerArgs) -> dict:
     """본인 확인된 고객의 주문 목록을 최근 주문부터 조회한다."""
@@ -343,6 +405,8 @@ def list_orders(session: Session, ctx: ToolContext, args: CustomerArgs) -> dict:
     return {"customer_id": customer.id, "orders": orders}
 
 
+# 주문 한 건의 전체 사실. 환불액·반품 가능 여부 같은 판단은 넣지 않고, 결제·줄 상태·접수 내역·보상 쿠폰만
+# 준다. 출고·수령 시각은 track_shipment로 따로 본다.
 @tool(write=False)
 def get_order(session: Session, ctx: ToolContext, args: OrderArgs) -> dict:
     """주문 한 건의 상품, 금액, 결제, 배송지, 반품·교환 접수, 보상 쿠폰 내역을 조회한다.
@@ -411,6 +475,8 @@ def get_order(session: Session, ctx: ToolContext, args: OrderArgs) -> dict:
     }
 
 
+# 상품의 옵션별 가격·재고. 교환할 새 옵션(new_variant_id)을 고르는 데 쓴다. 본인 확인 없이 조회할 수 있는 예외
+# 도구다(docs/design.md).
 @tool(write=False)
 def get_product(session: Session, ctx: ToolContext, args: ProductArgs) -> dict:
     """상품의 옵션별 가격과 재고를 조회한다."""
@@ -427,6 +493,7 @@ def get_product(session: Session, ctx: ToolContext, args: ProductArgs) -> dict:
     }
 
 
+# 배송 조회. 시각은 KST 표기로, 도착 예정일은 날짜만 준다.
 @tool(write=False)
 def track_shipment(session: Session, ctx: ToolContext, args: OrderArgs) -> dict:
     """주문의 택배사, 송장 번호, 배송 상태, 출고·수령 시각, 도착 예정일을 조회한다."""
@@ -448,6 +515,9 @@ def track_shipment(session: Session, ctx: ToolContext, args: OrderArgs) -> dict:
 # ------------------------------------------------------------------------------------------------- writes
 
 
+# --- 쓰기 도구 ---
+# 주문 취소: 결제완료·상품 준비 중일 때만(규정). 주문과 모든 줄을 cancelled로, 결제를 refund_pending으로
+# 바꾸고 결제 금액 전액을 환불액으로 적는다(docs/design.md 금액 규칙). 취소 시각은 고정 시계 ctx.now다.
 @tool(write=True)
 def cancel_order(session: Session, ctx: ToolContext, args: CancelOrderArgs) -> dict:
     """주문 전체를 취소하고 결제 금액 전액을 원 결제 수단으로 환불 처리한다."""
@@ -476,6 +546,9 @@ def cancel_order(session: Session, ctx: ToolContext, args: CancelOrderArgs) -> d
     }
 
 
+# 반품 접수: 접수 id는 RT-주문-가장 작은 줄 번호로 내용에서 만든다(호출 순서와 무관하게 같은 id). 환불액 =
+# Σ(단가 × 수량) − 반품 배송비(단순 변심 3,000원, 불량·오배송 0원)이고 결제는 건드리지 않는다(회수 뒤 환불).
+# 반환하는 refund_won은 서비스의 승인 관문이 기준(10만 원)과 비교하는 값이다(service/core.py).
 @tool(write=True, unordered_args=("line_nos",))
 def request_return(session: Session, ctx: ToolContext, args: RequestReturnArgs) -> dict:
     """배송완료된 주문의 상품 줄을 반품 접수한다. 환불액과 반품 배송비는 규정대로 계산된다."""
@@ -521,6 +594,8 @@ def request_return(session: Session, ctx: ToolContext, args: RequestReturnArgs) 
     }
 
 
+# 교환 접수: 같은 상품의 다른 옵션으로만(규정), 재고가 그 줄의 수량 이상일 때만(무결성). 환불액은 0원이고 새
+# 옵션의 재고를 줄인다. 접수 id는 EX-주문-줄 번호.
 @tool(write=True)
 def request_exchange(session: Session, ctx: ToolContext, args: RequestExchangeArgs) -> dict:
     """배송완료된 주문의 상품 줄 하나를 같은 상품의 다른 옵션으로 교환 접수한다."""
@@ -573,6 +648,8 @@ def request_exchange(session: Session, ctx: ToolContext, args: RequestExchangeAr
     }
 
 
+# 배송지 변경: 고객 주소록의 주소만, 출고 전(결제완료·상품 준비 중)에만 된다. 주문의 배송지 열에 주소를 복사해
+# 넣는다(주문 당시 주소의 사본 방식).
 @tool(write=True)
 def change_shipping_address(session: Session, ctx: ToolContext, args: ChangeAddressArgs) -> dict:
     """아직 출고되지 않은 주문의 배송지를 고객 주소록에 있는 다른 주소로 바꾼다."""
@@ -602,6 +679,9 @@ def change_shipping_address(session: Session, ctx: ToolContext, args: ChangeAddr
     }
 
 
+# 보상 쿠폰 발급. 금액은 인자가 아니라 규정이 정한다: 배송 지연은 늦은 일수(1~2일 2,000원, 3일 이상 5,000원),
+# 상품 불량은 그 주문에 불량 사유의 반품·교환 접수가 있을 때 3,000원. 주문당 1장, 고객당 최근 30일(KST 날짜,
+# 오늘 포함) 2장까지이고 유효 기간은 발급 + 30일이다(docs/design.md).
 @tool(write=True)
 def issue_compensation_coupon(session: Session, ctx: ToolContext, args: IssueCouponArgs) -> dict:
     """배송 지연이나 상품 불량을 겪은 주문에 보상 쿠폰을 발급한다. 금액은 규정이 정한다."""
@@ -627,6 +707,7 @@ def issue_compensation_coupon(session: Session, ctx: ToolContext, args: IssueCou
             "coupon_not_eligible",
             "이 주문에는 상품 불량으로 접수된 반품·교환이 없습니다.",
         )
+    # P0에서 자격 없이 통과된 쿠폰은 사유별 최소 금액으로 발급한다(위반은 ctx.violations에 남는다).
     if amount is None:  # let through under P0
         amount = rules.fallback_compensation_won(args.reason)
 
@@ -648,6 +729,8 @@ def issue_compensation_coupon(session: Session, ctx: ToolContext, args: IssueCou
         f"최근 {days}일 동안 보상 쿠폰을 이미 {limit}장 받은 고객입니다.",
     )
 
+    # 쿠폰 id는 CP-주문-n. 과제는 같은 부모 아래 새 행을 1개까지만 만들므로 개수 기반 id도
+    # 결정적이다(docs/design.md 결정성).
     coupon = db.Coupon(
         id=_free_id(session, db.Coupon, f"CP-{order.id}-", len(for_order) + 1),
         customer_id=order.customer_id,
@@ -663,6 +746,8 @@ def issue_compensation_coupon(session: Session, ctx: ToolContext, args: IssueCou
     return {"coupon_id": coupon.id, "amount_won": amount, "expires_at": format_kst(coupon.expires_at)}
 
 
+# 상담 티켓: 바로 처리할 수 없는 문의를 남긴다. 본문은 모델이 쓰는 자유 글이라 판정의 호출·DB 비교에서 뺀다.
+# 주문 번호를 주면 본인 주문인지 확인한다. id는 TK-고객-n.
 @tool(write=True, uncompared_args=("body",))
 def create_ticket(session: Session, ctx: ToolContext, args: CreateTicketArgs) -> dict:
     """바로 처리할 수 없는 문의를 담당 부서가 확인하도록 상담 티켓으로 남긴다."""
@@ -687,6 +772,8 @@ def create_ticket(session: Session, ctx: ToolContext, args: CreateTicketArgs) ->
     }
 
 
+# 상담원 이관: 성공하면 대화가 끝난다(terminates). 본인 확인 전에도 쓸 수 있어 고객 번호가 비어 있을 수 있다.
+# 사유와 요약은 둘 다 타당할 수 있어 비교에서 뺀다. 쓸데없는 이관이 DB 차이로 드러나도록 행으로 남긴다.
 @tool(write=True, terminates=True, uncompared_args=("reason", "summary"))
 def transfer_to_human(session: Session, ctx: ToolContext, args: TransferArgs) -> dict:
     """대화를 사람 상담원에게 넘기고 상담을 끝낸다."""
@@ -702,12 +789,16 @@ def transfer_to_human(session: Session, ctx: ToolContext, args: TransferArgs) ->
     return {"handoff_id": handoff.id, "message": HANDOFF_MESSAGE}
 
 
+# think: 아무것도 조회하거나 바꾸지 않는 메모장 도구. 2단계 추론 절차 후보(R1)에서만 보인다. 서비스의 MCP
+# 서버는 이 도구를 노출하지 않는다.
 @tool(write=False)
 def think(session: Session, ctx: ToolContext, args: ThinkArgs) -> dict:
     """고객에게 보이지 않는 메모장에 생각을 적는다. 정보를 조회하거나 DB를 바꾸지 않는다."""
     return {"ok": True}
 
 
+# 대화 하나가 쓰는 도구 등록부. caller_id=True(음성 V4)면 find_customer 자리에 verify_caller가 들어가고
+# 나머지는 같다. run.py가 실행 설정(config.caller_id)에 따라 고르고, 서비스와 MCP 서버는 기본값을 쓴다.
 def build_registry(*, caller_id: bool = False) -> Registry:
     """The tools of a conversation. caller_id (voice V4): verify_caller takes the place of find_customer.
 

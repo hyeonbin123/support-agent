@@ -5,8 +5,19 @@ The signal tests need numpy and scipy (the `voice` dependency group) and are ski
 and the report are tested with fake speech models and hand-made records, so they run anywhere.
 """
 
+# [파일 역할] 11단계 V4-R A단계(전화 통화 조건에서 인식만 재기)를 검증하는 테스트 묶음이다. 구역: 열화
+# 구현(voice/degrade.py: 전화 대역·μ-law, 등록한 τ-Voice Realistic 값, 생성 소음, 돌발 소음, 먹먹함, 프레임
+# 손실, seed 고정), 원본 발화(9단계 V4 개발용 기록), 실행기(가짜 음성 모델, 캐시), 결과 표(voice_real report),
+# 인식기가 디코딩한 표본을 받는 경로.
+# [왜 중요한가] 이 단계는 같은 소리를 깨끗한 채로 한 번, 열화를 거쳐 한 번 받아 적어 차이를 열화의 몫으로
+# 본다(docs/experiments.md 11단계). 열화 값이 등록한 값과 다르거나, seed가 고정되지 않거나, 깨끗한 쪽이 9단계
+# 채널과 다른 소리가 되면 짝지은 차이를 열화 탓으로 읽을 수 없다. 측정 조건이라 채택 판정은 없다.
+# [방법] 신호 테스트는 numpy·scipy(voice 그룹)가 있을 때만 돌고 없으면 건너뛴다. 실행기와 표는 가짜 음성
+# 모델과 손으로 만든 기록으로 어디서나 돈다.
+
 from __future__ import annotations
 
+# math: SNR(dB) 계산과 포아송 표준편차. Path: docs/experiments.md 원문을 읽어 등록한 값이 문서에 있는지 본다.
 import io
 import json
 import math
@@ -14,18 +25,24 @@ from pathlib import Path
 
 import pytest
 
+# voice_real: 11단계 실행기·관문·표(검증 대상). derive_seed: 합성 seed('voice')와 열화 seed('degrade')가 기록
+# 규칙대로인지 본다. normalize_heard: 두 받아쓰기에 모두 V2 정규화를 거친다. Audio: 가짜 합성기의 출력 형식.
 from support_agent import voice_real
 from support_agent.config import derive_seed
 from support_agent.paths import REPORTS
 from support_agent.voice.normalize import normalize_heard
 from support_agent.voice.speech import Audio
 
+# 원본 실행: 9단계 V4 개발용 기록(reports/에 커밋됨). 이 기록의 고객 발화 929개를 다시 합성한다.
 SOURCE = REPORTS / voice_real.SOURCE_RUN
 
 
+# 열화 구현(voice/degrade.py) 테스트. 순서는 말소리 효과(먹먹함) → 소리 환경(배경·돌발 소음, 음량) → 채널(전화
+# 대역, 8 kHz, μ-law, 프레임 손실) → 16 kHz.
 # ==================================================================== the degradation (voice/degrade.py)
 
 
+# degrade 모듈. numpy·scipy가 없으면 이 픽스처를 쓰는 테스트를 모두 건너뛴다(CI는 voice 그룹 없이 돈다).
 @pytest.fixture(scope="module")
 def dg():
     pytest.importorskip("numpy")
@@ -35,25 +52,33 @@ def dg():
     return degrade
 
 
+# numpy 모듈(없으면 건너뜀).
 @pytest.fixture(scope="module")
 def np():
     return pytest.importorskip("numpy")
 
 
+# 16 kHz 사인파 시험 신호.
 def tone(np, frequency, seconds=1.0, amplitude=0.5):
     t = np.arange(int(16_000 * seconds)) / 16_000
     return (amplitude * np.sin(2 * np.pi * frequency * t)).astype(np.float32)
 
 
+# FFT로 잰 주파수 구간 [low, high)의 에너지. 대역 밖 소리가 걸러졌는지 볼 때 쓴다.
 def band_energy(np, samples, low, high):
     spectrum = np.abs(np.fft.rfft(samples)) ** 2
     freqs = np.fft.rfftfreq(len(samples), 1 / 16_000)
     return float(spectrum[(freqs >= low) & (freqs < high)].sum())
 
 
+# 전화 대역과 μ-law: whisper-ko-ft channel.py의 telephone()과 같은 구현이어야 해서, 그 코드로 계산한
+# 출력값으로 고정한다.
 # --- the telephone band and mu-law: the implementation of whisper-ko-ft's channel.py, fixed by its values
 
 
+# 네 사인파(두 개는 대역 밖)를 넣은 출력의 표본 8개, 전체 에너지, μ-law 왕복 값이 whisper-ko-ft 코드로 계산한
+# 기준값과 같은지 본다. 같은 PC에서 그 프로젝트가 잰 '전화 대역·μ-law만의 영향'과 같은 구현이어야 두 결과를
+# 이어 읽을 수 있다(docs/experiments.md 11단계 "왜 하는가").
 def test_telephone_gives_what_whisper_ko_fts_channel_gives(dg, np):
     """Reference values computed with whisper-ko-ft src/whisper_ko_ft/channel.py (commit 51616d5's code,
     numpy 2.4.6, scipy 1.17.1) on the same input: four tones, two of them outside the band."""
@@ -79,39 +104,48 @@ def test_telephone_gives_what_whisper_ko_fts_channel_gives(dg, np):
     )  # fmt: skip
 
 
+# telephone()을 narrowband(8 kHz까지)와 widen(16 kHz로 복원) 두 함수로 나눠도 이어 붙인 출력이 같은지 본다.
+# 프레임 손실을 코덱과 복원 사이에 넣으려고 나눈 것이라, 나누면서 결과가 바뀌면 안 된다.
 def test_telephone_is_the_narrow_band_widened_again(dg, np):
     x = np.random.default_rng(3).normal(0, 0.1, 12_345).astype(np.float32)
     assert np.array_equal(dg.telephone(x), dg.widen(dg.narrowband(x), len(x)))
     assert len(dg.narrowband(x)) == 6173  # 8 kHz
 
 
+# 출력이 입력과 같은 길이의 float32인지 본다. 리샘플링으로 길이가 달라지면 인식기 입력과 기록이 어긋난다.
 def test_telephone_keeps_length_and_dtype(dg, np):
     out = dg.telephone(tone(np, 1000, 0.73))
     assert out.dtype == np.float32 and len(out) == int(16_000 * 0.73)
 
 
+# 말소리 대역(1 kHz)의 소리는 채널을 지나도 원래와 상관계수 0.98 넘게 남는지 본다.
 def test_a_speech_band_tone_survives_the_telephone(dg, np):
     original = tone(np, 1000)
     assert np.corrcoef(original, dg.telephone(original))[0, 1] > 0.98
 
 
+# 대역 밖 소리(100 Hz, 6 kHz)는 에너지가 2% 아래로 줄어드는지 본다.
 def test_tones_outside_the_band_are_removed(dg, np):
     for frequency in (100, 6000):
         out = dg.telephone(tone(np, frequency))
         assert band_energy(np, out, 0, 8000) < 0.02 * band_energy(np, tone(np, frequency), 0, 8000)
 
 
+# 8 kHz로 낮췄다가 되돌린 뒤 4.2 kHz 위에는 거의 아무것도 없는지 본다(되돌려도 높은 소리는 살아나지 않음).
 def test_nothing_is_left_above_4khz(dg, np):
     out = dg.telephone(np.random.default_rng(0).normal(0, 0.1, 16_000).astype(np.float32))
     assert band_energy(np, out, 4200, 8000) < 0.001 * band_energy(np, out, 300, 3400)
 
 
+# μ-law 왕복이 8비트(256단계) 이하로 양자화하고, 작은 소리(0.01)는 오차가 작게 남는지 본다. 작은 소리를 촘촘히
+# 양자화하는 μ-law의 성질이다.
 def test_mu_law_uses_at_most_256_levels_and_keeps_quiet_samples(dg, np):
     restored = dg.mu_law_roundtrip(np.linspace(-1, 1, 100_000).astype(np.float32))
     assert len(np.unique(restored)) <= 256
     assert abs(dg.mu_law_roundtrip(np.array([np.float32(0.01)]))[0] - 0.01) < 0.002
 
 
+# 필터 패딩보다 짧은 입력은 바꾸지 않고 돌려주고, 전체 열화도 그대로 두며 음량 배율이 1인지 본다.
 def test_very_short_input_is_returned_unchanged(dg, np):
     short = np.zeros(10, dtype=np.float32)
     assert np.array_equal(dg.telephone(short), short)
@@ -119,9 +153,13 @@ def test_very_short_input_is_returned_unchanged(dg, np):
     assert np.array_equal(out, short) and info["gain"] == 1.0
 
 
+# 조건: τ-Voice Realistic 값을 재기 전에 등록했다.
 # --- the conditions: tau-Voice "Realistic" values, fixed before measuring
 
 
+# 코드의 열화 값(배경 소음 15 dB ±3, 분홍·갈색, 돌발 소음 분당 1회 −5~+10 dB와 네 종류, 먹먹함 20%·500 ms·전환
+# 100 ms·1500 Hz, 프레임 20 ms·손실 2%·묶음 100 ms, 최댓값 0.99)과 버전 v4r-1이 등록한 표와 같고, 설명이
+# JSON으로 왕복되는지 본다. 이 설명이 manifest와 캐시 키에 들어간다.
 def test_the_registered_values_are_tau_voice_realistic(dg):
     p = dg.REALISTIC
     assert (p.noise_snr_db, p.noise_snr_spread_db, p.noise_colours) == (15.0, 3.0, ("pink", "brown"))
@@ -137,6 +175,9 @@ def test_the_registered_values_are_tau_voice_realistic(dg):
     assert json.loads(json.dumps(described)) == described
 
 
+# 생성 잡음의 스펙트럼 기울기가 색에 맞고(분홍 −1, 갈색 −2, 흰색 0, 로그-로그), RMS가 1로 정규화되며, 20 Hz
+# 아래 성분이 없는지 본다. 녹음을 쓰지 않고 소음을 생성하기로 했으므로 생성한 소음이 그 색의 성질을 갖는지가
+# 중요하다.
 def test_coloured_noise_has_the_slope_of_its_colour_and_nothing_below_20hz(dg, np):
     from scipy.signal import welch
 
@@ -151,6 +192,7 @@ def test_coloured_noise_has_the_slope_of_its_colour_and_nothing_below_20hz(dg, n
     assert spectrum[np.fft.rfftfreq(160_000, 1 / 16_000) < 20].sum() < 1e-12 * spectrum.sum()
 
 
+# Gilbert–Elliott 손실이 평균 2%를, 평균 5프레임(100 ms) 묶음으로 잃는지 본다.
 def test_gilbert_elliott_loses_two_percent_in_bursts_of_100_ms(dg, np):
     lost = dg.gilbert_elliott(300_000, 0.02, 5, np.random.default_rng(7))
     assert lost.mean() == pytest.approx(0.02, abs=0.003)
@@ -158,6 +200,9 @@ def test_gilbert_elliott_loses_two_percent_in_bursts_of_100_ms(dg, np):
     assert lost.sum() / len(starts) == pytest.approx(5.0, abs=0.4)  # mean run of lost 20 ms frames
 
 
+# 열화 조건(plan)이 seed로 정해지고(같은 seed는 같은 조건, 다른 seed는 다른 조건), JSON으로 왕복되며, 프레임
+# 수가 맞는지 본다. 열화 seed가 (기본 seed, 과제, 시도, 'degrade', 순번)에서 나오므로 같은 명령은 같은 조건을
+# 다시 낸다.
 def test_the_plan_is_fixed_by_the_seed(dg):
     a, b, c = dg.draw(11, 80_000), dg.draw(11, 80_000), dg.draw(12, 80_000)
     assert a == b and a != c
@@ -165,6 +210,8 @@ def test_the_plan_is_fixed_by_the_seed(dg):
     assert a.frames == math.ceil(40_000 / 160)
 
 
+# 5초 발화 3,000개의 조건이 등록한 비율을 따르는지 본다: 먹먹함 약 20%, SNR 12~18 dB에 평균 15, 분홍 반, 돌발
+# 소음 분당 1회(5초에 1/12), 네 종류 모두, 손실 약 2%. CPU 관문(voice_real plan)과 같은 성격의 확인이다.
 def test_the_plans_of_many_utterances_follow_the_registered_rates(dg, np):
     plans = [dg.draw(seed, 5 * 16_000) for seed in range(3000)]
     assert sum(p.muffle_start is not None for p in plans) / 3000 == pytest.approx(0.2, abs=0.03)
@@ -179,12 +226,15 @@ def test_the_plans_of_many_utterances_follow_the_registered_rates(dg, np):
     assert sum(len(p.lost) for p in plans) / frames == pytest.approx(0.02, abs=0.004)
 
 
+# 전화 대역(300–3400 Hz) 필터를 거친 RMS. SNR을 전 대역이 아니라 전화 대역 안에서 재기로 했기 때문이다(갈색
+# 잡음은 힘 대부분이 300 Hz 아래라 전 대역으로 재면 쉬운 조건이 된다).
 def band_rms(dg, np, x):
     from scipy.signal import sosfiltfilt
 
     return float(np.sqrt(np.mean(sosfiltfilt(dg.BAND, np.asarray(x, dtype=np.float64)) ** 2)))
 
 
+# 모든 효과를 끈 조건에서 시험할 효과 하나만 켠 plan을 만든다.
 def quiet_plan(dg, length, **changes):
     """A plan with every effect off: noise 300 dB under the speech, nothing muffled, lost or burst."""
     base = dict(muffle_start=None, colour="pink", snr_db=300.0, noise_seed=1, bursts=(), frames=0, lost=())
@@ -193,6 +243,7 @@ def quiet_plan(dg, length, **changes):
     return dg.Plan(**base)
 
 
+# 배경 소음을 섞은 뒤 전화 대역 안에서 잰 SNR이 뽑힌 값(13.5 dB)과 0.05 dB 안으로 같은지 분홍·갈색 모두 본다.
 def test_the_background_noise_is_at_the_drawn_snr_inside_the_telephone_band(dg, np):
     speech = tone(np, 700, 3.0, 0.2) + tone(np, 2200, 3.0, 0.05)
     for colour in ("pink", "brown"):
@@ -203,6 +254,7 @@ def test_the_background_noise_is_at_the_drawn_snr_inside_the_telephone_band(dg, 
         assert snr == pytest.approx(13.5, abs=0.05), colour
 
 
+# 돌발 소음(전화벨)이 정한 위치에서 정한 길이만큼만 들어가고, 그 구간의 SNR이 뽑힌 값(−2 dB)인지 본다.
 def test_a_burst_is_at_its_snr_and_place(dg, np):
     speech = tone(np, 700, 3.0, 0.2)
     plan = quiet_plan(dg, len(speech), bursts=(("ring", 16_000, -2.0, 9),))
@@ -214,6 +266,7 @@ def test_a_burst_is_at_its_snr_and_place(dg, np):
     assert 20 * math.log10(band_rms(dg, np, speech) / burst_rms) == pytest.approx(-2.0, abs=0.1)
 
 
+# 발화 끝 가까이에서 시작한 돌발 소음은 끝에서 잘리고 발화 길이는 그대로인지 본다.
 def test_a_burst_near_the_end_is_cut_there(dg, np):
     speech = tone(np, 700, 1.0, 0.2)
     plan = quiet_plan(dg, len(speech), bursts=(("siren", 15_000, 5.0, 2),))
@@ -221,6 +274,8 @@ def test_a_burst_near_the_end_is_cut_there(dg, np):
     assert len(mixed) == 16_000 and np.abs((mixed - speech)[15_000:]).max() > 0
 
 
+# 네 종류의 돌발 소음이 정한 길이의 유한한 소리이고, 힘의 상당 부분이 전화 대역 안에 있으며(채널이 걸러 내
+# 없어지지 않게), 앞뒤를 서서히 키우고 줄여 딸깍 소리가 없는지 본다.
 @pytest.mark.parametrize("kind", ["clatter", "ring", "horn", "siren"])
 def test_every_burst_kind_is_sound_in_the_telephone_band(dg, np, kind):
     sound = dg.burst_sound(kind, np.random.default_rng(0))
@@ -229,6 +284,7 @@ def test_every_burst_kind_is_sound_in_the_telephone_band(dg, np, kind):
     assert sound[0] == 0 and abs(sound[-1]) < 1e-3  # faded in and out: no click
 
 
+# 먹먹함이 정한 구간(500 ms와 앞뒤 100 ms 전환)에서만 3 kHz 소리를 크게 낮추고, 구간 밖은 그대로 두는지 본다.
 def test_muffling_lowers_high_frequencies_only_in_its_segment(dg, np):
     speech = tone(np, 3000, 3.0, 0.2)
     plan = quiet_plan(dg, len(speech), muffle_start=8000)
@@ -240,6 +296,8 @@ def test_muffling_lowers_high_frequencies_only_in_its_segment(dg, np):
     assert np.abs(mixed[span:] - speech[span:]).max() < 1e-4
 
 
+# 잃은 20 ms 프레임 두 개가 채널을 지난 뒤 무음이고(메움 없음), 그 앞뒤의 소리는 남는지 본다. 필터 가장자리
+# 표본은 빼고 본다.
 def test_lost_frames_are_silence_after_the_channel(dg, np):
     speech = tone(np, 700, 1.0, 0.3)
     plan = quiet_plan(dg, len(speech), lost=(10, 11))
@@ -249,6 +307,8 @@ def test_lost_frames_are_silence_after_the_channel(dg, np):
     assert np.abs(out[5 * 320 : 9 * 320]).max() > 0.2 and np.abs(out[13 * 320 : 20 * 320]).max() > 0.2
 
 
+# 큰 돌발 소음으로 섞은 소리의 최댓값이 0.99를 넘으면, 코덱에서 잘리는 대신 발화 전체를 낮춰 최댓값을 0.99로
+# 맞추는지 본다.
 def test_a_loud_mixture_is_turned_down_before_the_codec_instead_of_clipped(dg, np):
     speech = tone(np, 700, 2.0, 0.95)
     plan = quiet_plan(dg, len(speech), bursts=(("horn", 4000, -5.0, 1),))
@@ -256,6 +316,8 @@ def test_a_loud_mixture_is_turned_down_before_the_codec_instead_of_clipped(dg, n
     assert gain < 1.0 and np.abs(mixed).max() == pytest.approx(0.99, abs=1e-6)
 
 
+# 전체 열화가 seed로 고정되고(같은 seed는 출력·정보가 같고, 다른 seed는 다름), 16 kHz float32 같은 길이를
+# 내며, 돌려준 정보가 뽑힌 조건에 음량 배율을 더한 것인지 본다. 이 정보가 발화마다 기록에 남는다.
 def test_degrade_is_fixed_by_its_seed_and_returns_16k_float32(dg, np):
     speech = tone(np, 700, 4.0, 0.2) + tone(np, 1900, 4.0, 0.05)
     a, info_a = dg.degrade(speech, seed=21)
@@ -266,14 +328,18 @@ def test_degrade_is_fixed_by_its_seed_and_returns_16k_float32(dg, np):
     assert info_a == dg.draw(21, len(speech)).to_dict() | {"gain": info_a["gain"]}
 
 
+# 원본 발화: 9단계 V4 개발용 기록에서 다시 합성할 발화를 읽는다.
 # ==================================================================== the source utterances
 
 
+# 원본 실행의 manifest와 발화 목록(모듈에서 한 번만 읽음).
 @pytest.fixture(scope="module")
 def source():
     return voice_real.source_utterances(SOURCE)
 
 
+# 원본이 9단계 V4 개발용 공식 실행이고, 발화 929개가 96개 에피소드·24개 과제에서 나오는지
+# 본다(docs/experiments.md 11단계 "이 단계가 재는 것").
 def test_the_source_is_the_stage_9_v4_development_run(source):
     manifest, utterances = source
     assert manifest["config"]["voice"] == "V4" and manifest["tasks_file"] == "dev" and manifest["official"]
@@ -281,6 +347,9 @@ def test_the_source_is_the_stage_9_v4_development_run(source):
     assert len({u.task_id for u in utterances}) == 24
 
 
+# 다시 합성할 seed가 9단계 채널이 쓴 seed('voice')와 같고 열화 seed('degrade')는 그와 다른지, 모든 발화의 말한
+# 글·풀어 쓴 글·기록된 받아쓰기가 원본 기록과 같은지 본다. 같은 말을 같은 seed로 합성해야 깨끗한 쪽이 9단계와
+# 같은 소리가 된다.
 def test_the_seeds_are_the_ones_the_channel_used_and_a_new_one_for_the_degradation(source):
     _manifest, utterances = source
     first = utterances[0]
@@ -297,6 +366,8 @@ def test_the_seeds_are_the_ones_the_channel_used_and_a_new_one_for_the_degradati
         )  # fmt: skip
 
 
+# 발화마다 과제 고객의 등록 이름이 붙고, 말한 글에 그 이름이 든 발화가 165개인지 본다. 이 165개가 1차 지표
+# '이름 정확 생존'의 분모다.
 def test_each_utterance_knows_the_registered_name_of_its_customer(source):
     from support_agent.analyze import seed_names
     from support_agent.tasks import load_tasks
@@ -307,6 +378,8 @@ def test_each_utterance_knows_the_registered_name_of_its_customer(source):
     assert sum(voice_real.name_in(u.name, u.said) for u in utterances) == 165
 
 
+# 시험용 기록과 음성이 아닌 실행은 원본으로 받지 않는지 본다. 시험용 기록은 열지 않는다는 규칙과, 다시 합성할
+# 발화가 있어야 한다는 전제를 코드가 지킨다.
 def test_test_records_and_text_runs_are_not_sources(tmp_path):
     for config, tasks_file, message in (
         ({"voice": "V4", "base_seed": 1}, "test", "development"),
@@ -321,6 +394,7 @@ def test_test_records_and_text_runs_are_not_sources(tmp_path):
             voice_real.source_utterances(run)
 
 
+# manifest의 과제 해시가 지금 과제 파일과 다르면(과제가 바뀜) 원본으로 받지 않는지 본다.
 def test_a_source_whose_task_file_changed_is_refused(tmp_path):
     manifest = json.loads((SOURCE / "manifest.json").read_text(encoding="utf-8"))
     manifest["task_sha256"]["dev-001"] = "0" * 64
@@ -330,6 +404,9 @@ def test_a_source_whose_task_file_changed_is_refused(tmp_path):
         voice_real.source_utterances(tmp_path)
 
 
+# 음성 모델 설명(MeloTTS·torch·faster-whisper·ctranslate2 버전, 장치, fp16, beam 5, VAD 끔)이 원본 실행과
+# 같으면 차이가 없고, 버전이나 장치가 하나라도 다르면 그 항목을 짚는지 본다. 다르면 공식 실행을 시작하지
+# 않는다(재현 확인 규칙).
 def test_the_speech_models_must_be_the_ones_of_the_source_run():
     manifest = json.loads((SOURCE / "manifest.json").read_text(encoding="utf-8"))
     tts = {"tts": "melotts/KR", "device": "cuda", "speed": 1.0,
@@ -343,9 +420,11 @@ def test_the_speech_models_must_be_the_ones_of_the_source_run():
     assert voice_real.channel_mismatches(manifest, dict(tts, device="cpu"), stt) == ["tts device"]
 
 
+# 실행기: 가짜 음성 모델로 발화마다 기록 한 줄을 남기고, 캐시에서 이어 가는지 본다.
 # ==================================================================== the runner, with fake speech models
 
 
+# 가짜 합성기: 풀어 쓴 글을 그대로 '소리'로 돌려주고 불린 글과 seed를 기록한다.
 class FakeSpeaker:
     def __init__(self):
         self.calls = []
@@ -358,6 +437,8 @@ class FakeSpeaker:
         return Audio(spoken_text.encode("utf-8"), 0.5 + len(spoken_text) / 10)
 
 
+# 가짜 인식기: 깨끗한 소리는 그대로, 열화를 거친 소리는 마지막 글자를 잃은 채 받아 적는다. 두 받아쓰기가
+# 다르게 나와 짝이 섞이지 않는지 볼 수 있다.
 class FakeListener:
     """Hears the clean audio as it was said, and loses the last character through the degradation."""
 
@@ -369,6 +450,7 @@ class FakeListener:
         return text[:-1] if samples.get("degraded") else text
 
 
+# 가짜 디코더와 가짜 열화: 열화 표시를 붙이고 seed로 정해지는 조건 정보를 돌려준다.
 def fake_decode(wav):
     return {"text": wav.decode("utf-8")}
 
@@ -377,10 +459,15 @@ def fake_degrade(samples, seed):
     return dict(samples, degraded=True), {"muffle_start_s": None, "lost": [seed % 3], "gain": 1.0}
 
 
+# 원본 발화 앞의 n개.
 def few(source, n=6):
     return source[1][:n]
 
 
+# measure가 발화마다 원본의 풀어 쓴 글과 합성 seed로 합성하고, 깨끗한·열화한 받아쓰기와 각각의 V2 정규화, 뽑힌
+# 조건을 한 줄씩 utterances.jsonl에 남기는지 본다. 같은 캐시로 다시 돌리면 모두 캐시에서 같은 기록이 나오고,
+# 열화 설명이 바뀌면 캐시 키가 달라져 아무것도 캐시에서 오지 않는지 확인한다(캐시 키에 열화의 버전과 값이
+# 들어감).
 def test_the_runner_writes_one_record_per_utterance_and_resumes_from_its_cache(tmp_path, source):
     utterances = few(source)
     speaker, cache = FakeSpeaker(), tmp_path / "cache.jsonl"
@@ -421,6 +508,7 @@ def test_the_runner_writes_one_record_per_utterance_and_resumes_from_its_cache(t
     assert not any(r["cached"] for r in other)
 
 
+# 정규화를 None으로 주면(V1 원본) 받아쓰기를 그대로 쓰는지 본다.
 def test_a_v1_source_has_no_normaliser(tmp_path, source):
     out = tmp_path / "v1"
     out.mkdir()
@@ -431,6 +519,8 @@ def test_a_v1_source_has_no_normaliser(tmp_path, source):
     assert records[0]["clean_text"] == records[0]["clean_heard"]
 
 
+# 공식 실행은 작업 트리가 깨끗해야 하고, 발화 일부(--limit)나 다른 장치(--device cpu)로는 시작하지 않는지
+# 본다. git 호출은 가짜로 바꿔 깨끗함/더러움을 흉내 낸다.
 def test_the_official_run_needs_a_clean_tree_all_utterances_and_the_source_device(monkeypatch):
     monkeypatch.setattr(voice_real, "_git", lambda *args: "abc" if args[0] == "rev-parse" else " M src/x.py")
     with pytest.raises(SystemExit):
@@ -441,6 +531,7 @@ def test_the_official_run_needs_a_clean_tree_all_utterances_and_the_source_devic
             voice_real.main(["run", str(SOURCE), "--official", *extra])
 
 
+# CPU 관문(plan_gate)이 발화 40개에 대해 먹먹함·잃은 프레임·돌발 소음을 세어 보고하고 통과 여부를 내는지 본다.
 def test_the_plan_gate_counts_what_the_drawn_conditions_would_do(source):
     pytest.importorskip("numpy")
     pytest.importorskip("scipy")
@@ -450,6 +541,8 @@ def test_the_plan_gate_counts_what_the_drawn_conditions_would_do(source):
     assert isinstance(passed, bool)
 
 
+# 관문과 재현 확인의 상수(먹먹함 15~25%, 손실 1~3%, 돌발 소음 ±3 표준편차, 재현 90%, GPU 사용 상한 6,000 MiB,
+# 부트스트랩 seed 20261005)가 등록한 값인지, 돌발 소음 범위가 포아송 기댓값 ±3√기댓값인지 본다.
 def test_the_plan_gate_bounds_are_the_registered_ones():
     assert voice_real.GATE_MUFFLED == (0.15, 0.25) and voice_real.GATE_LOSS == (0.01, 0.03)
     assert voice_real.GATE_BURST_SIGMAS == 3.0 and voice_real.REPRODUCE_MIN == 0.90
@@ -458,9 +551,11 @@ def test_the_plan_gate_bounds_are_the_registered_ones():
     assert (lo, hi) == (88 - 3 * math.sqrt(88), 88 + 3 * math.sqrt(88))
 
 
+# 결과 표: 기록에서 지표와 짝지은 구간을 다시 계산한다(모델 없음).
 # ==================================================================== the report
 
 
+# utterances.jsonl 한 줄을 손으로 만든다. recorded를 주면 9단계에 기록된 받아쓰기를 깨끗한 쪽과 다르게 둔다.
 def record(task, said, clean, degraded, *, name="정예준", recorded=None, plan=None, trial=0, index=0):
     return {
         "task_id": task, "trial": trial, "index": index, "name": name, "said": said,
@@ -473,12 +568,17 @@ def record(task, said, clean, degraded, *, name="정예준", recorded=None, plan
     }  # fmt: skip
 
 
+# 이름 생존은 공백만 무시하고 글자까지 같아야 하는지(정예순은 아님), NFKC 정규화를 하는지 본다.
+# verify_caller의 k=0 기준과 같다.
 def test_name_survival_is_the_exact_name_with_spaces_ignored():
     assert voice_real.name_in("정예준", "네, 정 예준입니다.")
     assert not voice_real.name_in("정예준", "네, 정예순입니다.")
     assert voice_real.name_in("정예준", "ｊ정예준")  # NFKC
 
 
+# 발화 하나의 지표별 (분자, 분모)를 깨끗한 쪽과 열화한 쪽으로 세는지 본다: 이름, 주문 번호(V2 정규화로
+# 5-91001이 O-91001로 돌아옴), 그대로 전달, 글자 오류(두 글자), 인식 안 됨. 이름이 없는 발화는 이름 분모에
+# 들지 않는다.
 def test_the_counts_of_one_record():
     r = record(
         "dev-001",
@@ -497,6 +597,8 @@ def test_the_counts_of_one_record():
     assert other["name"] == ((0, 0), (0, 0)) and other["empty"] == ((0, 1), (1, 1))
 
 
+# 과제 단위로 다시 뽑는 부트스트랩이 같은 비율이면 (0, 0, 0)을, 나빠졌으면 합친 비율의 차이(−0.5)를 점추정으로
+# 내고, 분모가 0인 과제는 영향이 없으며, 고정 seed라 같은 결과를 다시 내는지 본다.
 def test_the_task_bootstrap_of_a_pooled_difference():
     same = {"a": ((1, 2), (1, 2)), "b": ((3, 4), (3, 4))}
     assert voice_real.pooled_difference(same) == (0.0, 0.0, 0.0)
@@ -506,6 +608,8 @@ def test_the_task_bootstrap_of_a_pooled_difference():
     assert voice_real.pooled_difference(worse) == (diff, low, high)  # fixed seed
 
 
+# 보고 표에 발화 수, 이름·주문 번호 생존, 재현 확인(기록과 같은 인식 2/3), 효과별 발화 수, 음량을 줄인 발화
+# 수가 나오는지 본다.
 def test_the_report_tables():
     plan_lost = {"muffle_start_s": 0.1, "colour": "brown", "snr_db": 13.0, "bursts": [{"kind": "ring"}],
                  "frames": 10, "lost": [3], "gain": 0.9}  # fmt: skip
@@ -525,6 +629,7 @@ def test_the_report_tables():
     assert "줄인 음량(gain < 1) 1" in table
 
 
+# voice_real report 명령이 실행 폴더의 utterances.jsonl을 읽어 표를 출력하는지 본다.
 def test_report_reads_a_run_directory(tmp_path, capsys):
     run = tmp_path / "run"
     run.mkdir()
@@ -534,6 +639,8 @@ def test_report_reads_a_run_directory(tmp_path, capsys):
     assert "| 발화 | 1 |" in capsys.readouterr().out
 
 
+# docs/experiments.md의 11단계 절에 원본 실행 이름, 열화 버전, 등록한 값들, 부트스트랩 seed, 재현 기준 90%가
+# 적혀 있는지 본다. 문서와 코드의 값이 따로 놀지 않게 한다.
 def test_the_experiments_rules_name_this_source_and_these_values():
     doc = (Path(__file__).resolve().parents[1] / "docs" / "experiments.md").read_text(encoding="utf-8")
     stage = doc[doc.index("## 11단계") :]
@@ -543,9 +650,13 @@ def test_the_experiments_rules_name_this_source_and_these_values():
     assert str(voice_real.BOOTSTRAP_SEED) in stage and "90%" in stage
 
 
+# 인식기: 녹음 바이트 대신 디코딩한 표본을 받아도 같게 받아 적어야 한다.
 # ==================================================================== the listener takes decoded samples
 
 
+# WhisperListener.transcribe(녹음)와 transcribe_samples(decode_audio로 디코딩한 표본)가 모델에 같은 표본과
+# 같은 옵션(한국어, beam 5, temperature 0, 이전 글 조건 없음, VAD 끔)을 넘기는지 본다. 11단계는 디코딩한
+# 표본에 열화를 얹고 transcribe_samples로 받아 적으므로, 깨끗한 쪽이 9단계 채널과 같은 경로여야 한다.
 def test_the_listener_hears_decoded_samples_the_way_it_hears_a_recording():
     np = pytest.importorskip("numpy")
     decode_audio = pytest.importorskip("faster_whisper.audio").decode_audio
