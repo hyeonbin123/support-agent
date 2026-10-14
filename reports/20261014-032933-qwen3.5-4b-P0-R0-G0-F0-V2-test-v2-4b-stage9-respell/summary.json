@@ -1,0 +1,45 @@
+{
+ "episodes": 1,
+ "infra_errors": 0,
+ "truncated": 0,
+ "terminations": {
+  "max_user_turns": 1
+ },
+ "successes": 0,
+ "pass_hat_k": {
+  "1": 0.0
+ },
+ "by_task": {
+  "test-025": "0/1"
+ },
+ "tasks_without_valid_trials": [],
+ "successes_with_unexpected_writes": 0,
+ "unexpected_writes": 0,
+ "policy_violations": 0,
+ "policy_blocks": 0,
+ "auth_blocks": 0,
+ "format_errors": 0,
+ "held_claims": 0,
+ "confirmation_requests": 0,
+ "dropped_calls": 0,
+ "seconds_per_episode": 213.7,
+ "agent_calls_per_episode": 22.0,
+ "agent_call_ms": 5678.3,
+ "agent_prompt_eval_ms": 675.8,
+ "agent_prompt_tokens_max": 5840,
+ "agent_calls_without_prompt_tokens": 0,
+ "user_call_ms": 1771.3,
+ "model_load_ms_total": 159.8,
+ "ollama_ps_at_end": [
+  {
+   "name": "qwen3.5:4b",
+   "size": 3627171183,
+   "size_vram": 3627171183
+  },
+  {
+   "name": "qwen2.5:7b-instruct",
+   "size": 5813231941,
+   "size_vram": 4597208841
+  }
+ ]
+}
