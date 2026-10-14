@@ -1,14 +1,12 @@
-"""The service without a model: a rule-based stand-in answers, everything else is the real code.
+"""모델 없는 서비스: 규칙 기반 대역이 답하고, 나머지는 모두 실제 코드다.
 
-For work on the pages, for security scans of the web layer and for smoke tests, where a language model
-would only cost GPU time:
+화면 작업, 웹 계층의 보안 스캔, 스모크 테스트처럼 언어 모델이 GPU 시간만 쓰는 경우를 위한 것이다:
 
     uv run uvicorn support_agent.service.offline:create_offline_app --factory --port 8062
 
-The stand-in verifies a customer when it reads a name with a phone number, looks an order up when it reads
-an order number, cancels it when the message also says "취소", and otherwise asks for what is missing.
-With SUPPORT_AGENT_VOICE=1 the voice endpoints answer too, through stand-ins that need no speech model: a
-"recording" is read as UTF-8 text, and every reply sounds like a short silence.
+대역은 이름과 전화번호를 읽으면 고객 본인 확인을 하고, 주문 번호를 읽으면 주문을 조회하며, 메시지에
+"취소"도 있으면 그 주문을 취소하고, 그 밖에는 빠진 것을 묻는다. SUPPORT_AGENT_VOICE=1이면 음성 끝점도
+음성 모델이 필요 없는 대역으로 답한다: "녹음"은 UTF-8 글로 읽고, 모든 답은 짧은 무음으로 들린다.
 """
 
 # [파일 역할] LLM과 음성 모델 자리에 규칙 몇 줄짜리 대역을 끼운 서비스 앱을 만든다. 웹 계층, 세션·감사
@@ -86,7 +84,7 @@ class OfflineProvider(ChatProvider):
 # UTF-8이 아닌 바이트는 디코딩 예외가 나고, app.py의 post_voice가 이것을 "음성을 처리하지 못했습니다" 안내로
 # 바꾼다.
 class TextListener:
-    """Takes the bytes of a recording for UTF-8 text; anything else cannot be "decoded"."""
+    """녹음 바이트를 UTF-8 글로 받아들인다. 그 밖의 것은 "디코딩"할 수 없다."""
 
     def describe(self):
         return {"stt": "offline"}
@@ -107,7 +105,7 @@ class SilentSpeaker:
             out.setnchannels(1)
             out.setsampwidth(2)
             out.setframerate(16_000)
-            out.writeframes(bytes(2 * 3_200))  # 0.2 s of silence
+            out.writeframes(bytes(2 * 3_200))  # 0.2초 무음
         return Audio(buffer.getvalue(), seconds=0.2)
 
 
@@ -116,5 +114,5 @@ class SilentSpeaker:
 def create_offline_app() -> FastAPI:
     settings = Settings.from_env()
     voice = VoiceFrontEnd(SilentSpeaker(), TextListener()) if settings.voice else None
-    # The stand-ins are passed in, so create_app does not load the speech models although `voice` is set.
+    # 대역을 넘겨주므로, `voice` 설정이 켜져 있어도 create_app은 음성 모델을 올리지 않는다.
     return create_app(settings, provider=OfflineProvider(), voice=voice)

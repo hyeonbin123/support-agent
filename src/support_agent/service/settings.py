@@ -1,4 +1,4 @@
-"""Settings of the service, read from environment variables (prefix SUPPORT_AGENT_)."""
+"""서비스 설정. 환경 변수(접두사 SUPPORT_AGENT_)에서 읽는다."""
 
 # [파일 역할] 채팅 서비스(3단계)의 설정 전부를 한 클래스(Settings)로 모은다. 값은 SUPPORT_AGENT_ 접두사가 붙은
 # 환경 변수에서 읽는다(docs/service.md의 설정 목록).
@@ -20,12 +20,12 @@ from pydantic import AwareDatetime, BaseModel, Field, model_validator
 
 # 환경 변수 접두사. 필드 이름을 대문자로 바꿔 붙인다(model → SUPPORT_AGENT_MODEL).
 PREFIX = "SUPPORT_AGENT_"
-# The generated shop data is written around this moment (the tasks use it too). With the wall clock every
-# order would soon be past its return window, so the demo runs on a fixed clock unless SUPPORT_AGENT_NOW=real.
+# 생성한 쇼핑몰 데이터는 이 시각을 기준으로 쓰였다(과제도 이 시각을 쓴다). 벽시계를 쓰면 모든 주문이 곧
+# 반품 기한을 넘기므로, 시연은 SUPPORT_AGENT_NOW=real이 아니면 고정 시계로 돈다.
 DEMO_NOW = "2026-09-14T10:00:00+09:00"
-# Since 2026-10-04 (docs/experiments.md, stage 8): test pass^1 55.6% against 18.1% for qwen2.5 7B, measured
-# with thinking off. It also made 13 writes the tasks did not ask for against 6, so the approval gate stays.
-# MODEL=qwen2.5:7b-instruct brings the earlier model back.
+# 2026-10-04부터 기본 모델(docs/experiments.md 8단계): 사고 모드를 끄고 잰 시험용 pass^1이 qwen2.5 7B의
+# 18.1%에 비해 55.6%였다. 다만 과제가 요구하지 않은 쓰기도 6건에 비해 13건이었으므로 승인 관문은 그대로 둔다.
+# MODEL=qwen2.5:7b-instruct로 이전 모델로 돌아갈 수 있다.
 DEFAULT_MODEL = "qwen3.5:4b"
 # THINK 설정 문자열 → Ollama 요청의 think 값. None은 요청에 think 필드를 아예 넣지 않는다는 뜻이다(사고 모드가
 # 없는 모델은 이 필드를 거부할 수 있어서, docs/service.md).
@@ -43,32 +43,32 @@ class Settings(BaseModel):
     database_url: str = "sqlite:///outputs/service.db"
     ollama_url: str = "http://127.0.0.1:11434"
     model: str = DEFAULT_MODEL
-    # Ollama's `think` field on every agent request. Left unset it is "off" for the default model (measured
-    # so) and "omit" (not sent) for any other: models without a thinking mode refuse the field.
+    # 모든 에이전트 요청에 넣는 Ollama의 `think` 필드. 비워 두면 기본 모델은 "off"(그렇게 쟀다), 다른 모델은
+    # "omit"(보내지 않음)이 된다: 사고 모드가 없는 모델은 이 필드를 거절한다.
     think: Literal["on", "off", "omit"] = "off"
     num_ctx: int = 16384
-    # The service refuses what the rules forbid (P1). Whether that raises the success rate is a question of
-    # docs/experiments.md; here a wrong refund costs money, so the tools check whatever code can check.
+    # 서비스는 규정이 금지하는 것을 거절한다(P1). 그것이 성공률을 올리는지는 docs/experiments.md의 질문이고,
+    # 여기서는 잘못된 환불이 돈을 잃게 하므로 코드가 검사할 수 있는 것은 도구가 모두 검사한다.
     policy: Literal["P0", "P1"] = "P1"
-    # C1: a reply that says work is done which no tool result of the conversation shows is never delivered.
-    # Off by default: on the development tasks C1 cost −2.1%p and one more unexpected write, C2 −5.2%p, so
-    # neither met the rule written before measuring (docs/experiments.md, stage 7). CLAIMS=C1 turns it on.
+    # C1: 이 대화의 어떤 도구 결과도 보여 주지 않는데 일이 끝났다고 말하는 답은 절대 전달하지 않는다. 기본은
+    # 꺼짐: 개발용 과제에서 C1은 −2.1%p와 정답에 없는 쓰기 1건 증가, C2는 −5.2%p라 둘 다 측정 전에 적은 규칙을
+    # 만족하지 못했다(docs/experiments.md 7단계). CLAIMS=C1로 켠다.
     claims: Literal["C0", "C1", "C2"] = "C0"
     now: AwareDatetime | Literal["real"] = Field(default_factory=lambda: datetime.fromisoformat(DEMO_NOW))
-    approval_refund_won: int = 100_000  # refunds from this amount wait for a person
-    admin_token: str = ""  # "" disables the admin API
-    max_message_chars: int = Field(default=1000, ge=1, le=4000)  # the request model stops at 4000
+    approval_refund_won: int = 100_000  # 이 금액 이상의 환불은 사람을 기다린다
+    admin_token: str = ""  # ""이면 관리자 API가 꺼진다
+    max_message_chars: int = Field(default=1000, ge=1, le=4000)  # 요청 모델(MessageIn)의 상한이 4000이다
     max_agent_calls_per_turn: int = 12
     max_turns_per_session: int = 40
-    load_seed: bool = True  # fill an empty shop database with the generated data
-    expose_openapi: bool = False  # serve /openapi.json (for API scanners and clients; off by default)
-    voice: bool = False  # speech in and out (needs the `voice` dependency group)
+    load_seed: bool = True  # 빈 쇼핑몰 DB를 생성 데이터로 채운다
+    expose_openapi: bool = False  # /openapi.json을 내놓는다(API 스캐너와 클라이언트용, 기본은 꺼짐)
+    voice: bool = False  # 음성 입출력(`voice` 의존성 그룹이 필요하다)
     tts_device: Literal["cuda", "cpu"] = "cuda"
     stt_device: Literal["cuda", "cpu"] = "cuda"
-    max_audio_bytes: int = 5_000_000  # about five minutes of browser-recorded speech
+    max_audio_bytes: int = 5_000_000  # 브라우저로 녹음한 말 약 5분 분량
     max_tts_chars: int = Field(default=600, ge=1, le=4000)
-    max_audio_seconds: int = 60  # a small file can hold hours of low-bitrate speech
-    max_concurrent_turns: int = 4  # turns (and recognitions) running at once, over all sessions
+    max_audio_seconds: int = 60  # 낮은 비트레이트면 작은 파일에도 몇 시간 분량의 말이 들어갈 수 있다
+    max_concurrent_turns: int = 4  # 모든 세션을 통틀어 동시에 도는 턴(과 인식) 수
 
     # THINK를 비워 두면 모델에 맞춰 채운다: 기본 모델(qwen3.5:4b)은 잰 그대로 "off", 다른 모델은 "omit"(보내지
     # 않음).
@@ -86,7 +86,7 @@ class Settings(BaseModel):
 
     # OllamaProvider에 넘길 think 값(True/False/None). app.py의 create_app이 제공자를 만들 때 쓴다.
     def agent_think(self) -> bool | None:
-        """The value OllamaProvider sends as `think`; None sends nothing."""
+        """OllamaProvider가 `think`로 보낼 값. None이면 아무것도 보내지 않는다."""
         return _THINK[self.think]
 
     # 도구와 규정이 보는 "쇼핑몰의 지금". 기본은 고정 시각(DEMO_NOW)이고, NOW=real일 때만 실제 UTC 시각이다.

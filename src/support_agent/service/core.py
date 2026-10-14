@@ -1,4 +1,4 @@
-"""One chat turn, the audit log and the approval queue. No web code here: app.py is a thin layer over this."""
+"""채팅 한 턴, 감사 로그, 승인 대기열. 웹 코드는 여기 없다: app.py는 이 위의 얇은 층이다."""
 
 # [파일 역할] 채팅 서비스의 핵심. 고객 메시지 한 개에 답하는 한 턴(handle), 모든 도구 실행이 지나는
 # 관문(_run_tool), 감사 로그, 사람 승인 대기열(_queue_approval, decide), 관리 화면용 조회를 맡는다.
@@ -56,9 +56,8 @@ from support_agent.tools import build_registry
 
 # 승인 관문에 걸릴 수 있는 쓰기 도구와 고객 안내에 쓸 한국어 이름. 환불액은 도구가 규정 계산을 마쳐야 알 수
 # 있으므로, 미리 계산해 보는 단계 없이 도구의 트랜잭션 안에서 실제 refund_won을 읽어 판단한다. 그래서 "확인할
-# 때는 기준 아래, 실행할 때는 위"인 틈이 없다(docs/service.md).
-# Writes whose answer carries `refund_won`. The amount is known only after the tool's own rules ran, so it
-# is read from the handler's answer inside the transaction, which is rolled back when a person must decide.
+# 때는 기준 아래, 실행할 때는 위"인 틈이 없다(docs/service.md). 대상은 답에 `refund_won`이 들어 있는 쓰기
+# 도구다. 사람이 결정해야 하면 그 트랜잭션은 되돌린다.
 APPROVAL_TOOLS = {"cancel_order": "취소", "request_return": "반품"}
 # 도구 이름 → 화면 표기. 고객 화면의 진행 표시("주문 조회 중" 같은 tool 이벤트), 관리 화면의 승인 카드, MCP
 # 서버의 도구 제목(mcp_server.py)이 쓴다.
@@ -86,12 +85,11 @@ FALLBACK_REPLY = (
 # 컨텍스트가 차거나 세션당 턴 한도(기본 40)에 닿아 세션을 닫을 때의 고정 안내.
 CLOSED_REPLY = "대화가 길어져 이 상담은 여기서 마칩니다. 이어서 도움이 필요하시면 새 상담을 시작해 주세요."
 
-# A write held for a person answers the agent with the facts and with these instructions, which are for the
-# agent only. A model may pass them on word for word (docs/service.md, the qwen3.5:4b turn of 2026-10-04), so
-# in a turn that held a write the customer reads the model's reply without them (without_agent_only), then
-# the service's own notice (HELD_NOTICE).
-# 승인 대기 도구 결과 끝에 붙는, 에이전트에게만 하는 지시 두 문장. 문구는 관문을 만들 때부터 그대로이고(모델의
-# 입력을 바꾸지 않으려고), 고객에게 가는 답에서만 빼낸다.
+# 승인 대기 도구 결과 끝에 붙는, 에이전트에게만 하는 지시 두 문장. 사람을 기다리는 쓰기는 에이전트에게 사실과
+# 이 지시를 함께 돌려준다. 문구는 관문을 만들 때부터 그대로이고(모델의 입력을 바꾸지 않으려고), 고객에게 가는
+# 답에서만 빼낸다. 모델이 이 지시를 글자 그대로 고객에게 옮길 수 있기 때문이다(docs/service.md, 2026-10-04의
+# qwen3.5:4b 턴). 그래서 쓰기가 대기에 걸린 턴에서 고객은 지시를 뺀 모델의 답(without_agent_only)과 그 뒤의
+# 서비스 고정 안내(HELD_NOTICE)를 읽는다.
 HELD_AGENT_ONLY = (
     "고객에게 담당자 확인 후 처리되며 결과는 이 대화창으로 안내된다고 알리세요.",
     "같은 요청을 다시 호출하지 마세요.",
@@ -105,20 +103,17 @@ HELD_NOTICE = (
 # 지시를 옮겼다고 보는 기준: 공백·문장부호를 뺀 글자·숫자가 지시와 10자 이상 이어서 같으면 그 부분을 뺀다.
 # 문장을 나눌 때는 절 하나가 지시와 6자 이상 같으면 그 절을 뺀다(2026-10-05에 정한 값, docs/service.md "빼는
 # 규칙").
-_COPIED_RUN = 10  # letters and digits a reply may share with HELD_AGENT_ONLY before that part is cut
-_CLAUSE_RUN = 6  # ... and that a clause kept from a cut sentence may not share with it
+_COPIED_RUN = 10  # 답이 HELD_AGENT_ONLY와 이만큼 이어서 같은 글자·숫자를 가지면 그 부분을 뺀다
+_CLAUSE_RUN = 6  # ... 잘린 문장에서 남기는 절은 지시와 이만큼 이어서 같으면 안 된다
 # 지시 문장에서 글자·숫자만 남긴 비교용 열쇠. 띄어쓰기나 문장부호를 바꿔 옮겨도 잡히게 한다.
 _AGENT_KEYS = tuple("".join(ch for ch in s if ch.isalnum()) for s in HELD_AGENT_ONLY)
 # 답을 줄 → 문장 → 쉼표 뒤 조각 순으로 나누는 구분 패턴. 문장 끝은 마침표·느낌표·물음표 뒤의 공백이다.
 _LINE_END = re.compile(r"\n")
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 _AFTER_COMMA = re.compile(r"(?<=,)\s+")
-# A comma after one of these endings closes a clause joined by "and", "while" or "but": …고, …며, …지만,
-# …는데 (a parenthesis may follow). Not the quoting …다고/…라고 (the instructions' own "안내된다고"), nor a
-# condition (…면) or a cause (…서): the clause left alone would say more than the sentence did.
-# 쉼표 앞 조각이 "…고, …며, …지만, …는데"로 끝나면 절의 경계로 믿는다(뒤에 괄호 하나가 붙어도 된다).
-# "…다고/라고" 같은 인용, "…면" 조건, "…서" 이유는 떼어 내면 남은 절이 원래 문장보다 많은 것을 말하게 되므로
-# 경계로 보지 않고 문장째 뺀다.
+# 쉼표 앞 조각이 "…고, …며, …지만, …는데"('그리고', '하면서', '하지만'으로 잇는 어미)로 끝나면 절의 경계로
+# 믿는다(뒤에 괄호 하나가 붙어도 된다). "…다고/라고" 같은 인용(지시 자체의 "안내된다고"가 이 꼴이다), "…면"
+# 조건, "…서" 이유는 떼어 내면 남은 절이 원래 문장보다 많은 것을 말하게 되므로 경계로 보지 않고 문장째 뺀다.
 _JOINED = re.compile(r"(?:(?<![다라자냐])고|며|지만|데)(?:\s*\([^()]*\))?$")
 
 # 진행 이벤트를 내보내는 콜백의 타입: emit(이벤트 이름, 데이터). 웹에서는 SSE 큐에 넣고, 승인 실행·MCP에서는
@@ -137,7 +132,7 @@ def _amount(refund: int, order_total: int) -> str:
 # 모델 입력과 완료 주장 가드(claims.py)가 근거로 읽는 형식이 평가와 달라지기 때문이다(테스트가 문구를
 # 고정한다, docs/service.md).
 def held_for_agent(refund: int, order_total: int, code: str) -> str:
-    """What the agent reads when a write was held. Unchanged since the gate was built."""
+    """쓰기가 대기에 걸렸을 때 에이전트가 읽는 글. 관문을 만든 뒤로 바꾸지 않았다."""
     return (
         f"환불액 {_amount(refund, order_total)}은 담당자 승인이 필요해 아직 처리되지 않았고, 승인 대기열에 "
         f"올렸습니다(승인 번호 {code}). " + " ".join(HELD_AGENT_ONLY)
@@ -151,14 +146,13 @@ def held_for_agent(refund: int, order_total: int, code: str) -> str:
 # 단위로 _sentence_without에 맡긴다. 빈 줄이 셋 이상 이어지면 둘로 줄인다.
 # 한계: 지시를 다른 말로 바꿔 옮기면(10자 이상 같은 글자가 없으면) 잡지 못한다(docs/service.md "알려진 틈").
 def without_agent_only(text: str) -> str:
-    """`text` without what passes HELD_AGENT_ONLY on to the customer.
+    """`text`에서 HELD_AGENT_ONLY를 고객에게 옮기는 부분을 뺀 글.
 
-    Copied are the runs of _COPIED_RUN letters and digits (spaces and punctuation aside, also across the end
-    of a sentence or a line) that `text` shares with an instruction, and the word 호출 (said of tools, never
-    of a customer's request). A line without any is kept as it is. A sentence with one goes, unless commas
-    after joining endings (_JOINED) divide it into clauses: then only the clauses that share a run of
-    _CLAUSE_RUN with an instruction go, and the rest of the sentence stays. A clause that ended with such a
-    comma and now ends the sentence ends with a full stop. A paraphrase of an instruction is not caught."""
+    옮긴 것으로 보는 것은 `text`가 지시와 공유하는, _COPIED_RUN개 글자·숫자가 이어진 조각(공백과 문장부호는
+    빼고 보며, 문장 끝이나 줄 끝을 넘어도 된다)과 낱말 호출(도구에 대해서만 쓰고 고객의 요청에는 쓰지 않는
+    말)이다. 그런 것이 없는 줄은 그대로 둔다. 그런 것이 있는 문장은 뺀다. 단, 이음 어미(_JOINED) 뒤의 쉼표가
+    문장을 절로 나누면, 지시와 _CLAUSE_RUN개 이어진 조각을 공유하는 절만 빼고 나머지는 남긴다. 그런 쉼표로
+    끝났다가 이제 문장 끝이 된 절은 마침표로 끝낸다. 지시를 다른 말로 바꿔 옮긴 것은 잡지 못한다."""
     copied = _copied(text)
     lines = []
     for at, line in _pieces(text, 0, _LINE_END):
@@ -174,7 +168,7 @@ def without_agent_only(text: str) -> str:
 # 구분 패턴으로 글을 자르되, 각 조각이 전체 답의 몇 번째 글자에서 시작하는지도 함께 돌려준다. 겹침 위치(전체
 # 답 기준)와 조각을 맞대어 보기 위해서다.
 def _pieces(text: str, start: int, sep: re.Pattern[str]) -> list[tuple[int, str]]:
-    """`text`, which starts at `start` of the whole reply, cut at `sep`: (start of the piece, piece)."""
+    """전체 답의 `start` 위치에서 시작하는 `text`를 `sep`에서 자른 것: (조각의 시작 위치, 조각)."""
     out, at = [], 0
     for match in sep.finditer(text):
         out.append((start + at, text[at : match.start()]))
@@ -187,7 +181,7 @@ def _pieces(text: str, start: int, sep: re.Pattern[str]) -> list[tuple[int, str]
 # 위치로 되돌려 모은다. 압축 글에서 찾으므로 문장이나 줄을 넘어 이어진 복사도 잡는다.
 # "호출"은 도구에 대해서만 쓰는 말이라(고객의 요청을 "호출"이라 하지 않음) 그 낱말만으로도 뺀다.
 def _copied(text: str) -> set[int]:
-    """The positions in `text` of the letters and digits it copies from HELD_AGENT_ONLY."""
+    """`text`가 HELD_AGENT_ONLY에서 옮긴 글자·숫자의 `text` 안 위치들."""
     where = [i for i, ch in enumerate(text) if ch.isalnum()]
     compact = "".join(text[i] for i in where)
     runs = {key[i : i + _COPIED_RUN] for key in _AGENT_KEYS for i in range(len(key) - _COPIED_RUN + 1)}
@@ -212,12 +206,12 @@ def _shares_a_run(text: str, n: int) -> bool:
 # 겹침이 있는 문장 하나를 처리한다: 이음 어미 + 쉼표로 나뉜 절이 둘 이상이면 지시와 6자 이상 같은 절만 빼고
 # 나머지를 남기고, 절로 나뉘지 않거나 남는 절이 없으면 ""(문장째 뺌)를 돌려준다.
 def _sentence_without(at: int, sentence: str, copied: set[int]) -> str:
-    """`sentence` (at `at` of the reply), its clauses without copied text, or "" (see without_agent_only)."""
+    """답의 `at` 위치에 있는 `sentence`에서 옮긴 글이 든 절을 뺀 것, 또는 ""(without_agent_only 참고)."""
     if not copied.intersection(range(at, at + len(sentence))):
         return sentence
     # 쉼표 뒤마다 자른 조각을 이어 붙여 절을 만든다. 조각이 _JOINED로 끝나는 곳(또는 문장 끝)에서만 절을 끊고,
     # 그 밖의 쉼표는 같은 절 안의 쉼표로 둔다.
-    pieces = _pieces(sentence, 0, _AFTER_COMMA)  # every piece but the last ends with its comma
+    pieces = _pieces(sentence, 0, _AFTER_COMMA)  # 마지막 조각 말고는 모두 쉼표로 끝난다
     clauses, start = [], 0
     for i, (piece_at, piece) in enumerate(pieces):
         last = i == len(pieces) - 1
@@ -225,16 +219,16 @@ def _sentence_without(at: int, sentence: str, copied: set[int]) -> str:
             clauses.append((start, piece_at + len(piece)))
             if not last:
                 start = pieces[i + 1][0]
-    # Judged on the clause's own text: a copied run found across the joining comma would also take the
-    # clause before it ("접수되었으며, 결과는 이 대화창으로 …"). Any copied run inside a clause is longer than
-    # _CLAUSE_RUN, so it is still caught here.
+    # 절 자신의 글로 판정한다: 잇는 쉼표를 넘어 찾은 복사 조각으로 판정하면 그 앞 절까지 빼게
+    # 된다("접수되었으며, 결과는 이 대화창으로 …"). 절 안에 있는 복사 조각은 _CLAUSE_RUN보다 길므로 여기서도
+    # 잡힌다.
     kept = [sentence[s:e] for s, e in clauses if not _shares_a_run(sentence[s:e], _CLAUSE_RUN)]
     if len(clauses) < 2 or not kept:
         return ""
     said = " ".join(kept)
     # 문장을 끝맺던 절이 빠져 남은 글이 쉼표로 끝나면, 쉼표를 원래 문장의 끝 부호(마침표 등)로 바꾼다. 남은
     # 절은 "…고."처럼 이음 어미로 끝날 수 있다(docs/service.md).
-    if said.endswith(","):  # the clause that ended the sentence went
+    if said.endswith(","):  # 문장을 끝맺던 절이 빠졌다
         said = said[:-1] + ("." if sentence.rstrip()[-1:] in (".", "!", "?") else "")
     return said
 
@@ -242,7 +236,7 @@ def _sentence_without(at: int, sentence: str, copied: set[int]) -> str:
 # 기록용 실제 시각(UTC). 세션·감사 로그·승인 기록에 쓴다. 도구·규정은 이것이 아니라 설정의 고정
 # 시계(Settings.clock)를 본다.
 def wall_clock() -> datetime:
-    """When something was recorded. `Settings.clock()` is the shop's clock and may be fixed for the demo."""
+    """무언가가 기록된 시각. `Settings.clock()`은 쇼핑몰의 시계로, 시연용으로 고정될 수 있다."""
     return datetime.now(UTC)
 
 
@@ -258,12 +252,12 @@ class SessionClosedError(RuntimeError):
 
 # 같은 세션의 잠금을 얻지 못함. 웹은 "앞선 메시지에 답하는 중" 안내나 409로 바꾼다.
 class BusyError(RuntimeError):
-    """The session is already answering a message (or an approval of it is being carried out)."""
+    """세션이 이미 메시지에 답하는 중이다(또는 그 세션의 승인을 실행하는 중이다)."""
 
 
 # 없는 승인이거나 이미 결정된 승인. app.py가 409로 바꾼다.
 class ApprovalStateError(RuntimeError):
-    """The approval does not exist or was decided already."""
+    """승인이 없거나 이미 결정되었다."""
 
 
 # DB에 저장한 JSON에서 에이전트 상태를 되살린다. agent_calls는 되살리지 않아 0부터 다시 세므로, 루프의 LLM
@@ -284,7 +278,7 @@ def _state_from(data: dict[str, Any]) -> AgentState:
 # 상담원 답 가운데 도구 호출이 아닌 것. 형식 오류나 가드로 돌려보낸 답은 기록에는 남지만 여기서 빠진다.
 # 고객 대화 조회와 관리 화면의 대화 표시가 이것을 쓰고, app.py의 /speech는 이 목록에 있는 답만 소리로 만든다.
 def visible_messages(state: dict[str, Any]) -> list[dict[str, str]]:
-    """What the customer saw: their own words and the replies that were delivered."""
+    """고객이 본 것: 고객 자신의 말과 전달된 답."""
     out = []
     for m in state["messages"]:
         if m["role"] == "user" and not m.get("harness"):
@@ -318,18 +312,18 @@ class ChatService:
             policy=settings.policy,
             num_ctx=settings.num_ctx,
             max_agent_calls=settings.max_agent_calls_per_turn,
-            language="L1",  # never show a customer a reply that drifted into Chinese
+            language="L1",  # 중국어로 넘어간 답은 절대 고객에게 보이지 않는다
             claims=settings.claims,
         )
         # 잠금 셋: 세션별 잠금(한 세션은 한 번에 메시지 하나), 승인 결정 잠금(승인된 쓰기는 세션과 상관없이 한
         # 번에 하나), 그리고 세션별 잠금 dict 자체를 보호하는 잠금. 프로세스 안의 잠금이라 앱은 프로세스
-        # 하나로 띄운다(여러 프로세스로 늘리려면 DB 행 잠금이 필요하다).
-        # One process serves the chat (see docs/design.md): a lock per session is enough.
+        # 하나로 띄운다(여러 프로세스로 늘리려면 DB 행 잠금이 필요하다). 프로세스 하나가 채팅을 맡으므로
+        # 세션별 잠금으로 충분하다(docs/service.md "한 세션은 한 번에 메시지 하나").
         self._locks: dict[str, threading.Lock] = {}
         self._decisions = threading.Lock()
         self._locks_guard = threading.Lock()
 
-    # ---------------------------------------------------------------- sessions
+    # ---------------------------------------------------------------- 세션 (sessions)
 
     # 새 세션을 만들고 고객용 대화 형태로 돌려준다. 시스템 프롬프트는 규정 문서와 쇼핑몰의 지금(고정 시계)으로
     # 만든다.
@@ -338,7 +332,7 @@ class ChatService:
     # 세션 id는 secrets.token_urlsafe(24)라 추측할 수 없다. 고객 쪽에 로그인이 없으므로 이 값이 곧 열쇠다.
     # 감사 로그 첫 줄에 이 세션을 어떤 모델·think·규정 모드로 처리했는지 남긴다.
     def new_session(self, kind: str = "chat") -> dict[str, Any]:
-        """`kind` "mcp" is a session without a conversation: an MCP client calls the tools itself."""
+        """`kind`가 "mcp"면 대화 없는 세션이다: MCP 클라이언트가 도구를 직접 부른다."""
         now = wall_clock()
         state = new_state(build_system_prompt(self.policy_text, self.settings.clock()))
         if kind != "chat":
@@ -379,15 +373,15 @@ class ChatService:
                 ],
             }
 
-    # ---------------------------------------------------------------- one turn
+    # ---------------------------------------------------------------- 한 턴 (one turn)
 
     # 고객 메시지 하나에 답한다(웹의 글·음성 메시지가 모두 여기로 온다). 빈 메시지나 한도를 넘는 메시지는
     # ValueError다.
     # 세션 잠금은 기다리지 않고 바로 시도한다(blocking=False). 같은 세션에서 메시지가 겹치면 뒤의 것은
     # BusyError로 돌려보낸다.
     def handle(self, session_id: str, text: str, emit: Emit, *, via: dict[str, Any] | None = None) -> None:
-        """Answer one customer message. Progress goes to `emit(event, data)`; the last event is `end`.
-        `via` says how the message arrived when it was not typed (kept in the audit log)."""
+        """고객 메시지 하나에 답한다. 진행 상황은 `emit(event, data)`로 보내고 마지막 이벤트는 `end`다.
+        `via`는 메시지가 입력이 아닌 방식으로 들어왔을 때 그 방식을 알린다(감사 로그에 남는다)."""
         text = text.strip()
         if not text or len(text) > self.settings.max_message_chars:
             raise ValueError("the message is empty or too long")
@@ -413,8 +407,8 @@ class ChatService:
                 raise SessionClosedError(row.status)
             state = _state_from(row.state)
             customer_id, turns = row.verified_customer_id, row.turns
-        # max_tool_errors is per turn, like max_agent_calls: errors of earlier turns must not end this one.
-        # 저장된 도구 오류 수는 세션 누계라서, 이번 턴은 0부터 세고 끝에서 다시 더해 저장한다.
+        # max_tool_errors는 max_agent_calls처럼 턴당 한도다: 앞선 턴의 오류가 이번 턴을 끝내면 안 된다. 저장된
+        # 도구 오류 수는 세션 누계라서, 이번 턴은 0부터 세고 끝에서 다시 더해 저장한다.
         earlier_errors, state.tool_errors = state.tool_errors, 0
 
         self._audit(session_id, "customer_message", {"text": text, **({"via": via} if via else {})})
@@ -427,7 +421,7 @@ class ChatService:
         )
 
         # 이번 턴에 승인 대기에 걸린 쓰기의 {승인 번호: 고객 안내 문장}. _run_tool이 채운다.
-        held: dict[str, str] = {}  # approval code -> the customer's notice, for writes held in this turn
+        held: dict[str, str] = {}  # 승인 번호 -> 고객 안내 문장(이번 턴에 대기에 걸린 쓰기마다)
 
         def run_tool(name: str, arguments: dict) -> ToolResult:
             return self._run_tool(session_id, ctx, name, arguments, emit, notices=held)
@@ -452,20 +446,17 @@ class ChatService:
                 status = SessionStatus.HANDOFF
             elif turn.stop == "context_limit":
                 status, reply = SessionStatus.CLOSED, CLOSED_REPLY
-            elif turn.stop:  # the model ran out of calls, retries or tool errors in this turn
+            elif turn.stop:  # 모델이 이번 턴의 호출·재시도·도구 오류 한도를 다 썼다
                 error, reply = turn.stop, FALLBACK_REPLY
             elif held:
-                # The model has just read the held write's instructions for the agent. The customer reads
-                # the model's reply without them (what it looked up, asked or did besides), then the
-                # service's notice. The conversation keeps exactly that, so the model's next turn reads what
-                # the customer read; the model's own words stay in the audit log.
+                # 모델은 방금 대기에 걸린 쓰기의 에이전트용 지시를 읽었다. 고객은 지시를 뺀 모델의 답(조회한
+                # 것, 물은 것, 그 밖에 한 일)과 그 뒤의 서비스 안내를 읽는다. 대화에도 정확히 그것을 남겨
+                # 모델의 다음 턴이 고객이 읽은 것을 읽게 하고, 모델이 원래 한 말은 감사 로그에 남긴다.
                 not_delivered = reply
                 said = without_agent_only(reply)
                 reply = "\n".join([*([said] if said else []), *held.values()])
                 state.messages[-1] = Message("assistant", reply)
         except Exception as exc:  # noqa: BLE001
-            # Whatever the tools wrote before the failure is committed and audited; keep the conversation
-            # consistent with it and tell the customer that this message was not answered.
             # 모델 연결 오류(ProviderError)는 메시지만, 그 밖의 예외는 스택까지 감사 로그에 남긴다. 실패 전에
             # 도구가 쓴 것은 이미 커밋·감사됐으므로, 대화를 그것과 맞게 두고 고객에게는 이번 메시지에 답하지
             # 못했다고 알린다.
@@ -475,9 +466,9 @@ class ChatService:
             reply = FALLBACK_REPLY
             # 마지막 메시지가 답 없는 도구 호출이면 빼서, 다음 턴의 모델이 짝이 맞지 않는 호출을 읽지 않게
             # 한다.
-            if state.messages[-1].tool_calls:  # the call that failed has no answer; do not keep half of it
+            if state.messages[-1].tool_calls:  # 실패한 호출에는 답이 없다: 반쪽만 남기지 않는다
                 state.messages.pop()
-        state.tool_errors += earlier_errors  # the stored state keeps the session's total
+        state.tool_errors += earlier_errors  # 저장하는 상태에는 세션 누계를 둔다
         # 고정 안내(오류·닫힘)는 agent_turn이 대화에 넣지 않았으므로 여기서 상담원 답으로 넣는다. 저장된
         # 대화가 고객이 본 것과 같아야 하기 때문이다.
         if reply is not None and (error or status is SessionStatus.CLOSED):
@@ -485,7 +476,7 @@ class ChatService:
         # 이 턴으로 세션당 턴 한도에 닿으면 세션을 닫고, 닫는 안내를 별도 메시지로 덧붙인다.
         if turns + 1 >= self.settings.max_turns_per_session and status is SessionStatus.OPEN:
             status = SessionStatus.CLOSED
-            closing = CLOSED_REPLY  # its own message, as in the stored conversation
+            closing = CLOSED_REPLY  # 저장된 대화처럼 별도 메시지로 보낸다
             state.messages.append(Message("assistant", CLOSED_REPLY))
 
         # 이번 턴의 LLM 호출마다 감사 행 하나: 형식 오류, 종료 이유, 부른 도구 이름, 토큰 수, 걸린 시간(ms).
@@ -545,13 +536,12 @@ class ChatService:
         approval_id: int | None = None,
         notices: dict[str, str] | None = None,
     ) -> ToolResult:
-        """The one way a tool runs in the service.
+        """서비스에서 도구가 실행되는 유일한 길.
 
-        Inside the tool's own transaction (toolkit's on_success hook): the refund the handler really computed
-        (for a return, plus the returns already filed on that order) is held against the approval threshold,
-        the audit row is written, and an approval that is being carried out is marked as done. So a change of
-        the shop data never exists without its audit row, and no amount above the threshold is committed
-        without a person. `approval_id` is set when that person has decided.
+        도구 자신의 트랜잭션 안에서(toolkit의 on_success 훅): 핸들러가 실제로 계산한 환불액(반품이면 그
+        주문에 이미 접수된 반품의 환불액을 더한 것)을 승인 기준과 비교하고, 감사 행을 쓰고, 실행 중인 승인을
+        끝남으로 표시한다. 그래서 쇼핑몰 데이터의 변경은 감사 행 없이 존재하지 않고, 기준 이상의 금액은
+        사람 없이 커밋되지 않는다. `approval_id`는 그 사람이 결정했을 때 주어진다.
         """
         # 화면에 "무엇을 하는 중"을 바로 알린다. seen은 이 호출 전까지 쌓인 규정 위반 기록 수다(이 호출에서
         # 생긴 것만 감사 행에 넣으려고).
@@ -588,12 +578,11 @@ class ChatService:
             # 기준 아래로 빠져나가는 것을 막는다. 방금 이 호출이 추가한 행은 합계에서 뺀다. 승인
             # 실행(approval_id 있음)은 이미 사람이 본 것이므로 다시 재지 않는다.
             if approval_id is None and spec.name == "request_return" and isinstance(refund, int):
-                # Lines of one order returned one call at a time must not slip under the threshold.
                 earlier = db_session.scalar(
                     select(func.coalesce(func.sum(db.ServiceRequest.refund_won), 0)).where(
                         db.ServiceRequest.order_id == answer["order_id"],
                         db.ServiceRequest.kind == db.RequestKind.RETURN,
-                        db.ServiceRequest.id != answer["request_id"],  # the row this call just added
+                        db.ServiceRequest.id != answer["request_id"],  # 이 호출이 방금 추가한 행
                     )
                 )
             # 기준 이상이면 실행 정보를 held에 담고 approval_required로 롤백한다. 사람이 결정하기 전에는 기준
@@ -605,7 +594,7 @@ class ChatService:
                 and refund + earlier >= self.settings.approval_refund_won
             ):
                 held.update(refund=refund, args=clean, order_total=refund + earlier)
-                raise ToolError("approval_required", "held for approval")  # rolls the call back
+                raise ToolError("approval_required", "held for approval")  # 호출을 롤백한다
             # 성공한 호출의 감사 행을 도구의 변경과 같은 트랜잭션에 넣는다. 감사 행을 쓰지 못하면 주문도
             # 바뀌지 않는다(tests/test_postgres.py가 확인한다).
             content = json.dumps(answer, ensure_ascii=False)
@@ -633,7 +622,7 @@ class ChatService:
             if notices is not None:
                 notices.update(notice)
         # 실패·거절된 호출은 바뀐 것이 없으므로 감사 행을 따로(별도 트랜잭션으로) 적는다.
-        if not result.ok:  # nothing was changed, so this row may stand alone
+        if not result.ok:  # 바뀐 것이 없으므로 이 행은 따로 있어도 된다
             self._audit(
                 session_id,
                 "tool_call",
@@ -646,7 +635,7 @@ class ChatService:
     # 채팅과 같다(docs/mcp.md).
     # 채팅과 달리 잠금을 30초까지 기다린다. 본인 확인 결과는 세션에 저장되고, 호출 하나를 턴 하나로 센다.
     def call_tool(self, session_id: str, name: str, arguments: dict[str, Any]) -> ToolResult:
-        """A tool call that comes from outside the agent loop (the MCP server). Same gate, same audit."""
+        """에이전트 루프 밖(MCP 서버)에서 온 도구 호출. 관문도 감사도 같다."""
         lock = self._lock(session_id)
         if not lock.acquire(timeout=30):
             raise BusyError(session_id)
@@ -669,7 +658,7 @@ class ChatService:
         finally:
             lock.release()
 
-    # ---------------------------------------------------------------- approvals
+    # ---------------------------------------------------------------- 승인 (approvals)
 
     # 롤백된 쓰기를 승인 대기열에 올린다. 같은 세션·도구·인자의 대기 건이 이미 있으면 새로 만들지 않고 그것을
     # 쓴다(모델이 같은 요청을 다시 불러도 대기열에는 하나만).
@@ -686,9 +675,9 @@ class ChatService:
         *,
         order_total: int,
     ) -> tuple[ToolResult, dict[str, str]]:
-        """Put the write that was just rolled back into the queue (once per session and arguments).
-        `order_total` adds the returns already filed on the order; approving commits `refund` only.
-        Returns the agent's answer and {approval code: the notice for the customer}."""
+        """방금 롤백된 쓰기를 대기열에 올린다(세션과 인자마다 한 번). `order_total`은 그 주문에 이미 접수된
+        반품을 더한 값이고, 승인하면 `refund`만 커밋된다. 에이전트에게 줄 답과 {승인 번호: 고객 안내}를
+        돌려준다."""
         with Session(self.engine) as db_session:
             pending = db_session.scalars(
                 select(Approval).where(
@@ -735,17 +724,17 @@ class ChatService:
     # 관리자의 승인·거절. 그 세션의 잠금을 먼저 잡는다(진행 중인 턴이 대화 상태를 덮어쓰지 않게). 이어 결정
     # 잠금으로 승인된 쓰기를 프로세스 안에서 한 번에 하나만 실행한다.
     def decide(self, approval_id: int, *, approve: bool, by: str, note: str = "") -> dict[str, Any]:
-        """Approve (and carry out) or reject a waiting write. The customer reads the outcome in the chat."""
+        """기다리는 쓰기를 승인(하고 실행)하거나 거절한다. 고객은 결과를 채팅에서 읽는다."""
         with Session(self.engine) as db_session:
             approval = db_session.get(Approval, approval_id)
             if approval is None:
                 raise ApprovalStateError("no such approval")
             session_id = approval.session_id
-        lock = self._lock(session_id)  # a running turn of that session would overwrite the conversation
+        lock = self._lock(session_id)  # 그 세션에서 도는 턴이 대화를 덮어쓰지 않게
         if not lock.acquire(timeout=30):
             raise BusyError(session_id)
         try:
-            with self._decisions:  # one approved write at a time, whatever the session
+            with self._decisions:  # 세션과 상관없이 승인된 쓰기는 한 번에 하나
                 return self._decide_locked(approval_id, approve=approve, by=by, note=note.strip())
         finally:
             lock.release()
@@ -756,8 +745,7 @@ class ChatService:
         claimed = ApprovalStatus.EXECUTING if approve else ApprovalStatus.REJECTED
         with Session(self.engine) as db_session:
             # pending인 행만 바꾸는 조건부 UPDATE 한 번으로 선점한다. 바뀐 행이 1이 아니면 다른 결정자가 먼저
-            # 가져간 것이다. DB가 판정하므로 다른 프로세스와 겨뤄도 한쪽만 이긴다.
-            # The claim is one conditional UPDATE: of two deciders, in this process or another, one wins.
+            # 가져간 것이다. DB가 판정하므로 같은 프로세스든 다른 프로세스든 두 결정자 가운데 한쪽만 이긴다.
             won = db_session.execute(
                 update(Approval)
                 .where(Approval.id == approval_id, Approval.status == ApprovalStatus.PENDING.value)
@@ -780,18 +768,16 @@ class ChatService:
                 enforce_policy=self.config.enforce_policy,
                 state=ConversationState(verified_customer_id=customer_id),
             )
-            # The tool's changes, its audit row and the approval's "approved" are one transaction.
+            # 도구의 변경, 그 감사 행, 승인의 "approved" 표시는 한 트랜잭션이다.
             try:
                 result = self._run_tool(
                     session_id, ctx, tool, args, lambda _e, _d: None, approval_id=approval_id
                 )
             except Exception as exc:
-                # That transaction was rolled back, so the shop is unchanged: give the claim back so the
-                # approval can be decided again. If the commit did land, it also set "approved", and this
-                # conditional UPDATE matches nothing.
-                # 실행 중 예외(감사 행 쓰기 실패, DB 오류 등)면 도구의 변경은 롤백됐으므로 승인을 pending으로
-                # 되돌려 다시 결정할 수 있게 한다. 되돌리기도 실패하거나 프로세스가 죽으면 executing으로
-                # 남는다(docs/service.md).
+                # 실행 중 예외(감사 행 쓰기 실패, DB 오류 등)면 그 트랜잭션은 롤백되어 쇼핑몰이 그대로이므로,
+                # 선점을 풀어 승인을 pending으로 되돌려 다시 결정할 수 있게 한다. 커밋이 실제로 됐다면
+                # "approved"도 함께 기록됐으므로 아래 조건부 UPDATE는 아무 행에도 맞지 않는다. 되돌리기도
+                # 실패하거나 프로세스가 죽으면 executing으로 남는다(docs/service.md).
                 with Session(self.engine) as db_session:
                     db_session.execute(
                         update(Approval)
@@ -835,9 +821,7 @@ class ChatService:
             state = copy.deepcopy(row.state)
             if status is ApprovalStatus.APPROVED and not session_id.startswith(
                 "mcp-"
-            ):  # MCP: no conversation
-                # The conversation keeps the write like any other tool call: the model reads what was done,
-                # and the claim guard finds the evidence when the agent later says that it is done.
+            ):  # MCP 세션은 대화가 없다
                 # 승인된 쓰기를 대화에 일반 도구 호출과 결과로 남긴다. 다음 턴의 모델이 무엇이 처리됐는지
                 # 읽고, 완료 주장 가드도 "처리되었습니다"의 근거를 찾을 수 있다. MCP 세션은 대화가 없으므로
                 # 넣지 않는다.
@@ -864,7 +848,7 @@ class ChatService:
         )
         return self.approval(approval_id)
 
-    # ---------------------------------------------------------------- admin reads
+    # ---------------------------------------------------------------- 관리자 조회 (admin reads)
 
     # --- 관리 화면용 조회 ---
     # 승인 한 건(결정 뒤 관리 화면이 카드를 갱신할 때).
@@ -910,7 +894,7 @@ class ChatService:
                 {"id": e.id, "at": e.at.isoformat(), "kind": e.kind, "payload": e.payload} for e in events
             ]
 
-    # ---------------------------------------------------------------- helpers
+    # ---------------------------------------------------------------- 도우미 (helpers)
 
     # 세션 행을 읽고, 없으면 SessionNotFoundError.
     def _row(self, db_session: Session, session_id: str) -> ChatSession:

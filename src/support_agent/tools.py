@@ -1,9 +1,10 @@
-"""The 14 domain tools, and verify_caller that takes find_customer's place in voice V4 (stage 9). Every caller
-runs them through toolkit.execute().
+"""도메인 도구 14개와, 음성 V4(9단계)에서 find_customer 자리를 대신하는 verify_caller.
 
-Check order inside a handler: identity -> existence -> ownership -> integrity (`ctx.require`) -> policy
-(`ctx.check_policy`). Error messages give the reason only, never a hint about what to do next.
-Nothing here reads the wall clock, uuid or random numbers: time is `ctx.now`, new ids come from content.
+모든 호출자는 이 도구들을 toolkit.execute()로 실행한다.
+
+핸들러 안의 검사 순서: 본인 확인 -> 대상 존재 -> 소유 -> 무결성(`ctx.require`) -> 규정
+(`ctx.check_policy`). 오류 메시지는 이유만 말하고, 다음에 무엇을 하라는 힌트는 주지 않는다.
+여기서는 현재 시각(벽시계), uuid, 난수를 읽지 않는다: 시각은 `ctx.now`이고 새 id는 내용에서 만든다.
 """
 
 # [파일 역할] 가상 쇼핑몰 고객센터의 도구 14개(조회 6, 쓰기 7, think)와 음성 V4용 verify_caller를 정의한다. 각
@@ -40,9 +41,9 @@ from support_agent.toolkit import Registry, ToolArgs, ToolContext, make_registry
 
 # 취소와 배송지 변경이 허용되는 주문 상태(결제완료, 상품 준비 중). 출고된 뒤에는 둘 다 규정상 안 된다.
 CANCELLABLE = (db.OrderStatus.PAID, db.OrderStatus.PREPARING)
-# Voice V4: jamo edits allowed between the name the agent heard and the caller's registered name. The first
-# rules took 1 and failed their collision gate (six pairs of seed names one jamo apart); the 2026-10-04 rule
-# change took 0, exact names after normalisation, before any measurement (docs/experiments.md, stage 9).
+# 음성 V4: 에이전트가 들은 이름과 발신 번호로 가입한 고객의 이름 사이에 허용하는 자모 편집 수. 처음 규칙은
+# 1로 정했다가 이름 충돌 관문에서 떨어졌고(seed 이름 가운데 자모 하나 차이인 쌍이 여섯), 2026-10-04 규칙
+# 변경에서 측정 전에 0(정규화 뒤 이름 완전 일치)으로 바꿨다(docs/experiments.md 9단계).
 NAME_TOLERANCE = 0
 
 
@@ -191,11 +192,13 @@ def _require_line_free(ctx: ToolContext, item: db.OrderItem) -> None:
     )
 
 
-# 반품과 교환이 함께 쓰는 규정 두 가지: 배송완료 상태일 것, 수령일 다음 날부터 7일째 되는 날(KST 날짜)까지일
-# 것. 코드 접두사(return/exchange)만 바꿔 같은 검사를 쓴다.
 # 배송완료인데 수령 시각 기록이 없는 것은 데이터 무결성 문제라 규정이 아니라 require로 막는다.
 def _check_delivered_in_window(ctx: ToolContext, order: db.Order, kind: str, word: str) -> None:
-    """The two policy rules that returns and exchanges share. `kind` is the code prefix."""
+    """반품과 교환이 함께 쓰는 규정 두 가지. `kind`는 오류 코드의 접두사(return/exchange)다.
+
+    규정: 배송완료 상태일 것, 수령일 다음 날부터 7일째 되는 날(KST 날짜)까지일 것. 접두사만 바꿔 같은 검사를
+    쓴다.
+    """
     ctx.check_policy(
         order.status == db.OrderStatus.DELIVERED,
         f"{kind}_not_delivered",
@@ -215,10 +218,11 @@ def _check_delivered_in_window(ctx: ToolContext, order: db.Order, kind: str, wor
         )
 
 
-# 개수로 만드는 id(쿠폰, 티켓, 이관)를 start부터 비어 있는 첫 번호로 정한다. 행이 지워져 개수와 번호가
-# 어긋나도 충돌하지 않는다.
 def _free_id(session: Session, model: type[db.Base], prefix: str, start: int) -> str:
-    """`{prefix}{n}` with the first unused n from `start`: a count-based id that never collides."""
+    """`start`부터 아직 쓰이지 않은 첫 n으로 만든 `{prefix}{n}`: 개수로 만들지만 충돌하지 않는 id.
+
+    쿠폰, 티켓, 이관 id에 쓴다. 행이 지워져 개수와 번호가 어긋나도 충돌하지 않는다.
+    """
     n = start
     while session.get(model, f"{prefix}{n}") is not None:
         n += 1
@@ -235,10 +239,12 @@ def _compensation_coupons(session: Session, **where: str) -> list[db.Coupon]:
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 
-# 보상 쿠폰 한 장의 사실(번호, 주문, 사유, 금액, 발급 시각). get_order·get_customer가 보여 줘서, 주문당
-# 1장·고객당 30일 2장 같은 한도를 에이전트가 직접 셀 수 있게 한다(docs/design.md).
 def _coupon_fact(coupon: db.Coupon) -> dict:
-    """Facts only, so that the agent can apply the coupon limits of the policy itself."""
+    """보상 쿠폰 한 장의 사실만(번호, 주문, 사유, 금액, 발급 시각) 준다.
+
+    판단은 넣지 않아 규정의 쿠폰 한도(주문당 1장, 고객당 30일 2장)를 에이전트가 직접 적용하게 한다.
+    get_order·get_customer가 이것을 보여 준다(docs/design.md).
+    """
     return {
         "coupon_id": coupon.id,
         "order_id": coupon.order_id,
@@ -249,10 +255,12 @@ def _coupon_fact(coupon: db.Coupon) -> dict:
     }
 
 
-# 연락처 정규화: NFKC로 전각 문자를 바꾼 뒤, 이메일이 있으면 소문자 이메일로, 없으면 숫자만 남긴 전화번호로
-# 비교한다. 국가 번호로 시작하는 번호(+82 10…)는 010…으로 바꾼다.
 def _normalise_contact(contact: str) -> tuple[str, str]:
-    """(column, value): an e-mail in lower case, or a phone number reduced to its digits."""
+    """연락처를 (비교할 열, 값)으로 바꾼다: 소문자 이메일, 또는 숫자만 남긴 전화번호.
+
+    NFKC로 전각 문자를 바꾼 뒤 이메일이 있으면 이메일로, 없으면 전화번호로 비교한다. 국가 번호로 시작하는
+    번호(+82 10…)는 010…으로 바꾼다.
+    """
     text = unicodedata.normalize("NFKC", contact)
     email = _EMAIL.search(text)
     if email:
@@ -273,10 +281,12 @@ def _normalise_name(name: str) -> str:
     return text
 
 
-# 두 이름의 자모 단위 편집 거리(레벤슈타인). NFD로 한글 음절을 자모로 풀어 "배성분"과 "배성훈"이 1이 된다.
-# verify_caller의 허용 오차 비교와 analyze.py의 이름 충돌 검사(9단계 관문)가 쓴다.
 def name_distance(said: str, registered: str) -> int:
-    """Edit distance of two names in jamo after the find_customer normalisation ("배성분", "배성훈": 1)."""
+    """find_customer와 같은 이름 정규화 뒤 두 이름의 자모 단위 편집 거리(레벤슈타인, "배성분"·"배성훈": 1).
+
+    NFD로 한글 음절을 자모로 풀어 계산한다. verify_caller의 허용 오차 비교와 analyze.py의 이름 충돌
+    검사(9단계 관문)가 쓴다.
+    """
     a, b = (unicodedata.normalize("NFD", _normalise_name(x)) for x in (said, registered))
     previous = list(range(len(b) + 1))
     for i, x in enumerate(a, 1):
@@ -287,10 +297,12 @@ def name_distance(said: str, registered: str) -> int:
     return previous[-1]
 
 
-# 고객을 이 대화의 본인 확인된 고객으로 표시한다. 이미 다른 고객을 확인한 대화면 already_verified로
-# 막는다(대화당 고객 1명). 호출이 거절되면 execute()가 이 상태 변경을 되돌린다.
 def _identified(ctx: ToolContext, customer: db.Customer) -> dict:
-    """Mark the customer as verified for this conversation (one customer per conversation)."""
+    """고객을 이 대화의 본인 확인된 고객으로 표시한다(대화당 고객 1명).
+
+    이미 다른 고객을 확인한 대화면 already_verified로 막는다. 호출이 거절되면 execute()가 이 상태 변경을
+    되돌린다.
+    """
     verified = ctx.state.verified_customer_id
     ctx.require(
         verified is None or verified == customer.id,
@@ -338,7 +350,7 @@ def verify_caller(session: Session, ctx: ToolContext, args: VerifyCallerArgs) ->
     digits = "".join(ch for ch in ctx.caller_phone or "" if ch.isdigit())
     owners = list(session.scalars(select(db.Customer).filter_by(phone=digits).order_by(db.Customer.id)))
     ctx.require(bool(owners), "caller_not_registered", "발신 번호로 가입한 고객이 없습니다.")
-    # One to one: the number names one customer, and the name is only checked against that customer.
+    # 일대일: 번호가 고객 한 명을 가리키고, 이름은 그 고객의 이름과만 비교한다.
     ctx.require(len(owners) == 1, "caller_shared", "발신 번호로 가입한 고객이 여러 명입니다.")
     owner = owners[0]
     ctx.require(
@@ -708,14 +720,14 @@ def issue_compensation_coupon(session: Session, ctx: ToolContext, args: IssueCou
             "이 주문에는 상품 불량으로 접수된 반품·교환이 없습니다.",
         )
     # P0에서 자격 없이 통과된 쿠폰은 사유별 최소 금액으로 발급한다(위반은 ctx.violations에 남는다).
-    if amount is None:  # let through under P0
+    if amount is None:  # P0에서 막지 않고 통과된 경우
         amount = rules.fallback_compensation_won(args.reason)
 
     for_order = _compensation_coupons(session, order_id=order.id)
     ctx.check_policy(
         not for_order, "coupon_already_issued_for_order", "이 주문에는 이미 보상 쿠폰이 발급되었습니다."
     )
-    # Counted by KST calendar date, like the return window: issued within the last 30 days including today.
+    # 반품 기한처럼 KST 날짜로 센다: 오늘을 포함한 최근 30일 안에 발급된 쿠폰.
     first_day = kst_date(ctx.now) - timedelta(days=rules.COUPON_WINDOW_DAYS - 1)
     recent = [
         c
@@ -797,12 +809,11 @@ def think(session: Session, ctx: ToolContext, args: ThinkArgs) -> dict:
     return {"ok": True}
 
 
-# 대화 하나가 쓰는 도구 등록부. caller_id=True(음성 V4)면 find_customer 자리에 verify_caller가 들어가고
-# 나머지는 같다. run.py가 실행 설정(config.caller_id)에 따라 고르고, 서비스와 MCP 서버는 기본값을 쓴다.
 def build_registry(*, caller_id: bool = False) -> Registry:
-    """The tools of a conversation. caller_id (voice V4): verify_caller takes the place of find_customer.
+    """대화 하나가 쓰는 도구 등록부. caller_id=True(음성 V4)면 find_customer 자리에 verify_caller가 들어간다.
 
-    The service and the MCP server use the default."""
+    나머지 도구는 같다. run.py가 실행 설정(config.caller_id)에 따라 고르고, 서비스와 MCP 서버는 기본값을
+    쓴다."""
     return make_registry(
         verify_caller if caller_id else find_customer,
         get_customer,

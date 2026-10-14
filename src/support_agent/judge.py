@@ -1,4 +1,4 @@
-"""Rule-based judging: gold replay, required values, side metrics, pass^k and the task file checks."""
+"""규칙 기반 판정: 정답 재실행, 꼭 전달할 값, 보조 지표, pass^k, 과제 파일 검사."""
 
 # [파일 역할] 규칙 기반 판정의 모든 것: 정답 재실행(gold replay), 전달 값 찾기, 판정과 보조 지표, pass^k, 과제
 # 파일 검증.
@@ -49,17 +49,17 @@ from support_agent.toolkit import (
 # 확인 전 접근이 막힌 횟수(auth_blocks)를 세는 오류 코드다.
 DEFAULT_READ_TOOLS: tuple[str, ...] = ("get_customer", "list_orders", "get_order", "track_shipment")
 AUTH_ERROR_CODE = "identity_not_verified"
-# Deadlines lie in the future by design, so the "now is after every seed time" check skips them.
+# 기한(쿠폰 만료 시각)은 원래 미래에 있도록 만든 값이라 '과제의 now가 seed의 모든 시각보다 뒤' 검사에서 뺀다.
 FUTURE_COLUMNS: frozenset[tuple[str, str]] = frozenset({("coupons", "expires_at")})
 
 
 # 정답 동작이 P1에서 실패했다는 뜻이다. 에이전트가 아니라 과제 파일(또는 도구)이 틀린 것이므로 에피소드 실패가
 # 아닌 예외로 올린다.
 class GoldReplayError(ValueError):
-    """A gold action of a task did not succeed under P1. The task file (or a tool) is wrong."""
+    """과제의 정답 동작이 P1에서 성공하지 못했다. 과제 파일(또는 도구)이 틀렸다."""
 
 
-# ---------------------------------------------------------------- gold replay
+# ---------------------------------------------------------------- 정답 재실행 (gold replay)
 
 
 # 정답 재실행·과제 검증용 ToolContext. 과제의 고정 시각을 쓰고, verified면 과제 고객을 이미 본인 확인된 상태로
@@ -94,11 +94,11 @@ def _replay_gold(task: Task, seed_engine: Engine, registry: Registry) -> tuple[E
 
 # 정답 상태 DB. episode.gold_dump_of가 이것을 덤프해 판정 기준으로 쓴다.
 def gold_engine(task: Task, seed_engine: Engine, registry: Registry) -> Engine:
-    """A private copy of the seed database with only the gold actions applied (always under P1)."""
+    """seed 데이터베이스의 개인 복사본에 정답 동작만 실행한 것(언제나 P1로)."""
     return _replay_gold(task, seed_engine, registry)[0]
 
 
-# ---------------------------------------------------------------- required values
+# ---------------------------------------------------------------- 꼭 전달할 값 (required values)
 
 # 전달 값 찾기용 정규식. _DIGIT_COMMA: 숫자 사이의 쉼표(38,900 → 38900). _NUMERIC_DATE: 2026-09-02, 2026.9.2,
 # 2026/9/2. _KOREAN_DATE: '2026년 9월 2일' 또는 '9월 2일'(연도 생략 가능).
@@ -114,14 +114,14 @@ _SPACES = re.compile(r"\s+")
 # 한다(docs/design.md 판정).
 def _number_found(value: int, text: str) -> bool:
     text = _DIGIT_COMMA.sub("", text)
-    # Not part of a longer number or of an id: O-38900, V2.38900, 38900-1.
+    # 더 긴 숫자나 id의 일부가 아니어야 한다: O-38900, V2.38900, 38900-1은 아니다.
     pattern = rf"(?<![0-9A-Za-z.\-]){re.escape(str(value))}(?!\d|-\d)"
     return re.search(pattern, text) is not None
 
 
 # 글에 나온 날짜를 (연도 또는 None, 월, 일)로 모두 뽑는다. sim_report.py도 같은 정규식을 쓴다.
 def extract_dates(text: str) -> list[tuple[int | None, int, int]]:
-    """(year or None, month, day) of every date written as 2026-09-02, 2026.9.2, 2026년 9월 2일 or 9월 2일."""
+    """2026-09-02, 2026.9.2, 2026년 9월 2일, 9월 2일 꼴로 쓴 모든 날짜의 (연도 또는 None, 월, 일)."""
     found: list[tuple[int | None, int, int]] = []
     for pattern in (_NUMERIC_DATE, _KOREAN_DATE):
         for year, month, day in pattern.findall(text):
@@ -153,7 +153,7 @@ def _squash(text: str) -> str:
 # 숫자가 더 붙어 있지 않아야 한다.
 def _text_found(value: str, text: str) -> bool:
     needle = _squash(value)
-    # A value that starts or ends with a digit (a tracking number) must not sit inside a longer number.
+    # 숫자로 시작하거나 끝나는 값(송장 번호)은 더 긴 숫자 안에 들어 있으면 안 된다.
     before = r"(?<!\d)" if needle[:1].isdigit() else ""
     after = r"(?!\d)" if needle[-1:].isdigit() else ""
     return re.search(before + re.escape(needle) + after, _squash(text)) is not None
@@ -162,7 +162,7 @@ def _text_found(value: str, text: str) -> bool:
 # 꼭 전달해야 하는 값 하나가 글 목록 중 어디에든 있는지. 값의 종류(number, date, text)에 따라 위의 검사 하나를
 # 고른다. LLM을 쓰지 않으므로 같은 기록은 언제나 같은 결과다.
 def value_found(value: RequiredValue, texts: Sequence[str]) -> bool:
-    """True when one of the texts states the value. No LLM, no Korean number words."""
+    """글 가운데 하나라도 그 값을 말하면 True. LLM을 쓰지 않고, 한글 수 표기는 인식하지 않는다."""
     for raw in texts:
         text = unicodedata.normalize("NFKC", raw)
         if value.kind == "number":
@@ -179,7 +179,7 @@ def value_found(value: RequiredValue, texts: Sequence[str]) -> bool:
 # 고객에게 실제로 전달된 상담원 말만 모은다. 맨 앞의 고정 인사말, 전달하지 않은 답(delivered=False: 형식
 # 오류·멈춤·근거 없는 완료 주장), 도구 호출 메시지, 빈 말은 뺀다. 이관 안내문은 전달된 말로 남는다.
 def delivered_texts(messages: Sequence[Message]) -> list[str]:
-    """What the customer was told by the agent: delivered assistant text, without the fixed greeting."""
+    """에이전트가 고객에게 한 말: 전달된 assistant 글(고정 인사말 제외)."""
     texts: list[str] = []
     first = True
     for message in messages:
@@ -193,13 +193,13 @@ def delivered_texts(messages: Sequence[Message]) -> list[str]:
     return texts
 
 
-# ---------------------------------------------------------------- verdict
+# ---------------------------------------------------------------- 판정 (verdict)
 
 
 # 인자를 비교할 수 있는 문자열로 만든다. 키를 정렬하고, 도구가 비교하지 않는다고 표시한 자유 입력
 # 인자(uncompared_args: 티켓 본문, 이관 사유·요약)는 뺀다.
 def _dumps(args: Mapping[str, Any], spec: ToolSpec | None = None) -> str:
-    """Arguments as a comparable string, without the ones the tool marks as uncompared (free text)."""
+    """비교할 수 있는 문자열로 만든 인자. 도구가 비교하지 않는다고 표시한 인자(자유 글)는 뺀다."""
     skip = spec.uncompared_args if spec else ()
     return json.dumps({k: v for k, v in args.items() if k not in skip}, sort_keys=True, ensure_ascii=False)
 
@@ -208,13 +208,13 @@ def _dumps(args: Mapping[str, Any], spec: ToolSpec | None = None) -> str:
 # 목록(반품 줄 번호 등)이나 표기 차이가 있어도 같은 호출이면 같은 키가 되게 한다. 검증에 실패하는 과제는
 # validate_task가 따로 잡으므로 여기서는 원래 인자로 둔다.
 def _action_key(action: ToolAction, registry: Registry) -> tuple[str, str]:
-    """(tool, canonical args) in the same form as ToolCallLog.args, so both sides compare equal."""
+    """ToolCallLog.args와 같은 꼴의 (도구, 정규화한 인자). 그래서 양쪽이 같으면 같게 비교된다."""
     spec = registry.get(action.tool)
     if spec is None:
         return action.tool, _dumps(action.args)
     try:
         return action.tool, _dumps(canonical_args(spec, spec.args_model.model_validate(action.args)), spec)
-    except ValueError:  # pydantic's ValidationError; validate_task reports such a task
+    except ValueError:  # pydantic의 ValidationError. 이런 과제는 validate_task가 보고한다
         return action.tool, _dumps(action.args)
 
 
@@ -274,7 +274,7 @@ def judge(
 # pass^k: 관찰한 n번 중 c번 성공했을 때, 그 n번에서 k번을 뽑으면 모두 성공일 확률 C(c, k) / C(n, k). 같은
 # 과제를 k번 시켜도 매번 성공할지를 재는 τ-bench의 신뢰성 지표다(README 평가 방식).
 def pass_hat_k(n: int, c: int, k: int) -> float:
-    """Chance that k trials drawn from the n observed ones (c successes) all succeed."""
+    """관찰한 n번(성공 c번)에서 k번을 뽑았을 때 모두 성공일 확률."""
     if k < 1 or n < k:
         raise ValueError(f"pass^{k} needs at least {max(k, 1)} trials, got {n}")
     if not 0 <= c <= n:
@@ -285,7 +285,7 @@ def pass_hat_k(n: int, c: int, k: int) -> float:
 # 과제별 성공 목록에서 k = 1 .. (가장 적은 시도 수)까지 pass^k의 과제 평균을 낸다. run.py가 summary.json에
 # 넣는다.
 def pass_k_table(results: Mapping[str, Sequence[bool]]) -> dict[int, float]:
-    """Mean pass^k over tasks for k = 1 .. the smallest number of trials any task has."""
+    """k = 1 .. (과제들 가운데 가장 적은 시도 수)까지, 과제 평균 pass^k."""
     if not results:
         return {}
     max_k = min(len(trials) for trials in results.values())
@@ -296,7 +296,7 @@ def pass_k_table(results: Mapping[str, Sequence[bool]]) -> dict[int, float]:
     }
 
 
-# ---------------------------------------------------------------- task file checks
+# ---------------------------------------------------------------- 과제 파일 검사 (task file checks)
 
 
 # 과제 검증: 과제의 now가 seed의 모든 시각 컬럼 값보다 뒤인지(docs/design.md 과제 검증). 쿠폰 만료 시각처럼
@@ -323,7 +323,7 @@ def _seed_time_problems(task: Task, seed_engine: Engine) -> list[str]:
 def _try_forbidden(
     task: Task, base: Engine, registry: Registry, action: ToolAction, *, enforce_policy: bool
 ) -> tuple[ToolResult | None, bool, str]:
-    """Run one forbidden action on its own copy: (result, dump changed, tool bug text)."""
+    """금지 동작 하나를 자기 복사본에서 실행한다: (결과, 덤프가 바뀌었는지, 도구 버그 글)."""
     engine = db.memory_engine(base)
     try:
         before = db.dump_db(engine)
@@ -376,8 +376,8 @@ PRODUCT_READ_TOOL = "get_product"
 def _read_outputs(
     task: Task, seed_engine: Engine, registry: Registry, read_tools: Sequence[str]
 ) -> list[str]:
-    """Outputs of the read tools for the task's customer: customer-level tools first, then one call per
-    order id found in those outputs. How a tool is called is decided by its argument names."""
+    """과제 고객에 대한 읽기 도구의 출력들: 고객 단위 도구를 먼저 부르고, 그 출력에서 찾은 주문 번호마다
+    한 번씩 부른다. 도구를 어떻게 부를지는 인자 이름으로 정한다."""
     engine = db.memory_engine(seed_engine)
     ctx = _context(task, enforce_policy=True, verified=True)
     outputs: list[str] = []
@@ -408,7 +408,7 @@ def _read_outputs(
                     for item in items if isinstance(items, list) else []:
                         if isinstance(item, dict) and item.get("product_id") not in (None, *product_ids):
                             product_ids.append(item["product_id"])
-        # Products the customer ordered: their other options, prices and stock are reachable too.
+        # 고객이 주문한 상품들: 그 상품의 다른 옵션, 가격, 재고도 에이전트가 알아낼 수 있는 값이다.
         if PRODUCT_READ_TOOL in registry:
             for product_id in product_ids:
                 result = execute(registry, engine, ctx, PRODUCT_READ_TOOL, {"product_id": product_id})
@@ -431,7 +431,7 @@ def validate_task(
     read_tools: Sequence[str] = DEFAULT_READ_TOOLS,
     prompt_texts: Sequence[str] = (),
 ) -> list[str]:
-    """Problems of a task file against the seed data and the tools. An empty list means the task is fine."""
+    """seed 데이터와 도구에 비춘 과제 파일의 문제들. 빈 목록이면 과제에 문제가 없다."""
     problems: list[str] = []
     with seed_engine.connect() as conn:
         customers = db.Customer.__table__
@@ -442,8 +442,7 @@ def validate_task(
 
     # 전달 값이 시나리오나 에이전트 프롬프트(규정 문서의 예시 포함)에 이미 있으면, 조회 없이 그 글을 따라
     # 말해도 통과하므로 아무것도 증명하지 못한다. 2026-09-19 검토에서 규정 문서의 예시 날짜가 거절 과제의 전달
-    # 값과 같은 것을 찾아 고친 일이 있다(docs/experiments.md 공통 규칙 과제).
-    # A value that the scenario or the agent's prompt (policy examples!) already contains proves nothing.
+    # 값과 같은 것을 찾아 고친 일이 있다(docs/experiments.md 공통 규칙 과제). 규정 문서의 예시도 꼭 본다.
     for required in task.required_values:
         for source, texts in (("scenario", [task.user.all_text()]), ("agent prompt", list(prompt_texts))):
             if value_found(required, texts):
@@ -466,7 +465,7 @@ def validate_task(
         gold, gold_outputs = _replay_gold(task, seed_engine, registry)
     except (GoldReplayError, ToolBugError) as error:
         problems.append(str(error))
-        return problems  # the remaining checks build on the gold state
+        return problems  # 남은 검사는 정답 상태 위에서 하므로 여기서 멈춘다
     try:
         problems += _forbidden_problems(task, gold, registry)
     finally:

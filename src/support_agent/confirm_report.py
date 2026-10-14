@@ -1,9 +1,9 @@
-"""Stage 10 (R2) numbers from the records. Nothing here calls a model.
+"""기록에서 내는 10단계(R2) 수치. 여기서는 모델을 부르지 않는다.
 
-- `confirmation_stats` / `confirmation_table`: previews, how the customer answered them, the writes that ran
-- `smoke_gates`: the stage 8 gates that still apply (S0, S1, S4, S5) and the two R2 gates (K1, K2)
-- `check`: the development condition or the test verdict of R2 against the stage 8 M2b record
-- `blind_sheet` / `unblind`: the check of confirmation exchanges with the outcome hidden (development only)
+- `confirmation_stats` / `confirmation_table`: 미리보기, 고객이 그것에 어떻게 답했는지, 실행된 쓰기
+- `smoke_gates`: 아직 해당하는 8단계 관문(S0, S1, S4, S5)과 R2 관문 두 개(K1, K2)
+- `check`: 8단계 M2b 기록과 비교한 R2의 개발용 조건 또는 시험용 판정
+- `blind_sheet` / `unblind`: 결과를 가린 확인 교환 점검(개발용 기록만)
 """
 
 # [파일 역할] 10단계(R2, 쓰기 전 고객 확인 가드)의 수치를 기록(episodes.jsonl)에서 계산한다. 모델을 부르지
@@ -67,10 +67,9 @@ ANSWER_KINDS = ("consent", "refusal", "question", "other", "none")
 # 미리보기에서 금액으로 보는 키. 상담원의 확인 질문이 이 금액을 말했는지 센다(보고만).
 AMOUNT_KEYS = ("refund_won", "return_fee_won", "amount_won")
 # 8단계 스모크 관문 중 남기는 것. S2·S3은 새 모델의 속도 관문이라 같은 모델을 쓰는 R2에는 해당하지 않는다.
-SMOKE_GATES_KEPT = ("S0", "S1", "S4", "S5")  # S2, S3 are about a new model; R2 runs the stage 8 one
+SMOKE_GATES_KEPT = ("S0", "S1", "S4", "S5")  # S2, S3은 새 모델용이고 R2는 8단계 모델을 그대로 쓴다
 # 측정 전에 등록한 문턱값(docs/experiments.md 10단계). D1: 개발용 pass^1 차이 점 추정 ≥ −10%p. D2: 형식
 # 오류·한도 종료 합이 기준 + 5 이하. 시험용 비용 조건: pass^1 차이 95% 구간 하한 > −10%p.
-# Registered before measuring (docs/experiments.md, stage 10).
 DEV_MIN_PASS1_DIFF = -0.10
 DEV_MAX_MORE_BAD_ENDINGS = 5
 TEST_MIN_PASS1_LOW = -0.10
@@ -81,13 +80,13 @@ def load(run_dir: Path) -> list[dict[str, Any]]:
     return load_episodes(run_dir)
 
 
-# ---------------------------------------------------------------- exchanges
+# ---------------------------------------------------------------- 확인 교환 (exchanges)
 
 
 # 미리보기 결과 문자열은 '안내문 한 줄 + JSON 한 줄'이다(confirm.confirmation). 둘째 줄의 JSON({tool,
 # arguments, preview})만 꺼내고, 깨졌으면 빈 dict를 돌려준다.
 def _body(content: str) -> dict[str, Any]:
-    """The JSON part of a preview: tool, arguments, preview."""
+    """미리보기의 JSON 부분: tool, arguments, preview."""
     _, _, rest = content.partition("\n")
     try:
         data = json.loads(rest)
@@ -111,9 +110,8 @@ def _ran(message: dict[str, Any]) -> bool:
 # 미리보기들, 턴을 끝낸 상담원의 답(확인 질문), 고객의 다음 말, 그 다음 턴에 실행된 쓰기 수를 담는다.
 # 하니스 안내문은 고객의 말이 아니므로 턴으로 세지 않는다(confirm.customer_turn과 같은 기준).
 def exchanges(episode: dict[str, Any]) -> list[dict[str, Any]]:
-    """One per customer turn in which the agent got a preview: the previews, the reply that ended the turn,
-    the customer's next message (None when the conversation ended first) and the writes that ran in the turn
-    of that answer."""
+    """에이전트가 미리보기를 받은 고객 턴마다 하나: 미리보기들, 그 턴을 끝낸 답, 고객의 다음 메시지(대화가
+    먼저 끝났으면 None), 그 답이 온 턴에 실행된 쓰기."""
     out: list[dict[str, Any]] = []
     turn, current = 0, None
     ran_in: Counter[int] = Counter()
@@ -224,7 +222,7 @@ def confirmation_table(run_dirs: list[Path]) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------- smoke
+# ---------------------------------------------------------------- 스모크 관문 (smoke)
 
 
 # 스모크 관문 판정. 8단계 관문 중 남긴 것에 K1·K2를 더한다.
@@ -233,8 +231,8 @@ def confirmation_table(run_dirs: list[Path]) -> str:
 # K2: 미리보기가 있던 에피소드가 한도로 끝나지 않았고, 어떤 에피소드도 에이전트 호출 한도로 끝나지 않음.
 # 어기면 확인이 맴돈다는 뜻이다. 셋째 스모크가 이 관문에서 멈췄다(README 10단계).
 def smoke_gates(run_dir: Path) -> list[tuple[str, str, bool]]:
-    """S0, S1, S4, S5 of stage 8, and K1 (a preview happened and a confirmed write ran) and K2 (no episode
-    with a preview ended at a limit, no episode ran out of agent calls)."""
+    """8단계의 S0, S1, S4, S5와, K1(미리보기가 있었고 동의를 거친 쓰기가 실행됨), K2(미리보기가 있던
+    에피소드가 한도로 끝나지 않았고, 에이전트 호출을 다 쓴 에피소드가 없음)."""
     episodes = load(run_dir)
     out = [gate for gate in stage8_smoke_gates(run_dir) if gate[0] in SMOKE_GATES_KEPT]
     s = confirmation_stats(episodes)
@@ -275,15 +273,15 @@ def smoke_report(run_dir: Path) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------- development condition and test verdict
+# ---------------------------------------------------------------- 개발용 조건과 시험용 판정
 
 
 # 정답에 없는 쓰기의 에피소드당 차이(R2 − 기준)와 95% 구간. 과제마다 에피소드당 평균의 차이를 구한 뒤, 과제
 # 단위로 10,000번 복원 추출하는 부트스트랩이다. 과제 하나의 두 실행 값이 늘 함께 뽑히므로 짝이 유지된다(pass^k
 # 차이와 같은 방식). 두 실행의 과제 목록이 다르면 짝지을 수 없어 오류다.
 def paired_writes(base: list[dict[str, Any]], other: list[dict[str, Any]]) -> tuple[float, float, float]:
-    """Unexpected writes per episode of `other` minus `base`, with a 95% interval: tasks are resampled and
-    each keeps its pair (the same bootstrap as pass^k)."""
+    """에피소드당 정답에 없는 쓰기의 `other` − `base` 차이와 95% 구간: 과제를 복원 추출하고 과제마다 짝을
+    유지한다(pass^k와 같은 부트스트랩)."""
 
     def per_task(episodes: list[dict[str, Any]]) -> dict[str, list[int]]:
         out: dict[str, list[int]] = {}
@@ -334,7 +332,7 @@ def _check_pair(base_dir: Path, r2_dir: Path, *, test: bool) -> None:
 # R2를 8단계 M2b 기록과 비교해 개발용 조건(test=False: 시험용으로 갈지) 또는 시험용 판정(test=True)을 낸다.
 # 보고서 글과 결과를 함께 돌려준다.
 def check(base_dir: Path, r2_dir: Path, *, test: bool) -> tuple[str, bool | str]:
-    """test=False: the development condition (True = go on to the test tasks). test=True: the verdict."""
+    """test=False: 개발용 조건(True면 시험용 과제로 간다). test=True: 판정."""
     _check_pair(base_dir, r2_dir, test=test)
     base_eps, r2_eps = load(base_dir), load(r2_dir)
     base_by, r2_by = successes_by_task(base_eps), successes_by_task(r2_eps)
@@ -409,7 +407,7 @@ def check(base_dir: Path, r2_dir: Path, *, test: bool) -> tuple[str, bool | str]
     return "\n".join(lines), outcome
 
 
-# ---------------------------------------------------------------- blind check of exchanges
+# ---------------------------------------------------------------- 결과를 가린 확인 교환 점검
 
 # 확인 교환 점검에서 읽는 사람이 교환마다 적는 코드. 상담원의 요약이 틀렸거나 빠졌는지, 미리보기의 처리가
 # 시나리오와 다른지, 고객(시뮬레이터)이 틀린 것에 동의하거나 맞는 것을 거절했는지를 본다. _WRONG은 '틀린
@@ -443,9 +441,9 @@ def _gold_keys(task: Any) -> set[str]:
 # key.json에만 두어 읽는 쪽이 결과를 모른 채 판단하게 한다. 시험용 기록은 읽지 않는다(시험용을 보면서 무엇도
 # 고치지 않는다는 규칙).
 def blind_sheet(run_dir: Path, *, n: int, out_dir: Path) -> None:
-    """n confirmation exchanges of one R2 development run, drawn with a fixed seed. The sheet shows the
-    scenario, the preview, the agent's question and the customer's answer; not whether the write ran, was in
-    the gold actions or the episode passed (key.json has that)."""
+    """R2 개발용 실행 하나에서 고정 seed로 뽑은 확인 교환 n개. 점검표는 시나리오, 미리보기, 상담원의 질문,
+    고객의 답을 보여 주고, 쓰기가 실행됐는지, 정답 동작이었는지, 에피소드가 통과했는지는 보여 주지
+    않는다(그것은 key.json에 있다)."""
     from support_agent.paths import TASKS
     from support_agent.tasks import load_tasks
 
@@ -505,7 +503,7 @@ def blind_sheet(run_dir: Path, *, n: int, out_dir: Path) -> None:
 # 점검 결과를 센다. 모든 교환에 표시가 있는지, 모르는 코드가 없는지 먼저 확인하고, 코드별 수와 '틀린 요약·처리
 # 중 고객이 동의한 비율'을 낸다. 그 아래 표는 기계 분류한 답의 종류별 교환 수와 실제로 쓰기가 실행된 수다.
 def unblind(out_dir: Path) -> str:
-    """Counts of each code, and how often the customer agreed when the summary or the preview was wrong."""
+    """코드별 수, 그리고 요약이나 미리보기가 틀렸을 때 고객이 동의한 빈도."""
     key = json.loads((out_dir / "key.json").read_text(encoding="utf-8"))
     marks = json.loads((out_dir / "marks.json").read_text(encoding="utf-8"))
     missing = sorted(set(key) - set(marks))

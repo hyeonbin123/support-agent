@@ -1,4 +1,4 @@
-"""The agent loop: one customer turn in, tool calls until the agent answers or the episode must stop."""
+"""에이전트 루프: 고객의 말 한 턴을 받아, 에이전트가 답하거나 에피소드를 끝내야 할 때까지 도구를 호출한다."""
 
 # [파일 역할] 에이전트 루프. 고객 메시지 하나를 받아, 모델이 고객에게 줄 답을 낼 때까지(또는 에피소드를 끝내야
 # 할 때까지) LLM 호출 → 도구 실행 → 결과를 대화에 넣기를 되풀이한다.
@@ -76,8 +76,8 @@ CLAIM_NOTICE = (
 _WEEKDAYS = "월화수목금토일"
 
 # RunTool: (도구 이름, 인자) → ToolResult. 평가는 toolkit.execute(또는 R2 관문)를, 서비스는 승인 관문과 감사
-# 행을 거치는 함수를 넘긴다.
-# The loop never sees the DB or the ToolContext; the caller passes a closure over toolkit.execute.
+# 행을 거치는 함수를 넘긴다. 루프는 DB나 ToolContext를 직접 보지 않고, 호출자가 toolkit.execute를 감싼
+# 클로저로 넘긴 이 함수만 부른다.
 RunTool = Callable[[str, dict], ToolResult]
 
 
@@ -88,12 +88,12 @@ RunTool = Callable[[str, dict], ToolResult]
 @dataclass
 class AgentState:
     messages: list[Message]
-    agent_calls: int = 0  # LLM calls so far in this episode
+    agent_calls: int = 0  # 이 에피소드에서 지금까지 한 LLM 호출 수
     tool_errors: int = 0
     format_errors: int = 0
     dropped_calls: int = 0
-    stalls: int = 0  # replies held back by the stall guard (G1)
-    held_claims: int = 0  # replies held back by the claim guard (C1)
+    stalls: int = 0  # 멈춤 가드(G1)가 붙잡아 전달하지 않은 답 수
+    held_claims: int = 0  # 완료 주장 가드(C1)가 붙잡아 전달하지 않은 답 수
     tool_log: list[ToolCallLog] = field(default_factory=list)
     llm_log: list[LLMCallLog] = field(default_factory=list)
 
@@ -113,8 +113,8 @@ class AgentState:
 # 있으면(이관) 안내문을 전달하고 끝낸다.
 @dataclass(frozen=True)
 class TurnResult:
-    reply: str | None  # what the customer is told; None when the episode stops without a reply
-    stop: Termination | None  # None = the conversation goes on
+    reply: str | None  # 고객에게 전할 말. 답 없이 에피소드가 끝나면 None
+    stop: Termination | None  # None이면 대화가 이어진다
 
 
 # 패키지 안 prompts/ 폴더의 파일을 UTF-8로 읽는다.
@@ -133,8 +133,8 @@ def load_policy() -> str:
 # caller_id가 아니면 빈 문자열을 넣어 9단계 이전과 글자까지 같은 프롬프트를 만든다. manifest에 프롬프트 해시가
 # 남으므로, 이렇게 해야 이전 기록과 짝지을 수 있다.
 def build_system_prompt(policy_text: str, now: datetime, *, caller_id: bool = False) -> str:
-    """The agent's system prompt. caller_id (voice V4) adds one rule line: identify by the caller's number and
-    the name. Without it the text is the same as before stage 9 (the manifests' hashes)."""
+    """에이전트의 시스템 프롬프트. caller_id(음성 V4)면 규칙 한 줄(발신 번호와 이름으로 본인 확인)을 더한다.
+    caller_id가 없으면 글이 9단계 이전과 같다(manifest에 남은 해시와 맞음)."""
     local = to_kst(now)
     now_text = f"{local:%Y-%m-%d %H:%M} ({_WEEKDAYS[local.weekday()]}요일)"
     caller_rule = "\n" + _prompt_file("caller_id.md").strip() if caller_id else ""
@@ -149,7 +149,7 @@ def new_state(system_prompt: str) -> AgentState:
 # 모델에게 보여 줄 도구 스키마 목록. think 도구는 R1에서만 보인다. 등록부는 구성과 상관없이 같고, 보이는
 # 목록만 구성에 따라 달라진다. run.py는 이 목록의 해시를 manifest에 남긴다.
 def visible_tools(registry: Registry, config: RunConfig) -> list[dict[str, Any]]:
-    """Tool schemas shown to the model. The think tool exists only under R1."""
+    """모델에게 보여 줄 도구 스키마. think 도구는 R1에서만 있다."""
     return [
         spec.schema() for spec in registry.values() if spec.name != THINK_TOOL or config.reasoning == "R1"
     ]
@@ -160,8 +160,8 @@ def visible_tools(registry: Registry, config: RunConfig) -> list[dict[str, Any]]
 # 형식 오류 판정(format_problem)에 쓰인다. 기준 구성은 이것을 찾기만 하고 실행하지 않는다(docs/experiments.md
 # 공통 규칙 에이전트 루프).
 def _looks_like_tool_call(text: str) -> bool:
-    """True when the text holds a JSON object shaped like a tool call (qwen2.5 sometimes writes the call
-    into the message, with or without a code fence or a lead-in sentence)."""
+    """본문에 도구 호출 모양의 JSON 객체가 있으면 True(qwen2.5는 가끔 호출을 메시지 본문에 쓰는데, 코드
+    블록이나 앞에 붙은 문장이 있을 때도 없을 때도 있다)."""
     start, end = text.find("{"), text.rfind("}")
     if start < 0 or end <= start:
         return False
@@ -175,7 +175,7 @@ def _looks_like_tool_call(text: str) -> bool:
 # F1(본문에 샌 도구 호출 구제, 2단계 후보)에서 쓰는 해석기. 본문의 JSON을 ToolCall로 바꿔 돌려주고, 이름이
 # 문자열이 아니거나 인자가 dict가 아니면 None이다. 구제해서 실행해도 형식 오류로는 그대로 센다.
 def leaked_tool_call(text: str) -> ToolCall | None:
-    """The tool call that the model wrote into its message, if the text holds exactly such a JSON object."""
+    """모델이 메시지 본문에 쓴 도구 호출. 본문에 그런 JSON 객체가 정확히 들어 있을 때만 돌려준다."""
     start, end = text.find("{"), text.rfind("}")
     if start < 0 or end <= start:
         return None
@@ -202,20 +202,20 @@ _ASKS = re.compile(r"[?？]|알려\s*주|말씀해\s*주|불러\s*주|입력해\
 # 턴이 버려진다. 1단계 실패 분류에서 멈춤 31건 + 쓰기 없이 끝남 19건이 실패 96건 중 50건이라 G1 후보가 됐다.
 # 결과는 개선 없음이었다(README 2단계).
 def is_stall(text: str) -> bool:
-    """A reply that only promises to do something ("확인해 보겠습니다, 잠시만 기다려 주세요") and asks the
-    customer nothing. Delivered as it is, the customer can only say "네" and the turn is wasted."""
+    """무엇을 하겠다는 약속만 하고("확인해 보겠습니다, 잠시만 기다려 주세요") 고객에게 아무것도 묻지 않는
+    답. 그대로 전달하면 고객은 "네"라고만 할 수 있어 한 턴이 버려진다."""
     return bool(_PROMISE.search(text)) and not _ASKS.search(text)
 
 
 # 한자(CJK 통합 한자)와 일본어 가나의 유니코드 범위.
-_OTHER_SCRIPT = re.compile(r"[\u4e00-\u9fff\u3040-\u30ff]")  # Han characters, kana
+_OTHER_SCRIPT = re.compile(r"[\u4e00-\u9fff\u3040-\u30ff]")  # \ud55c\uc790, \uac00\ub098
 
 
 # 답이 중국어·일본어 문자로 넘어갔는지. 이름이나 기호에 한 글자 섞이는 것은 넘기고 두 글자 이상이면 한국어
 # 답이 아니라고 본다. 서비스는 L1로 이 검사를 켠다(측정은 하지 않음, config.py language 주석).
 def in_another_language(text: str) -> bool:
-    """qwen2.5 sometimes drifts into Chinese in the middle of a Korean conversation. One stray character
-    (a name, a symbol) is let through; two or more mean the sentence is not Korean."""
+    """qwen2.5는 한국어 대화 중간에 가끔 중국어로 넘어간다. 섞여 든 한 글자(이름, 기호)는 넘기고, 두
+    글자 이상이면 한국어 문장이 아니라고 본다."""
     return len(_OTHER_SCRIPT.findall(text)) >= 2
 
 
@@ -223,7 +223,7 @@ def in_another_language(text: str) -> bool:
 # 호출을 본문에 씀), cut_off(길이 제한으로 잘림). 문제가 없으면 None.
 # 검사 순서가 의미가 있다. 도구 호출이 있으면 본문에 무엇이 있든 샌 호출로 보지 않는다(본문은 어차피 버린다).
 def format_problem(response: ChatResponse) -> str | None:
-    """Why a reply cannot be used as it is: empty | leaked_tool_call | cut_off, or None."""
+    """답을 그대로 쓸 수 없는 이유: empty | leaked_tool_call | cut_off. 문제가 없으면 None."""
     text = response.text.strip()
     if not text and not response.tool_calls:
         return "empty"
@@ -231,7 +231,7 @@ def format_problem(response: ChatResponse) -> str | None:
     if not response.tool_calls and (
         "<tool_call>" in text or "</tool_call>" in text or _looks_like_tool_call(text)
     ):
-        return "leaked_tool_call"  # the model wrote the call into the text instead of calling
+        return "leaked_tool_call"  # 모델이 도구를 호출하지 않고 호출을 본문에 썼다
     if response.finish_reason == "length":
         return "cut_off"
     return None
@@ -255,10 +255,10 @@ def agent_turn(
     task_id: str = "",
     trial: int = 0,
 ) -> TurnResult:
-    """Handle one customer message. ProviderError and ToolBugError pass through to the episode runner."""
+    """고객 메시지 하나를 처리한다. ProviderError와 ToolBugError는 잡지 않고 에피소드 실행기로 올린다."""
     state.messages.append(Message("user", user_text))
     tools = visible_tools(registry, config)
-    retries = 0  # format retries are counted per turn
+    retries = 0  # 형식 오류 재시도는 턴마다 따로 센다
     stall_retries = 0
     claim_retries = 0
     # LLM 호출 한도에 닿을 때까지 돈다. 평가에서는 에피소드당 30번이다. 서비스는 상태를 되살릴 때
@@ -268,8 +268,8 @@ def agent_turn(
         # 호출마다 (과제, 시도, 'agent', 순번)에서 seed를 만든다. temperature 0에서는 의미가 없고, G2·C2의
         # 표본 추출 때 쓰인다.
         seed = derive_seed(config.base_seed, task_id, trial, "agent", index)
-        # G2: a retry after a held-back stall is sampled, because at temperature 0 the model tends to
-        # answer the notice with the very same sentence. C2 does the same after a held-back claim.
+        # G2: 멈춤을 붙잡은 뒤의 재시도는 표본 추출(온도를 올림)로 한다. 온도 0에서는 모델이 안내문에 똑같은
+        # 문장으로 답하는 경향이 있기 때문이다. C2도 완료 주장을 붙잡은 뒤 같은 방식으로 다시 시킨다.
         temperature = config.temperature
         if config.guard == "G2" and stall_retries > 0:
             temperature = config.stall_retry_temperature
@@ -286,7 +286,7 @@ def agent_turn(
         # 구성과 비교할 수 있게).
         if problem == "leaked_tool_call" and config.rescue == "F1":
             rescued = leaked_tool_call(response.text)
-            if rescued is not None:  # run it as if it had been a proper call; still counted as a format error
+            if rescued is not None:  # 정식 호출이었던 것처럼 실행하되 형식 오류로는 센다
                 calls, problem = (rescued,), None
                 state.format_errors += 1
         # 아래 세 검사(언어, 완료 주장, 멈춤)는 도구 호출 없이 고객에게 갈 본문 답에만 한다. 도구 호출이
@@ -332,7 +332,6 @@ def agent_turn(
                 eval_ms=usage.eval_ms,
             )
         )
-        # Ollama silently cuts the front of an overlong prompt, so stop before that happens.
         # Ollama는 프롬프트가 num_ctx를 넘으면 오류 없이 앞부분(시스템 프롬프트 포함)을 잘라 버린다. 0단계에서
         # prompt_eval_count가 캐시된 토큰까지 포함한 전체 길이임을 확인했으므로 이 값으로 95%를 넘기 전에
         # 멈춘다(docs/experiments.md 0단계).
@@ -340,9 +339,9 @@ def agent_turn(
             return TurnResult(None, "context_limit")
 
         # 멈춤: 형식은 맞으므로 형식 오류로 세지 않고 자기 예산(stall_retries)을 쓴다. 답은 전달하지
-        # 않음(delivered=False)으로 남기고 안내문을 넣어 다시 시킨다.
+        # 않음(delivered=False)으로 남기고 안내문을 넣어 다시 시킨다. 답의 형식은 맞고 아무것도 하지 않을
+        # 뿐이므로, 처방(안내 후 재시도)은 같지만 예산은 따로 쓴다.
         if problem == "stall":
-            # Not a format error: the reply is well formed, it just does nothing. Same remedy, own budget.
             stall_retries += 1
             state.stalls += 1
             state.messages.append(Message("assistant", response.text, delivered=False))
@@ -352,8 +351,6 @@ def agent_turn(
         # unbacked_claim으로 끝낸다. 고객이 '취소되었습니다'를 들으면 더 묻지 않기 때문이다.
         # max_claim_retries=2면 세 번째 주장에서 끝난다.
         if claim:
-            # Not a format error either. Unlike a stall it is never delivered: when the model keeps saying
-            # it, the episode ends, because a customer who hears "취소되었습니다" stops asking.
             state.held_claims += 1
             state.messages.append(Message("assistant", response.text, delivered=False))
             if claim_retries >= config.max_claim_retries:
@@ -381,7 +378,6 @@ def agent_turn(
             state.messages.append(Message("assistant", response.text))
             return TurnResult(response.text, None)
 
-        # Only the first call runs; text that came with it is not delivered and not kept in history.
         # 도구 호출이 있으면 첫 번째만 실행하고, 대화 기록에도 그 호출 하나만 빈 본문으로 남긴다. 함께 온
         # 본문은 고객에게 보내지 않고 기록에서도 뺀다(LLM 로그의 dropped_text에만 남음, docs/design.md
         # 에이전트 루프 규칙).
@@ -416,7 +412,7 @@ def agent_turn(
         # R2의 미리보기는 고객의 답을 기다리는 정상 단계라 도구 오류 한도에 세지 않는다(docs/experiments.md
         # 10단계).
         if result.error_code == CONFIRM_CODE:
-            continue  # R2: a preview that waits for the customer's answer, not a tool error
+            continue  # R2: 고객의 답을 기다리는 미리보기이지 도구 오류가 아니다
         # 도구 오류는 누적해 max_tool_errors(평가는 에피소드당 10)에 닿으면 too_many_tool_errors로 끝낸다.
         if not result.ok:
             state.tool_errors += 1

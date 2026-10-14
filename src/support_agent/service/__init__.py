@@ -1,1 +1,1 @@
-"""The chat service: the same agent loop and tools as the evaluation, over a persistent database."""
+"""채팅 서비스: 평가와 같은 에이전트 루프와 도구를 영속 데이터베이스 위에서 돌린다."""

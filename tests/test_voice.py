@@ -1,4 +1,4 @@
-"""Stage 5: spoken forms, the speech channel (with fake speech models) and its metrics."""
+"""5단계: 말로 푼 꼴, 음성 채널(가짜 음성 모델로), 그 지표."""
 
 # [파일 역할] 5단계 음성 채널과 그 주변을 검증하는 테스트 묶음이다. 구역은 여섯 개다: 말로 풀어
 # 쓰기(verbalize), 채널(풀어 쓰기 → 합성 → 인식 → 정규화, 캐시), 서비스의 업로드 디코딩 길이 제한, 에피소드
@@ -44,7 +44,7 @@ from support_agent.voice.verbalize import native, sino, verbalize
 
 # 말로 풀어 쓰기: 합성기에 'O-91010'이나 '38,900원'을 그대로 주면 아무도 그렇게 말하지 않는 소리가 나오므로,
 # 합성 전에 한글로만 된 글로 바꾼다(docs/voice.md "말로 풀어 쓰기").
-# -------------------------------------------------------------------- spoken forms
+# -------------------------------------------------------------------- 말로 풀어 쓰기
 
 
 # 한자어 수 읽기(sino)를 본다. 만 단위로 끊어 띄우고, '일만'이 아니라 '만', '일십'이 아니라 '십'처럼 맨 앞의
@@ -148,7 +148,7 @@ def test_digit_only_numbers_in_three_or_more_groups_are_read_like_phone_numbers(
 # 남는지 본다. 숫자나 영문이 하나라도 남으면 합성기가 읽는 방식이 정해지지 않으므로, 실제 측정 말뭉치 전체로
 # 빠진 표기가 없는지 확인한다. 하니스 안내문(harness)은 고객 발화가 아니라서 뺀다.
 def test_every_recorded_customer_utterance_becomes_pronounceable():
-    """The development baseline holds about 500 distinct utterances of the simulated customers."""
+    """개발용 기준선 기록에는 시뮬레이터 고객의 서로 다른 발화가 500개쯤 있다."""
     records = sorted(REPORTS.glob("*-baseline3/episodes.jsonl"))
     assert records, "the committed baseline records are the corpus of this test"
     said = {
@@ -206,20 +206,20 @@ def test_recorded_voice_utterances_are_spelled_out_as_they_were():
             for index, item in enumerate(items):
                 seen += 1
                 if verbalize(item["said"]) != item["spoken"]:
-                    where = item.get("index", index)  # utterances.jsonl keeps the turn number
+                    where = item.get("index", index)  # utterances.jsonl은 턴 번호를 담고 있다
                     mismatched.append((path.parent.name, record["task_id"], record["trial"], where))
     assert seen > 14_000, "the committed voice records are the corpus of this test"
     assert sorted(mismatched) == SPELLED_BEFORE_THE_DIGIT_GROUP_FIX
 
 
 # 채널: 풀어 쓰기 → 합성 → 인식 → (정규화)를 한 번에 하고, 같은 입력의 결과는 캐시한다.
-# -------------------------------------------------------------------- the channel
+# -------------------------------------------------------------------- 채널
 
 
 # 가짜 합성기: 풀어 쓴 글을 그대로 '소리' 바이트로 돌려주고, 어떤 글과 seed로 불렸는지 기록한다. 길이는 글자
 # 수로 정한 가짜 값이다.
 class FakeSpeaker:
-    """The 'audio' is the spoken text itself, so the fake listener can mishear it in a known way."""
+    """'소리'는 말로 푼 글 그 자체라서, 가짜 인식기가 정해진 방식으로 잘못 들을 수 있다."""
 
     def __init__(self):
         self.calls: list[tuple[str, int]] = []
@@ -236,7 +236,7 @@ class FakeSpeaker:
 # 'O-91010'이 매번 '5-91010'으로 적힌 것(README 5단계)을 흉내 내 정규화와 채널 동작을 결정적으로 시험한다.
 # 소리가 비면 빈 글을 낸다.
 class FakeListener:
-    """Writes numbers the way a recogniser does, and mishears the letter O as the digit 5."""
+    """인식기처럼 숫자를 숫자로 적고, 글자 O를 숫자 5로 잘못 듣는다."""
 
     def describe(self):
         return {"stt": "fake"}
@@ -266,11 +266,11 @@ def test_the_channel_verbalises_synthesises_recognises_and_remembers(tmp_path):
     assert heard.heard == heard.text == "5-1 주문 38,900원 맞나요?"
     assert (heard.cached, speaker.calls) == (False, [(heard.spoken, 3)])
 
-    assert channel.hear("O-1 주문 38,900원 맞나요?", seed=3).cached  # same words, same seed: no model call
-    assert not channel.hear("O-1 주문 38,900원 맞나요?", seed=4).cached  # another seed is another recording
+    assert channel.hear("O-1 주문 38,900원 맞나요?", seed=3).cached  # 같은 말, 같은 seed: 모델 호출 없음
+    assert not channel.hear("O-1 주문 38,900원 맞나요?", seed=4).cached  # seed가 다르면 다른 녹음이다
     assert len(speaker.calls) == 2
 
-    again = SpeechChannel(FakeSpeaker(), FakeListener(), cache_path=cache)  # a later run reads the file
+    again = SpeechChannel(FakeSpeaker(), FakeListener(), cache_path=cache)  # 나중 실행은 파일을 읽는다
     assert again.hear("O-1 주문 38,900원 맞나요?", seed=3).cached
     other = SpeechChannel(FakeSpeaker(), FakeListener(), cache_path=tmp_path / "other.jsonl")
     assert not other.hear("O-1 주문 38,900원 맞나요?", seed=3).cached
@@ -294,7 +294,7 @@ def test_nothing_pronounceable_means_nothing_heard():
 # 합성 결과 표본을 WAV 바이트로 싸는 wav_bytes가 RIFF 머리와 올바른 길이를 내고, 빈 표본은 오류로 거절하는지
 # 본다. numpy는 voice 그룹에만 있어 없으면 건너뛴다.
 def test_wav_bytes_is_a_wav_file():
-    pytest.importorskip("numpy")  # comes with the `voice` dependency group, like the models that use it
+    pytest.importorskip("numpy")  # 그것을 쓰는 모델처럼 `voice` 의존성 그룹에 들어 있다
     audio = wav_bytes([0.0, 0.5, -0.5, 1.5], 16_000)
     assert audio.wav[:4] == b"RIFF" and audio.seconds == pytest.approx(4 / 16_000)
     with pytest.raises(RuntimeError):
@@ -303,14 +303,14 @@ def test_wav_bytes_is_a_wav_file():
 
 # 서비스의 업로드 디코딩: 브라우저가 보낸 녹음을 60초 상한까지만 풀고 거절한다. 몇 kB의 FLAC가 몇 시간의
 # 무음을 담을 수 있어, 다 푼 뒤에 길이를 재면 메모리가 크게 튄다(커밋 b747c1f, 93f2c64).
-# -------------------------------------------------------------------- decoding an upload (the service)
+# -------------------------------------------------------------------- 업로드 디코딩 (서비스)
 
 
 # PyAV로 시험용 녹음을 만든다: 무음, 또는 440 Hz 사인파에 잡음을 얹은 소리. 형식·코덱·채널·프레임 크기를 바꿔
 # 실제 브라우저 업로드(webm/opus, wav)와 공격용 파일(아주 긴 무음 FLAC)을 모두 만든다. 잡음은 고정 seed(0)
 # 난수라 매번 같은 파일이 나온다.
 def encoded(seconds, rate, *, fmt="flac", codec="flac", layout="mono", tone=False, step=4096, options=None):
-    """A recording made with PyAV (from the `voice` group): silence, or a 440 Hz tone with some noise."""
+    """PyAV(`voice` 그룹)로 만든 녹음: 무음, 또는 잡음을 조금 얹은 440 Hz 사인파."""
     av = pytest.importorskip("av")
     np = pytest.importorskip("numpy")
     buffer, total, noise = io.BytesIO(), int(seconds * rate), np.random.default_rng(0)
@@ -355,8 +355,8 @@ def listener_without_a_model(model) -> WhisperListener:
 # 최고치가 50 MB 아래이며 모델에는 아무것도 가지 않는지 본다. decode_audio를 실패로 바꿔치기해 전체 디코딩
 # 경로를 타면 바로 실패하게 했다. 다 풀면 약 580 MB가 든다(아래 줄 주석, 커밋 b747c1f).
 def test_a_long_recording_is_refused_before_it_is_decoded(monkeypatch):
-    """19 kB of FLAC hold an hour of silence: the service stops at its limit instead of decoding it all.
-    tracemalloc sees the samples kept in Python, not FFmpeg's own buffers; the next test covers those."""
+    """19 kB의 FLAC에 1시간 무음이 든다: 서비스는 다 풀지 않고 한도에서 멈춘다. tracemalloc은 파이썬에
+    남은 표본만 보고 FFmpeg 자체 버퍼는 보지 못한다. 그것은 다음 테스트가 맡는다."""
     whisper_audio = pytest.importorskip("faster_whisper.audio")
     hour = encoded(3600, 8000, step=32768, options={"frame_size": "32768"})
     assert len(hour) < 50_000
@@ -371,7 +371,7 @@ def test_a_long_recording_is_refused_before_it_is_decoded(monkeypatch):
         peak = tracemalloc.get_traced_memory()[1]
     finally:
         tracemalloc.stop()
-    assert peak < 50_000_000 and model.lengths == []  # decoding all of it takes about 580 MB
+    assert peak < 50_000_000 and model.lengths == []  # 다 풀면 약 580 MB가 든다
 
 
 # 표본 65,535개짜리 FLAC 프레임 하나를 아주 낮은 표본화율(1 Hz, 5 Hz)로 만들면 몇 시간짜리가 된다. 이 프레임이
@@ -380,8 +380,8 @@ def test_a_long_recording_is_refused_before_it_is_decoded(monkeypatch):
 # 않았다(docstring, 커밋 93f2c64).
 @pytest.mark.parametrize("rate", [1, 5])
 def test_an_hours_long_frame_is_refused_before_it_is_resampled(monkeypatch, rate):
-    """One 8 kB FLAC frame of 65,535 samples at 5 Hz is 13,107 s: resampled to 16 kHz it took 4 GB inside
-    FFmpeg (at 1 Hz 2 GB, and then nothing came out, so it was accepted). Its length is counted first."""
+    """5 Hz 표본 65,535개짜리 8 kB FLAC 프레임 하나는 13,107초다: 16 kHz로 리샘플하면 FFmpeg 안에서 4 GB가
+    들었다(1 Hz면 2 GB였고 아무것도 나오지 않아 받아들여졌다). 그래서 길이를 먼저 센다."""
     av = pytest.importorskip("av")
     data = encoded(65_535 / rate, rate, step=65_535, options={"frame_size": "65535"})
     assert len(data) < 10_000
@@ -406,7 +406,7 @@ def test_an_hours_long_frame_is_refused_before_it_is_resampled(monkeypatch, rate
     [
         {"seconds": 20, "rate": 44_100, "layout": "stereo", "tone": True},
         {"seconds": 20, "rate": 48_000, "fmt": "webm", "codec": "libopus", "tone": True, "step": 960},
-        {"seconds": 60, "rate": 16_000, "fmt": "wav", "codec": "pcm_s16le", "tone": True},  # just the limit
+        {"seconds": 60, "rate": 16_000, "fmt": "wav", "codec": "pcm_s16le", "tone": True},  # 딱 한도
     ],
     ids=["flac-stereo-44k", "webm-opus-48k", "wav-60s"],
 )
@@ -426,7 +426,7 @@ def test_a_recording_under_the_limit_reaches_the_model():
 
 
 # 에피소드 안에서: 채널은 고객 → 에이전트 방향에만 끼어든다.
-# -------------------------------------------------------------------- in an episode
+# -------------------------------------------------------------------- 에피소드 안에서
 
 
 # V1 대화 순환(_converse)에서 에이전트만 잘못 들은 글('5-1 취소해 주세요')을 받고, 시뮬레이터의 기록에는
@@ -466,9 +466,9 @@ def test_only_the_agent_hears_through_the_channel(tiny_engine):
     assert agent_heard == ["5-1 취소해 주세요", NOTHING_HEARD]
     assert [m.content for m in user.messages if m.role == "assistant"][
         0
-    ] == "O-1 취소해 주세요"  # as it was meant
+    ] == "O-1 취소해 주세요"  # 고객이 뜻한 그대로 남는다
     assert [(u["said"], u["text"]) for u in log] == [("O-1 취소해 주세요", "5-1 취소해 주세요"), ("...", "")]
-    assert db.dump_db(engine)["orders"][0]["status"] == "paid"  # the misheard number cancelled nothing
+    assert db.dump_db(engine)["orders"][0]["status"] == "paid"  # 잘못 들은 번호로는 아무것도 취소되지 않았다
 
 
 # 기본값은 V0(글)이고, 글 실행의 한 턴은 채널 없이 그대로 도는지 본다. 기존 글 측정과 비교 가능성을 지키는
@@ -562,7 +562,7 @@ def test_importing_the_voice_package_needs_no_speech_library():
 
 # V2 정규화: 인식된 글의 '표기'만 고치는 규칙 네 개. 개발용 V1 기록만 보고 만들었다(docs/experiments.md
 # 5단계).
-# -------------------------------------------------------------------- V2: the normaliser
+# -------------------------------------------------------------------- V2: 정규화
 
 
 # 개발용 V1의 실제 받아쓰기(왼쪽)가 고쳐지는 꼴(오른쪽)을 본다: 5-번호 → O-번호, 하이픈·글자·점으로 적힌
@@ -571,7 +571,7 @@ def test_importing_the_voice_package_needs_no_speech_library():
 # 모두 example.com이라는 데 기댄다(같은 절).
 @pytest.mark.parametrize(
     ("heard", "repaired"),
-    [  # every left-hand side is a transcript from the development run of V1
+    [  # 왼쪽은 모두 V1 개발용 실행의 받아쓰기다
         ("주문번호는 5-91001이에요.", "주문번호는 O-91001이에요."),
         ("주문번호가 5에서 9100이 아니라", "주문번호가 O-9100이 아니라"),
         ("이메일은 yunseo.heo-example.com입니다.", "이메일은 yunseo.heo@example.com입니다."),
@@ -596,11 +596,11 @@ def test_the_normaliser_repairs_notation(heard, repaired):
     "heard",
     [
         "네, 진행해 주세요.",
-        "5-5 사이즈로 5개 주문했고 5-10일 안에 받고 싶어요.",  # not an order number
-        "010-0000-921입니다.",  # a digit was lost in the sound: nothing to repair it from
-        "이름은 배성분입니다.",  # a misheard name stays misheard
-        "주문번호는 O-91001이고 38,900원입니다.",  # already in the written form
-        "12만 34,000원",  # not a number anybody says
+        "5-5 사이즈로 5개 주문했고 5-10일 안에 받고 싶어요.",  # 주문 번호가 아니다
+        "010-0000-921입니다.",  # 소리에서 숫자 하나를 잃었다: 되살릴 근거가 없다
+        "이름은 배성분입니다.",  # 잘못 들은 이름은 잘못 들은 채로 남는다
+        "주문번호는 O-91001이고 38,900원입니다.",  # 이미 글 표기다
+        "12만 34,000원",  # 아무도 그렇게 말하지 않는 수
     ],
 )
 def test_the_normaliser_leaves_the_rest_alone(heard):
@@ -615,7 +615,7 @@ def test_the_normaliser_is_idempotent_on_its_own_output():
 
 # 실제 마이크: 사람이 소리 내어 부른 번호를 숫자로 되돌린다(spoken.py). 서비스에서만 쓰고 측정한 V2와는
 # 별개다.
-# -------------------------------------------------------------------- a real microphone: numbers read aloud
+# -------------------------------------------------------------------- 실제 마이크: 소리 내어 부른 번호
 
 
 # 실제 마이크 시험에서 나온 받아쓰기(첫 줄)처럼 한글로 적힌 휴대전화 번호와 '오 다시 …' 주문 번호가 숫자
@@ -624,15 +624,15 @@ def test_the_normaliser_is_idempotent_on_its_own_output():
 @pytest.mark.parametrize(
     ("heard", "written"),
     [
-        ("강정월구 공일공 공공공공 육일팔구입니다", "강정월구 010-0000-6189입니다"),  # from the live test
+        ("강정월구 공일공 공공공공 육일팔구입니다", "강정월구 010-0000-6189입니다"),  # 실제 시험에서 나온 것
         (
             "전화는 공일공공공공공육일팔구이고요",
             "전화는 010-0000-6189이고요",
-        ),  # "이고" is a particle, not a 2
+        ),  # "이고"는 2가 아니라 조사다
         ("010 공공공공 6189요", "010-0000-6189요"),
         ("주문은 오 다시 구일공일공이에요", "주문은 O-91010이에요"),
         ("주문번호는 O-91010입니다", "주문번호는 O-91010입니다"),
-        ("공일공 공공공공 육일팔", "공일공 공공공공 육일팔"),  # a digit short: not a number to write down
+        ("공일공 공공공공 육일팔", "공일공 공공공공 육일팔"),  # 한 자리 모자람: 적을 수 있는 번호가 아니다
         ("이사 오고 일이 많아서 구이를 먹었어요", "이사 오고 일이 많아서 구이를 먹었어요"),
     ],
 )

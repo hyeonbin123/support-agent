@@ -1,4 +1,4 @@
-"""Defects found by review on 2026-09-19, each pinned by a test."""
+"""2026-09-19 검토에서 찾은 결함들. 하나마다 테스트로 고정한다."""
 
 # [테스트 묶음] 2026-09-19 리뷰에서 찾은 결함마다 회귀 테스트를 하나씩 고정한다: 전달 값이 시스템 프롬프트에
 # 새는 과제, 본문에 샌 도구 호출의 여러 모양, 시뮬레이터 종료 토큰의 변형, 종료 토큰과 함께 온 동의, 예상 못
@@ -126,7 +126,7 @@ def test_an_unexpected_exception_is_an_infra_error_with_a_traceback():
             raise AttributeError("'dict' object has no attribute 'strip'")
 
     result = episode(ALL_TASKS[0], [])
-    assert result is not None  # a script that only runs out is still an infra error, not a crash
+    assert result is not None  # 대본이 떨어지기만 한 경우도 멈춤(예외)이 아니라 infra 오류다
     result = run_episode(
         ALL_TASKS[0],
         0,
@@ -151,8 +151,8 @@ def test_a_handoff_matches_whether_or_not_the_customer_was_verified_first():
 @pytest.mark.parametrize(
     ("value", "text", "found"),
     [
-        ("5550-1207-9001", "송장 번호는 5550‑1207‑9001입니다.", True),  # non-breaking hyphens
-        ("5550-1207-9001", "송장 번호는 5550–1207–9001입니다.", True),  # en dashes
+        ("5550-1207-9001", "송장 번호는 5550‑1207‑9001입니다.", True),  # 줄바꿈 없는 하이픈
+        ("5550-1207-9001", "송장 번호는 5550–1207–9001입니다.", True),  # en 대시
         ("5550-1207-9001", "15550-1207-90011", False),
         ("한빛택배", "한빛​택배로 배송 중입니다.", True),
     ],

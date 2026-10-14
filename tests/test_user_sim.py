@@ -52,7 +52,7 @@ def make_task(**overrides) -> Task:
 # max_tokens까지 기록하는 대본 제공자. 시뮬레이터 답의 길이 상한(USER_MAX_TOKENS 256)이 실제로 요청에 실리는지
 # 보려고 둔다.
 class RecordingProvider(ScriptedProvider):
-    """ScriptedProvider does not keep max_tokens, so record it here."""
+    """ScriptedProvider는 max_tokens를 남기지 않으므로 여기서 기록한다."""
 
     def __init__(self, script):
         super().__init__(script)
@@ -109,7 +109,7 @@ def test_prompt_holds_the_scenario_and_nothing_else_of_the_task():
 # now가 UTC로 9월 13일 16:30이어도 프롬프트의 오늘 날짜는 한국 시각 날짜(9월 14일)인지, 빈 칸은 '(없음)'으로
 # 표시되는지 본다. 반품 기한처럼 날짜로 판단하는 규정이 KST 날짜 기준이라 고객이 아는 '오늘'도 같아야 한다.
 def test_prompt_today_is_the_kst_date_and_empty_fields_are_marked():
-    late_utc = datetime.fromisoformat("2026-09-13T16:30:00+00:00")  # 01:30 on the 14th in Korea
+    late_utc = datetime.fromisoformat("2026-09-13T16:30:00+00:00")  # 한국 시각으로 14일 01:30
     task = make_task(
         now=late_utc, user=UserScenario(reason="배송이 언제 오는지 궁금하다", known="이름은 김하준")
     )
@@ -148,13 +148,13 @@ def test_llm_user_flips_roles_and_passes_seed_and_temperature():
     first, second, third = provider.requests
     assert [m.role for m in first["messages"]] == ["system", "user"]
     assert first["messages"][0].content == build_user_prompt(task)
-    assert first["messages"][1].content.startswith(f"{GREETING}\n\n{TURN_REMINDER}")  # sent with the reminder
+    assert first["messages"][1].content.startswith(f"{GREETING}\n\n{TURN_REMINDER}")  # 리마인더와 함께 보낸다
     assert task.user.known in first["messages"][1].content
     assert [m.role for m in second["messages"]] == ["system", "user", "assistant", "user"]
     assert second["messages"][2].content == "주문 취소하려고요."
     assert second["messages"][3].content.startswith("성함과 연락처를 알려 주세요.\n\n(고객 역할 지침")
-    assert TURN_REMINDER not in second["messages"][1].content  # only the newest message carries it
-    assert all(TURN_REMINDER not in m.content for m in user.messages)  # the record stays clean
+    assert TURN_REMINDER not in second["messages"][1].content  # 가장 새 메시지에만 붙는다
+    assert all(TURN_REMINDER not in m.content for m in user.messages)  # 기록에는 붙지 않는다
     assert len(third["messages"]) == 6
 
     for index, request in enumerate(provider.requests):

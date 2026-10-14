@@ -1,4 +1,4 @@
-"""What an episode leaves behind: call logs, the verdict and the JSONL record."""
+"""에피소드가 남기는 것: 호출 로그, 판정, JSONL 기록."""
 
 # [파일 역할] 에피소드 하나가 남기는 기록의 형태를 정의한다. 도구 호출 로그(ToolCallLog), LLM 호출
 # 로그(LLMCallLog), 판정(Verdict), 그리고 이것들을 묶어 episodes.jsonl의 한 줄이 되는 EpisodeResult다.
@@ -29,10 +29,10 @@ from support_agent.config import Termination
 # - content: 모델에 돌려준 도구 결과(JSON 또는 'Error: [code] 메시지'). ms: 실행 시간.
 @dataclass
 class ToolCallLog:
-    agent_call: int  # index of the agent LLM call that produced this tool call
+    agent_call: int  # 이 도구 호출을 낸 에이전트 LLM 호출의 순번
     name: str
-    raw_arguments: dict[str, Any]  # as the model sent them
-    args: dict[str, Any] | None  # canonical form, None if validation failed
+    raw_arguments: dict[str, Any]  # 모델이 보낸 그대로
+    args: dict[str, Any] | None  # 정규화한 형태. 검증에 실패하면 None
     ok: bool
     error_code: str | None
     policy_blocked: bool
@@ -50,15 +50,15 @@ class ToolCallLog:
 @dataclass
 class LLMCallLog:
     who: Literal["agent", "user"]
-    index: int  # call index within the episode, per role
+    index: int  # 에피소드 안에서 역할별로 센 호출 순번
     seed: int | None
     text: str
     tool_calls: list[dict[str, Any]]
-    # Why the reply was not used as it came: empty | leaked_tool_call | cut_off | rescued_tool_call |
-    # wrong_language | stall (G1) | unbacked_claim (C1). None when it was.
+    # 답을 받은 그대로 쓰지 않은 이유: empty | leaked_tool_call | cut_off | rescued_tool_call |
+    # wrong_language | stall(G1) | unbacked_claim(C1). 그대로 썼으면 None.
     format_error: str | None
-    dropped_text: str  # text that came with a tool call and was not delivered
-    dropped_calls: int  # tool calls after the first one
+    dropped_text: str  # 도구 호출과 함께 왔지만 전달하지 않은 본문
+    dropped_calls: int  # 첫 번째 뒤의 도구 호출 수(실행하지 않음)
     finish_reason: str | None
     prompt_tokens: int
     completion_tokens: int
@@ -75,15 +75,15 @@ class LLMCallLog:
 @dataclass
 class Verdict:
     success: bool
-    judged: bool  # False when the episode did not end in a judged way (then success is False)
+    judged: bool  # 판정하는 방식으로 끝나지 않았으면 False(그때 success도 False)
     db_match: bool
-    values: dict[str, bool]  # required value label -> found in what the customer was told
-    unexpected_writes: int  # successful write calls that are not in the gold actions (규정 위반 수)
+    values: dict[str, bool]  # 꼭 전달할 값의 이름 -> 고객에게 한 말에서 찾았는지
+    unexpected_writes: int  # 정답 동작에 없는 성공한 쓰기 호출 수 (규정 위반 수)
     missing_writes: int
-    policy_violations: list[str] = field(default_factory=list)  # codes let through under P0
-    policy_blocks: list[str] = field(default_factory=list)  # codes refused under P1
-    blocked_forbidden_attempts: int = 0  # the agent tried a forbidden call and the tool refused it
-    auth_blocks: int = 0  # reads or writes refused because the customer was not verified
+    policy_violations: list[str] = field(default_factory=list)  # P0에서 통과시킨 위반 코드
+    policy_blocks: list[str] = field(default_factory=list)  # P1에서 거절한 위반 코드
+    blocked_forbidden_attempts: int = 0  # 에이전트가 금지 호출을 시도했고 도구가 거절한 횟수
+    auth_blocks: int = 0  # 고객 본인 확인이 안 되어 거절된 읽기·쓰기 수
     db_diff: dict[str, Any] = field(default_factory=dict)
 
 
@@ -103,18 +103,18 @@ class EpisodeResult:
     trial: int
     status: Literal["completed", "truncated", "infra_error"]
     termination: Termination
-    verdict: Verdict | None  # None for infra_error
-    error: str  # exception text for infra_error, else ""
-    messages: list[dict[str, Any]]  # agent-side history without the system prompt
-    user_messages: list[dict[str, Any]]  # simulator-side history without the system prompt
+    verdict: Verdict | None  # infra_error면 None
+    error: str  # infra_error면 예외 글, 아니면 ""
+    messages: list[dict[str, Any]]  # 시스템 프롬프트를 뺀 에이전트 쪽 대화
+    user_messages: list[dict[str, Any]]  # 시스템 프롬프트를 뺀 시뮬레이터 쪽 대화
     tool_calls: list[ToolCallLog]
     llm_calls: list[LLMCallLog]
-    db_changes: dict[str, Any]  # diff_dumps(seed dump, final dump)
+    db_changes: dict[str, Any]  # diff_dumps(seed 덤프, 최종 덤프)
     seed_hash: str
     final_hash: str
     gold_hash: str
     wall_seconds: float
-    # V1/V2 only: one entry per customer utterance (said, spoken, heard, text, timings)
+    # 음성 조건(V1·V2·V4)에서만: 고객 발화마다 한 항목(said, spoken, heard, text, 시간 값)
     voice: list[dict[str, Any]] = field(default_factory=list)
 
     # JSONL 한 줄로 직렬화한다. ensure_ascii=False로 한국어 대화를 \u 이스케이프 없이 그대로 남겨 사람이

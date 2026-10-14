@@ -1,6 +1,6 @@
-"""The runner end to end with --voice V1: arguments, channel, run id, manifest and the episode record.
+"""--voice V1로 실행기를 처음부터 끝까지 돌린다: 인자, 채널, 실행 id, manifest, 에피소드 기록.
 
-The model and the speech models are fakes; everything between them is the real code path of a measurement.
+LLM과 음성 모델은 가짜이고, 그 사이의 모든 것은 측정의 실제 코드 경로다.
 """
 
 # [테스트 묶음] 실행기(run.main)를 --voice V1로 처음부터 끝까지 돌려, 명령줄 인자 → 음성 채널 만들기 → 실행 id
@@ -27,7 +27,7 @@ from support_agent.voice.channel import SpeechChannel
 # 다음에 ###STOP###으로 끝내고, 도구와 함께 불리면 상담원이라 확인하겠다고만 답한다. preload와 describe도
 # 실행기가 부르므로 흉내 낸다. tests/test_stage9.py도 이 클래스를 가져다 쓴다.
 class FakeOllama(ChatProvider):
-    """The customer (called without tools) asks about an order and then stops; the agent only acknowledges."""
+    """고객(도구 없이 불림)은 주문을 묻고 끝내며, 상담원은 확인하겠다고만 답한다."""
 
     def __init__(self, model: str, **_options):
         self.model = model
@@ -79,7 +79,7 @@ def test_a_voice_run_records_what_was_said_and_what_was_heard(tmp_path, monkeypa
     (utterance,) = episode["voice"]
     assert utterance["said"] == "O-1 주문 38,900원 맞나요?"
     assert utterance["spoken"] == "오 다시 일 주문 삼만 팔천구백 원 맞나요?"
-    assert utterance["text"] == "5-1 주문 38,900원 맞나요?"  # the fake listener mishears O as 5
+    assert utterance["text"] == "5-1 주문 38,900원 맞나요?"  # 가짜 인식기가 O를 5로 잘못 듣는다
     heard_by_agent = [m["content"] for m in episode["messages"] if m["role"] == "user"]
     meant_by_customer = [m["content"] for m in episode["user_messages"] if m["role"] == "assistant"]
     assert heard_by_agent == [utterance["text"]] and meant_by_customer[0] == utterance["said"]

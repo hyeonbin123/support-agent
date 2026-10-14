@@ -1,4 +1,4 @@
-"""Task files: what the simulated customer wants and what a correct ending looks like."""
+"""과제 파일: 시뮬레이터 고객이 원하는 것과, 올바르게 끝났을 때의 모습."""
 
 # [파일 역할] 과제 파일(tasks/smoke.yaml, dev.yaml, test.yaml)의 형식을 pydantic 모델로 정의하고 읽어 들인다.
 # 과제 하나는 "시뮬레이터 고객이 원하는 것"과 "올바르게 끝난 상태"(정답 쓰기 동작, 금지 동작, 고객에게 꼭
@@ -38,14 +38,14 @@ class ToolAction(_Strict):
 # 해서는 안 되는 호출과, P1(도구에서 규정을 막음)에서 그 호출을 막아야 하는 규정 코드. 과제 검증이 P1에서는 이
 # 코드로 막히고 P0에서는 실행되어 DB가 바뀌는지 확인해, 과제가 P0와 P1을 실제로 가르는지 본다(docs/design.md).
 class ForbiddenAction(ToolAction):
-    expect_code: str  # the policy code that has to refuse this call under P1
+    expect_code: str  # P1에서 이 호출을 거절해야 하는 규정 코드
 
 
 # 고객에게 꼭 전달해야 하는 값. kind에 따라 비교 방식이 다르다: number는 숫자 표기(쉼표 무시), date는 여러
 # 날짜 표기, text는 정규화 뒤 부분 문자열(judge.py, docs/design.md 판정).
 class RequiredValue(_Strict):
-    """Something the agent has to tell the customer. It must come from a tool result, never from the scenario
-    or the policy text, so that an agent that did not look anything up cannot pass."""
+    """에이전트가 고객에게 꼭 알려야 하는 것. 시나리오나 규정 글이 아니라 반드시 도구 결과에서 나오는 값이어야
+    한다. 그래야 아무것도 조회하지 않은 에이전트가 통과할 수 없다."""
 
     kind: Literal["number", "date", "text"]
     value: int | date | str
@@ -65,10 +65,10 @@ class RequiredValue(_Strict):
 # 상담원의 질문에 답할 수 있게 한다. unknown은 고객이 모른다고 해야 하는 것이다.
 class UserScenario(_Strict):
     persona: str = ""
-    reason: str  # why the customer is calling
-    known: str  # facts the customer may reveal, including every choice that decides a write argument
-    unknown: str = ""  # facts the customer must say they do not know
-    rules: str = ""  # how to react (what to ask, when to accept a refusal, when to stop)
+    reason: str  # 고객이 연락한 이유
+    known: str  # 고객이 밝힐 수 있는 사실. 쓰기 인자를 정하는 모든 선택을 포함한다
+    unknown: str = ""  # 고객이 모른다고 말해야 하는 사실
+    rules: str = ""  # 반응하는 방법(무엇을 물을지, 언제 거절을 받아들일지, 언제 끝낼지)
 
     # 시나리오의 모든 글을 이어 붙인다. 과제 검증이 전달 값이 시나리오에 새어 있지 않은지 볼 때
     # 쓴다(judge.validate_task).
@@ -85,11 +85,11 @@ class Task(_Strict):
     id: str
     type: Literal["lookup", "action", "refusal", "composite"]
     purpose: str
-    now: AwareDatetime  # fixed clock of the episode
-    customer_id: str  # never shown to the simulator; used by the gold replay
+    now: AwareDatetime  # 에피소드의 고정 시계
+    customer_id: str  # 시뮬레이터에게는 보이지 않는다. 정답 재실행이 쓴다
     user: UserScenario
-    gold_actions: list[ToolAction] = []  # write calls only, in one valid order
-    gold_verified: bool = True  # False: the gold replay runs without a verified customer
+    gold_actions: list[ToolAction] = []  # 쓰기 호출만, 유효한 순서 하나로
+    gold_verified: bool = True  # False: 정답 재실행을 본인 확인된 고객 없이 돌린다
     forbidden_actions: list[ForbiddenAction] = []
     required_values: list[RequiredValue] = []
     notes: str = ""
@@ -119,10 +119,10 @@ class Task(_Strict):
         ).hexdigest()
 
 
-# "dev" 같은 이름이면 tasks/dev.yaml을, 확장자가 있으면 그 경로를 읽는다. 과제 id가 겹치면 기록·판정이
-# 섞이므로 거절한다.
+# 과제 id가 겹치면 기록·판정이 섞이므로 거절한다.
 def load_tasks(name_or_path: str | Path) -> list[Task]:
-    """Load `tasks/<name>.yaml` (or a path). utf-8-sig tolerates a BOM left by Windows editors."""
+    """`tasks/<name>.yaml`(또는 주어진 경로)을 읽는다. "dev" 같은 이름이면 tasks/dev.yaml, 확장자가 있으면 그
+    경로다. utf-8-sig는 Windows 편집기가 남긴 BOM을 받아 준다."""
     path = Path(name_or_path)
     if not path.suffix:
         path = TASKS / f"{name_or_path}.yaml"

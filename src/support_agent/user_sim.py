@@ -1,4 +1,4 @@
-"""The customer side of an episode: an LLM that plays the scenario, and a scripted stand-in for tests."""
+"""에피소드의 고객 쪽: 시나리오를 연기하는 LLM과, 테스트용으로 대본을 읽는 대역."""
 
 # [파일 역할] 에피소드의 고객 쪽. 과제의 시나리오를 받아 고객을 연기하는 LLM(LLMUser)과, 테스트용으로 정해진
 # 대사를 차례로 말하는 대역(ScriptedUser)을 둔다.
@@ -41,27 +41,27 @@ TURN_REMINDER = (
 _EMPTY_FIELD = "(없음)"
 
 
-# 시뮬레이터가 쓸 수 있는 답을 내지 못함(빈 답). 에이전트의 실패가 아니므로 episode.py가 infra_error로 기록해
-# 성공률의 분모에서 뺀다.
 class SimulatorError(RuntimeError):
-    """The simulated customer produced nothing usable. Not the agent's failure (infra_error)."""
+    """시뮬레이터 고객이 쓸 수 있는 답을 내지 못했다(빈 답). 에이전트의 실패가 아니다(infra_error).
+
+    episode.py가 infra_error로 기록해 성공률의 분모에서 뺀다.
+    """
 
 
 # episode.py가 고객에게 기대하는 인터페이스. messages는 시뮬레이터 쪽 대화 기록으로, 역할이 뒤집혀 있다(상담원
 # 말이 user, 고객 자신의 말이 assistant).
 class User(Protocol):
-    messages: list[Message]  # simulator-side history (role-flipped)
+    messages: list[Message]  # 시뮬레이터 쪽 대화 기록(역할이 뒤집힘)
     llm_log: list[LLMCallLog]
 
     def reply(self, agent_text: str) -> str:
-        """The customer's answer to what the agent just said; may carry a termination token."""
+        """상담원이 방금 한 말에 대한 고객의 답. 종료 토큰이 붙어 있을 수 있다."""
         ...
 
 
-# 테스트용 고객. 모델 없이 정해진 대사를 순서대로 말하고, 대사가 떨어지면 종료 토큰만 낸다. GPU 없이 에피소드
-# 전체 경로를 시험할 수 있다.
+# 테스트용 고객. GPU 없이 에피소드 전체 경로를 시험할 수 있다.
 class ScriptedUser:
-    """Says the prepared lines in order, then STOP_TOKEN forever."""
+    """모델 없이 준비된 대사를 순서대로 말하고, 대사가 떨어지면 그 뒤로는 계속 STOP_TOKEN만 낸다."""
 
     def __init__(self, lines: Sequence[str]):
         self._lines = list(lines)
@@ -78,7 +78,7 @@ class ScriptedUser:
 # prompts/user_sim.md 템플릿에 시나리오(성격, 이유, 아는 것, 모르는 것, 행동 규칙)와 오늘 날짜(과제의 고정
 # 시계, KST)를 채운다. 빈 항목은 "(없음)"으로 넣는다.
 def build_user_prompt(task: Task) -> str:
-    """The simulator's system prompt. Only the scenario goes in: no customer id, gold actions or values."""
+    """시뮬레이터의 시스템 프롬프트. 시나리오만 넣고 고객 번호, 정답 동작, 전달 값은 넣지 않는다."""
     today = kst_date(task.now)
     scenario = task.user
     template = (files("support_agent") / "prompts" / "user_sim.md").read_text(encoding="utf-8")
@@ -92,10 +92,9 @@ def build_user_prompt(task: Task) -> str:
     )
 
 
-# LLM이 고객을 연기한다. 상담원의 말은 user 역할로 들어오고 자기 답은 assistant로 쌓인다. 도구는 주지
-# 않는다(빈 도구 목록).
+# 도구는 주지 않는다(빈 도구 목록).
 class LLMUser:
-    """An LLM playing the customer. The agent's words arrive as `user`, its own go back as `assistant`."""
+    """고객을 연기하는 LLM. 상담원의 말은 `user` 역할로 들어오고, 자기 답은 `assistant`로 쌓인다."""
 
     def __init__(self, provider: ChatProvider, task: Task, config: RunConfig, trial: int):
         self._provider = provider
@@ -112,10 +111,9 @@ class LLMUser:
         index = len(self.llm_log)
         seed = derive_seed(self._config.base_seed, self._task.id, self._trial, "user", index)
         self.messages.append(Message("user", agent_text))
-        # A 7B simulator forgets its rules after a few turns, so the newest message carries a short reminder.
-        # The reminder is sent to the model only; the recorded history holds the agent's words as they were.
-        # 리마인더에 시나리오의 known("당신이 아는 정보")도 함께 붙인다. 모델에 보내는 마지막 메시지에만
-        # 붙이고 기록(self.messages)에는 상담원의 말 그대로 남긴다.
+        # 7B 시뮬레이터는 몇 턴 지나면 규칙을 잊으므로, 가장 새 메시지에 짧은 리마인더를 붙인다. 리마인더에는
+        # 시나리오의 known("당신이 아는 정보")도 함께 붙인다. 리마인더는 모델에 보내는 마지막 메시지에만
+        # 붙이고, 기록(self.messages)에는 상담원의 말을 그대로 남긴다.
         reminder = f"{TURN_REMINDER}\n(당신이 아는 정보: {self._task.user.known})"
         reminded = [*self.messages[:-1], Message("user", f"{agent_text}\n\n{reminder}")]
         response = self._provider.chat(

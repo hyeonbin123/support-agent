@@ -1,4 +1,4 @@
-"""Provider-neutral chat types, the ChatProvider interface and a scripted provider for tests."""
+"""제공자 중립 대화 타입, ChatProvider 인터페이스, 테스트용 대본 재생 제공자."""
 
 # [파일 역할] LLM 제공자(Ollama 등)와 무관한 대화 타입(Message, ToolCall, ChatResponse, Usage)과 제공자
 # 인터페이스(ChatProvider), 테스트용 대본 재생 제공자(ScriptedProvider)를 정의한다.
@@ -30,9 +30,9 @@ Role = Literal["system", "user", "assistant", "tool"]
 @dataclass(frozen=True)
 class ToolCall:
     name: str
-    # Providers that send a JSON string parse it; unparsable text becomes {"_raw": text}.
+    # 인자를 JSON 문자열로 보내는 제공자는 그것을 해석해 넣는다. 해석할 수 없는 글은 {"_raw": 글}이 된다.
     arguments: dict[str, Any]
-    id: str = ""  # "" when the provider sent none
+    id: str = ""  # 제공자가 id를 보내지 않으면 ""
 
 
 # 대화의 메시지 한 개. 평가 기록(episodes.jsonl)과 서비스 세션 저장이 모두 이 형태다.
@@ -44,11 +44,11 @@ class ToolCall:
 class Message:
     role: Role
     content: str = ""
-    tool_calls: tuple[ToolCall, ...] = ()  # assistant only
-    tool_name: str | None = None  # tool only (Ollama's native API uses the name)
-    tool_call_id: str | None = None  # tool only (OpenAI-style and Anthropic APIs use the id)
-    delivered: bool = True  # assistant only: False when the text never reached the customer
-    harness: bool = False  # user only: True when the harness wrote it, not the customer
+    tool_calls: tuple[ToolCall, ...] = ()  # assistant 전용
+    tool_name: str | None = None  # tool 전용(Ollama 고유 API는 이름으로 짝짓는다)
+    tool_call_id: str | None = None  # tool 전용(OpenAI식·Anthropic API는 id로 짝짓는다)
+    delivered: bool = True  # assistant 전용: 글이 고객에게 가지 않았으면 False
+    harness: bool = False  # user 전용: 고객이 아니라 하니스가 쓴 글이면 True
 
     # 기록용 JSON으로 바꾼다. 기본값인 필드(빈 tool_calls, delivered=True, harness=False 등)는 적지 않아
     # 기록을 짧게 유지하고, 표시가 붙은 경우만 키가 생긴다.
@@ -72,7 +72,7 @@ class Message:
     # analyze.py는 기록된 에피소드를 다시 읽을 때 쓴다. 빠진 키는 to_dict에서 생략한 기본값으로 채운다.
     @staticmethod
     def from_dict(data: dict[str, Any]) -> Message:
-        """The inverse of to_dict (the service keeps a conversation as JSON between requests)."""
+        """to_dict의 역함수(서비스는 요청 사이에 대화를 JSON으로 보관한다)."""
         calls = tuple(
             ToolCall(c["name"], c["arguments"], c.get("id", "")) for c in data.get("tool_calls", ())
         )
@@ -94,8 +94,8 @@ class Message:
 class Usage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
-    wall_ms: float = 0.0  # measured by the client around the HTTP call
-    load_ms: float = 0.0  # model load time reported by the server
+    wall_ms: float = 0.0  # 클라이언트가 HTTP 호출 앞뒤로 잰 시간
+    load_ms: float = 0.0  # 서버가 보고한 모델 적재 시간
     prompt_eval_ms: float = 0.0
     eval_ms: float = 0.0
 
@@ -109,15 +109,15 @@ class ChatResponse:
     text: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
     usage: Usage = field(default_factory=Usage)
-    finish_reason: str | None = None  # "length" means the reply was cut off
-    thinking: str = ""  # reasoning text of thinking models; never sent back
+    finish_reason: str | None = None  # "length"면 답이 잘렸다는 뜻
+    thinking: str = ""  # 사고 모드 모델의 추론 글. 다음 요청에 다시 보내지 않는다
 
 
 # 모델 서버의 실패(시간 초과, HTTP 오류, 깨진 JSON). 에이전트의 잘못이 아니므로 episode.py가 잡아
 # infra_error로 기록하고 분모에서 뺀다. 서비스(service/core.py)는 다른 예외처럼 대체 안내문으로 답하되 이
 # 오류는 트레이스백 없이 기록한다.
 class ProviderError(RuntimeError):
-    """The model server failed (timeout, HTTP error, bad JSON). Not the agent's fault."""
+    """모델 서버가 실패했다(시간 초과, HTTP 오류, 깨진 JSON). 에이전트의 잘못이 아니다."""
 
 
 # LLM 제공자 인터페이스. 구현은 대화 전체와 도구 목록을 받아 한 턴을 돌려주는 chat() 하나와, 실행 manifest에
@@ -137,23 +137,23 @@ class ChatProvider(ABC):
         seed: int | None = None,
         max_tokens: int = 1024,
     ) -> ChatResponse:
-        """Send the whole history and return one assistant turn.
+        """대화 기록 전체를 보내고 assistant 턴 하나를 돌려준다.
 
-        `tools` items are neutral: {"name", "description", "parameters"}; each provider wraps them itself.
-        Failures of the server are raised as ProviderError.
+        `tools`의 항목은 중립 형식 {"name", "description", "parameters"}이고, 제공자마다 자기 형식으로
+        감싼다. 서버의 실패는 ProviderError로 올린다.
         """
 
     # run.py가 manifest.json의 agent_provider·user_provider에 넣는 값. analyze same-setup은 두 실행의 이
     # 값(모델 digest, 서버 버전, 옵션)이 같은지 비교해 짝지어도 되는지 판단한다.
     def describe(self) -> dict[str, Any]:
-        """What goes into the run manifest (model, digest, options)."""
+        """실행 manifest에 들어갈 정보(모델, digest, 옵션)."""
         return {"provider": self.name}
 
 
 # 테스트가 준비한 대본보다 많은 호출이 왔다는 뜻이다. 루프가 예상보다 LLM을 더 부르는 회귀를 테스트에서 바로
 # 드러낸다.
 class ScriptExhaustedError(RuntimeError):
-    """The scripted provider was asked for more turns than the test prepared."""
+    """대본 재생 제공자가 테스트가 준비한 것보다 많은 턴을 요청받았다."""
 
 
 # 미리 정한 응답을 순서대로 돌려주는 가짜 제공자. GPU·모델 없이 에이전트 루프, 환경, 판정을 결정적으로
@@ -163,7 +163,7 @@ class ScriptExhaustedError(RuntimeError):
 # mcp_server.py는 빈 대본으로 이것을 넣는다. MCP에서는 외부 클라이언트가 직접 도구를 부르므로 모델이 필요
 # 없다.
 class ScriptedProvider(ChatProvider):
-    """Replays prepared turns. A str is a text reply, a ToolCall is a single tool call."""
+    """준비한 턴을 차례로 재생한다. str은 본문 답, ToolCall은 도구 호출 하나다."""
 
     name = "scripted"
 

@@ -1,4 +1,4 @@
-"""Folders the scripts read and write. `outputs/` is git-ignored; `reports/` is committed."""
+"""스크립트가 읽고 쓰는 폴더. `outputs/`는 git이 무시하고 `reports/`는 커밋한다."""
 
 # [파일 역할] 저장소 안의 주요 폴더 경로를 한곳에 모아 둔 상수 모듈이다.
 # [왜 필요한가] 실행기(run.py), 과제 로더(tasks.py), 분석(analyze.py) 등이 각자 경로를 계산하면 실행 위치(현재

@@ -1,8 +1,8 @@
-"""Does a reply say that something was done which no tool result of the conversation shows?
+"""답이 이 대화의 어떤 도구 결과도 보여 주지 않는 일을 끝냈다고 말하는가?
 
-"취소가 완료되었습니다" with no cancelled order in any tool result is the failure this is for: the customer is
-told that the work is done and the database says otherwise. A reply that reports what a tool showed ("이
-주문은 9월 1일에 이미 취소되었습니다", after get_order) has its evidence and passes.
+이 모듈이 겨냥하는 실패는 도구 결과 어디에도 취소된 주문이 없는데 "취소가 완료되었습니다"라고 말하는
+것이다. 고객은 일이 끝났다고 듣지만 데이터베이스는 그렇지 않다. 도구가 보여 준 사실을 전하는 답(get_order
+뒤의 "이 주문은 9월 1일에 이미 취소되었습니다")은 근거가 있으므로 통과한다.
 """
 
 # [파일 역할] 7단계 완료 주장 가드의 검출기. 상담원 답에 '취소되었습니다'처럼 일이 끝났다는 말이 있는데, 이
@@ -38,16 +38,15 @@ from support_agent.toolkit import ERROR_PREFIX
 @dataclass(frozen=True)
 class ClaimKind:
     name: str
-    label: str  # how the notice names it
-    tools: str  # the write tool(s) that would really do it, named in the notice
-    said: re.Pattern[str]  # the sentence is about this kind of work
-    shown: re.Pattern[str]  # a successful tool result ("<tool name>\n<content>") that shows it
+    label: str  # 안내문에서 이 종류를 부르는 이름
+    tools: str  # 이 일을 실제로 하는 쓰기 도구(들). 안내문에 이름으로 들어간다
+    said: re.Pattern[str]  # 문장이 이 종류의 일에 대한 말인지
+    shown: re.Pattern[str]  # 이 일을 보여 주는 성공한 도구 결과("<도구 이름>\n<내용>")인지
 
 
 # 종류별 근거 표(docs/experiments.md 7단계 검출기 표): 취소는 status cancelled, 반품·교환은 접수
 # 번호(RT-/EX-)나 kind, 쿠폰·티켓·상담원 연결은 새로 생긴 id, 환불은 0이 아닌 refund_won이나 취소·환불 상태.
 # shown 정규식은 tools.py가 json.dumps 기본 구분자로 쓴 결과를 읽으므로 출력 형식이 바뀌면 함께 고쳐야 한다.
-# The patterns of `shown` read the JSON that tools.py writes (json.dumps, default separators).
 KINDS: tuple[ClaimKind, ...] = (
     ClaimKind(
         "cancel", "주문 취소", "cancel_order", re.compile(r"취소"), re.compile(r'"status": "cancelled"')
@@ -66,7 +65,8 @@ KINDS: tuple[ClaimKind, ...] = (
         re.compile(r"교환"),
         re.compile(r'"request_id": "EX-|"kind": "exchange"'),
     ),
-    # A read shows the address an order ships to, never that it was changed: only the write is evidence.
+    # 조회 결과는 주문의 배송지를 보여 줄 뿐 바뀌었다는 것을 보여 주지 않는다. 그래서 쓰기 도구의 성공만
+    # 근거로 본다.
     ClaimKind(
         "address",
         "배송지 변경",
@@ -100,9 +100,9 @@ KINDS: tuple[ClaimKind, ...] = (
 # approval_required 오류로 답한다. 이때 '취소 요청이 접수되었습니다'는 사실이므로, 이 오류를
 # '접수·신청·등록되었다'는 말에 한해 취소·반품·환불의 근거로 인정한다. '취소가 완료되었습니다'는 여전히
 # 막힌다. 평가(승인 없음)에는 영향이 없다(docs/experiments.md 7단계 코드 검토 뒤에 고친 것).
-# In the service a cancel or return above the approval threshold is rolled back and queued, and the tool
-# answers with this error. "취소 요청이 접수되었습니다" is then true ("취소되었습니다" is not), so the error
-# is evidence for those kinds when the sentence speaks of receiving or registering the request.
+# 정리하면: 기준을 넘는 취소·반품은 되돌려진 뒤 대기열에 들어가고 도구는 이 오류로 답한다. 그때 "취소 요청이
+# 접수되었습니다"는 참이고 "취소되었습니다"는 거짓이므로, 요청을 받았다·등록했다는 문장일 때만 이 오류가
+# 그 종류들의 근거가 된다.
 _QUEUED = re.compile(
     r"\A(cancel_order|request_return)\n" + re.escape(ERROR_PREFIX) + r": \[approval_required\]"
 )
@@ -113,8 +113,6 @@ _RECEIVED = re.compile(r"(접수|신청|등록)\s?(?:[가이를은는도]\s?)?(?
 # (습니다/어요/으며/고), 또는 '남겼습니다', '이루어졌습니다'. 미래('취소해 드리겠습니다'), 조건('완료되면'),
 # 의문('취소했는지')은 걸리지 않는다. 마지막의 '고(?![가-힣])'는 연결어미 '…했고'만 잡고, '고' 뒤에 한글이
 # 바로 붙어 다른 낱말이 되는 경우는 잡지 않는다.
-# "…되었습니다 / 했습니다 / 해 드렸습니다": the work is said to be over. Future and conditional forms
-# ("취소해 드리겠습니다", "완료되면", "취소했는지") do not match.
 _DONE = re.compile(
     r"(?:(?:완료|접수|처리|변경|발급|제출|등록|신청|연결|생성|진행|취소|반품|교환|환불)\s?(?:[가이를은는도]\s?)?"
     r"(?:되었|됐|했|하였|해\s?드렸|드렸|마쳤)|남겼|남겨\s?드렸|이루어졌)(?:습니다|어요|으며|고(?![가-힣]))"
@@ -123,32 +121,32 @@ _DONE = re.compile(
 # 건너뛴다.
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
 # 절 경계: '…고/…며/…만/…데' 뒤. '본인 확인이 완료되었고, 취소는 가능합니다'가 취소 주장으로 걸리던 오탐을
-# 코드 검토에서 찾아 넣었다. 쉼표만으로는 끊지 않는다(주소의 쉼표 때문).
-# Clauses: "본인 확인이 완료되었고, 취소는 가능합니다" says nothing about a cancellation being done. A claim
-# is judged inside its own clause, and the kind must stand before (or be) the verb (Korean word order).
-_CLAUSE_END = re.compile(r"(?<=[고며만데]),?\s+")  # a bare comma is not a boundary ("미르로 210, 새길빌딩")
+# 코드 검토에서 찾아 넣었다. 이 문장은 취소가 끝났다는 말이 아니다. 그래서 주장은 자기 절 안에서만
+# 판단하고, 종류를 나타내는 말은 동사 앞에 있거나 동사 자체여야 한다(한국어 어순). 쉼표만으로는 끊지
+# 않는다(주소의 쉼표 때문).
+_CLAUSE_END = re.compile(r"(?<=[고며만데]),?\s+")  # 쉼표만으로는 경계가 아니다("미르로 210, 새길빌딩")
 # '배송이 완료되었습니다'는 택배가 도착했다는 말이지 상담원이 한 일이 아니므로, 끝났다는 말 바로 앞이
 # '배송(이/은/도)'이면 건너뛴다.
 _DELIVERY = re.compile(
     r"배송[이은도]?\s*$"
-)  # "배송이 완료되었습니다" is about the parcel, not about our work
+)  # "배송이 완료되었습니다"는 택배 이야기이지 상담원이 한 일이 아니다
 
 
 # 검출 결과. 근거가 없는 문장과 그 문장이 말한 종류들. 안내문에는 첫 종류의 label과 tools를 쓴다.
 @dataclass(frozen=True)
 class Claim:
     sentence: str
-    kinds: tuple[str, ...]  # every kind the sentence is about; none of them has evidence
-    label: str  # of the first kind
-    tools: str  # of the first kind
+    kinds: tuple[str, ...]  # 문장이 말하는 모든 종류. 그중 어느 것도 근거가 없다
+    label: str  # 첫 종류의 label
+    tools: str  # 첫 종류의 tools
 
 
 # 대화에서 근거로 쓸 도구 결과를 '도구 이름\n내용' 형태로 모은다. 도구 이름을 앞에 붙이는 것은 배송지처럼
 # '어느 도구가 성공했는지'가 근거인 종류(\Achange_shipping_address)를 같은 정규식으로 검사하기 위해서다.
 def shown_results(messages: Iterable[Message]) -> list[str]:
-    """The successful tool results of the conversation, each as "<tool name>\\n<content>" (plus the
-    approval_required errors of the service, which record a queued request). An R2 preview shows what a
-    write would do, not that it was done."""
+    """대화의 성공한 도구 결과들. 각각 "<도구 이름>\\n<내용>" 꼴이다(서비스의 approval_required 오류도
+    넣는다. 대기열에 들어간 요청의 기록이기 때문이다). R2 미리보기는 쓰기를 하면 어떻게 되는지를 보여 줄
+    뿐 했다는 것을 보여 주지 않으므로 뺀다."""
     out = []
     for m in messages:
         # 도구 결과가 아니거나 R2 미리보기면 건너뛴다.
@@ -165,7 +163,7 @@ def shown_results(messages: Iterable[Message]) -> list[str]:
 # 순서: 문장으로 나눔 → 물음표 문장 제외 → 절로 나눔 → 절마다 주장한 종류를 찾음 → 그 종류 중 하나라도 근거가
 # 있으면 통과(관대한 쪽, 주문 번호는 비교하지 않음). 도구 결과 목록은 주장이 처음 나왔을 때 한 번만 만든다.
 def unbacked_claim(text: str, messages: Iterable[Message]) -> Claim | None:
-    """The first sentence of `text` that says some work is done while no tool result shows it."""
+    """`text`에서 어떤 일이 끝났다고 말하지만 그것을 보여 주는 도구 결과가 없는 첫 문장."""
     results: list[str] | None = None
     for sentence in (s.strip() for s in _SENTENCE_END.split(text)):
         if not sentence or sentence.endswith("?"):
@@ -187,8 +185,8 @@ def unbacked_claim(text: str, messages: Iterable[Message]) -> Claim | None:
 # 종류만 본다. 그래서 '반품 접수를 완료했습니다'는 반품, '취소되었습니다'는 동사 자체가 취소다. 동사 뒤에
 # 나오는 낱말은 그 주장의 대상이 아니다.
 def _claimed_kinds(clause: str) -> list[ClaimKind]:
-    """The kinds of work a clause says are done: named before the verb ("반품 접수를 완료했습니다") or by
-    the verb itself ("취소되었습니다"). A delivery being complete is not our work."""
+    """절이 끝났다고 말하는 일의 종류들: 동사 앞에서 이름이 나오거나("반품 접수를 완료했습니다") 동사
+    자체가 그 일이다("취소되었습니다"). 배송 완료는 상담원이 한 일이 아니다."""
     for done in _DONE.finditer(clause):
         if _DELIVERY.search(clause[: done.start()]):
             continue

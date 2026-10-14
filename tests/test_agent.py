@@ -1,4 +1,4 @@
-"""The agent loop against a scripted provider, the toy registry and a real closure over toolkit.execute."""
+"""에이전트 루프를 대본 제공자, 장난감 도구 등록부, toolkit.execute를 실제로 감싼 도구 함수로 시험한다."""
 
 # [테스트 묶음] 에이전트 루프(agent.agent_turn)의 규칙을 모델 없이 확인한다. 대본대로 답하는 가짜
 # 제공자(ScriptedProvider), 실제 도메인 도구 대신 장난감 도구 등록부(toy_tools.py), 실제 단일 실행
@@ -45,7 +45,7 @@ MISSING = ToolCall("toy_get_order", {"order_id": "O-404"})
 # 문맥과 대본 제공자를 둔다. run_tool은 평가·서비스와 같은 execute()를 지나므로 루프와 실제 실행 경로를 함께
 # 시험한다. task_id와 trial을 고정해 seed 계산을 확인할 수 있다.
 class Harness:
-    """One conversation: a private DB copy, a tool closure and the agent state."""
+    """대화 하나: 전용 DB 복사본, 도구 호출 함수, 에이전트 상태."""
 
     def __init__(self, seed_engine, script, config: RunConfig | None = None):
         self.engine = db.memory_engine(seed_engine)
@@ -98,7 +98,7 @@ def test_tool_then_answer(tiny_engine):
     assert (log.agent_call, log.name, log.ok, log.write) == (0, "toy_get_order", True, False)
     assert log.raw_arguments == log.args == {"order_id": "O-1"}
     assert log.ms >= 0
-    # the second request saw the tool result
+    # 두 번째 요청은 도구 결과를 보았다
     assert h.provider.requests[1]["messages"][-1].role == "tool"
 
 
@@ -293,7 +293,7 @@ def test_max_agent_calls(tiny_engine):
     assert (result.reply, result.stop) == (None, "max_agent_calls")
     assert h.state.agent_calls == 3 and len(h.provider.requests) == 3
 
-    # the budget is per episode: a later turn makes no further call
+    # 한도는 에피소드 단위다: 뒤의 턴은 더 이상 호출하지 않는다
     assert h.turn("여보세요?").stop == "max_agent_calls"
     assert len(h.provider.requests) == 3
 
@@ -376,7 +376,7 @@ def test_system_prompt_has_the_policy_and_kst_time():
     assert "현재 시각: 2026-09-14 10:00 (월요일)" in prompt
     assert "{" not in prompt and "}" not in prompt
 
-    # a UTC instant is shown in KST, across the date line
+    # UTC 시각은 날짜가 바뀌더라도 KST로 보여 준다
     late = build_system_prompt("규정", datetime(2026, 9, 19, 16, 30, tzinfo=UTC))
     assert "2026-09-20 01:30 (일요일)" in late
 

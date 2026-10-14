@@ -1,22 +1,21 @@
-"""Stage 12: how much the simulated customer decides a score. Nothing here calls a model.
+"""12단계: 시뮬레이터 고객이 점수를 얼마나 좌우하는가. 여기서는 모델을 부르지 않는다.
 
-Automatic counts of simulator slips (P5(b) of the 2026-10-02 review), read from the episode records of any
-run, and the report that pairs a run with another simulator against the same setup with the 7B simulator
-(docs/experiments.md, stage 12). The counts were written down, with tests, before they were computed on any
-record:
+어느 실행이든 그 에피소드 기록에서 읽어 내는 시뮬레이터 잘못의 자동 계수(2026-10-02 검토의 P5(b))와,
+다른 시뮬레이터로 돌린 실행을 같은 설정의 7B 시뮬레이터 실행과 짝지은 보고서(docs/experiments.md 12단계).
+계수는 어떤 기록에도 계산하기 전에 테스트와 함께 정의를 적어 두었다:
 
-- stop before values: a task with required values (전달 값) that the simulator ended with its STOP token while
-  some required value was not yet in what the agent had said to it (the judge's matcher, `value_found`).
-- invented values: a value in a simulator utterance (an e-mail address, a date, a number of MIN_DIGITS or more
-  digits once hyphens and thousands commas are dropped) that is in none of the simulator's own prompt (its
-  scenario and today's date), what the agent had said to it so far, and the tool results of the episode so
-  far. A number is also found when it is part of a longer one (the last digits of a phone number).
+- 값 전 STOP(stop before values): 전달 값이 있는 과제에서, 상담원이 시뮬레이터에게 한 말에 전달 값이 아직
+  하나라도 없는데(판정의 일치 함수 `value_found`로 봄) 시뮬레이터가 STOP 토큰으로 대화를 끝냈다.
+- 지어낸 값(invented values): 시뮬레이터 발화 속 값(이메일 주소, 날짜, 하이픈과 천 단위 쉼표를 뺀 뒤
+  MIN_DIGITS자리 이상인 숫자) 가운데 시뮬레이터 자신의 프롬프트(시나리오와 오늘 날짜), 그때까지 상담원이 한
+  말, 그때까지 에피소드의 도구 결과 어디에도 없는 것. 숫자는 더 긴 숫자의 일부여도(전화번호 끝자리) 있는
+  것으로 본다.
 
-Reported only: a STOP with a gold write left, utterances in another script, simulator format problems.
+보고만 하는 것: 정답 쓰기가 남은 채 STOP, 다른 문자(한자·가나)로 쓴 발화, 시뮬레이터 형식 문제.
 
-Rule change of 2026-10-09 (after the counts on the earlier records, before the GPU run): the next-round rule
-reads "stop before values" as a share of the episodes that never heard every value (an agent that delivers
-more values lowers the plain count by itself), and asks U1 for no more invented values than U0 (U0 has none).
+2026-10-09 규칙 변경(앞선 기록의 계수를 센 뒤, GPU 실행 전): 다음 라운드 규칙은 "값 전 STOP"을 값을 끝내 다
+듣지 못한 에피소드 가운데 비율로 읽고(상담원이 값을 더 많이 전하기만 해도 단순 개수가 저절로 내려가므로),
+U1에게 U0보다 지어낸 값이 많지 않을 것을 요구한다(U0에는 지어낸 값이 없다).
 """
 
 # [파일 역할] 12단계(시뮬레이터 민감도 점검)의 집계·보고 코드. 실행 기록(episodes.jsonl)만 읽어 시뮬레이터
@@ -59,26 +58,25 @@ from support_agent.analyze import (
     smoke_gates as stage8_smoke_gates,
 )
 from support_agent.episode import split_ending
-from support_agent.judge import _KOREAN_DATE, _NUMERIC_DATE, value_found  # the judge's date forms
+from support_agent.judge import _KOREAN_DATE, _NUMERIC_DATE, value_found  # 판정의 날짜 꼴
 from support_agent.paths import TASKS
 from support_agent.tasks import Task, load_tasks
 from support_agent.user_sim import build_user_prompt
 
 # 지어낸 값으로 셀 숫자의 최소 자릿수. 1~3자리(수량, 날짜의 일, 신발 크기, 시각)는 정당한 경우가 많아 오탐이
 # 잦으므로 읽지 않는다. 그래서 이 계수는 지어낸 값을 덜 센다(docs/experiments.md 12단계 "자동 계수").
-MIN_DIGITS = 4  # shorter numbers (quantities, days, sizes, times) are too often legitimate to count
+MIN_DIGITS = 4
 # 시뮬레이터 프롬프트가 num_ctx의 95%를 넘으면 앞부분이 잘렸을 수 있다고 보고 그 호출 수를 보고한다.
 # 시뮬레이터에는 컨텍스트 한도 종료가 없어서다.
-PROMPT_LIMIT_SHARE = 0.95  # a simulator prompt above this share of its num_ctx may have lost its start
+PROMPT_LIMIT_SHARE = 0.95
 # 값 패턴: 이메일(소문자로 바꾼 뒤 찾음), 하이픈이나 천 단위 쉼표로 이어진 숫자 묶음(전화·주문·송장 번호,
 # 금액). _HYPHENS는 여러 종류의 하이픈 닮은 문자를 '-' 하나로 맞추는 데 쓴다.
 _EMAIL = re.compile(r"[0-9a-z._%+\-]+@[0-9a-z\-]+(?:\.[0-9a-z\-]+)*\.[a-z]{2,}")
-# Digit groups joined by hyphens (phone, order and tracking numbers) or by thousands commas (amounts).
 _NUMBER = re.compile(r"\d+(?:-\d+|,\d{3}(?!\d))*")
 _HYPHENS = re.compile("[\u2010-\u2015\u2212\ufe63\uff0d]")
 # 시뮬레이터 답에 사고 태그가 새어 나왔는지(think=false가 먹지 않음).
 _THINK_TAG = re.compile(r"</?think>")
-# What is left of an end token after the valid ones are taken off: "네 감사합니다 ###", "STOP".
+# 올바른 종료 토큰을 떼고도 남은 종료 토큰 조각: "네 감사합니다 ###", "STOP" 같은 것.
 _END_LEFTOVER = re.compile(r"#{2,}|(?<![A-Za-z])STOP(?![A-Za-z])|OUT[-_ ]?OF[-_ ]?SCOPE", re.IGNORECASE)
 # 보고하는 형식 문제의 종류: 사고 태그, 256토큰 한도에서 잘림, 도구 호출(시뮬레이터에는 도구를 주지 않음),
 # 떼고 남은 종료 토큰 조각.
@@ -96,7 +94,7 @@ def _normal(text: str) -> str:
 # 판정과 같은 날짜 꼴(2026-09-15, 2026년 9월 15일, 9월 15일)을 "date:MM-DD"로 뽑고, 날짜를 지운 나머지 글도
 # 돌려준다. 날짜 속 숫자가 다시 숫자 값으로 세어지지 않게 하려는 것이다. 있을 수 없는 월·일은 버린다.
 def _dates_and_rest(text: str) -> tuple[set[str], str]:
-    """Dates as month-day (the year is left out: a customer rarely says it) and the text without them."""
+    """월-일로 나타낸 날짜(고객이 연도는 거의 말하지 않아 뺀다)와 날짜를 지운 글."""
     dates: set[str] = set()
     for pattern in (_NUMERIC_DATE, _KOREAN_DATE):
         for match in pattern.finditer(text):
@@ -117,19 +115,22 @@ def _numbers(text: str, min_digits: int) -> set[str]:
     return out
 
 
-# 시뮬레이터 발화 하나에서 "지어냈는지" 볼 값들. 숫자는 MIN_DIGITS 이상만 본다.
 def value_tokens(text: str) -> set[str]:
-    """The values in one simulator utterance: email:..., date:MM-DD, num:<digits> (MIN_DIGITS or more)."""
+    """시뮬레이터 발화 하나에서 "지어냈는지" 볼 값들: email:..., date:MM-DD, num:<숫자>.
+
+    숫자는 MIN_DIGITS자리 이상만 본다.
+    """
     text = _normal(text)
     emails = {f"email:{e}" for e in _EMAIL.findall(text)}
     dates, rest = _dates_and_rest(_EMAIL.sub(" ", text))
     return emails | dates | _numbers(rest, MIN_DIGITS)
 
 
-# 발화가 되풀이해도 되는 값(출처)들. 출처 쪽은 숫자를 길이 제한 없이 모으고, 날짜 안의 숫자도 숫자로 함께 남겨
-# 넓게 잡는다(오탐을 줄이는 쪽).
 def source_tokens(texts: Iterable[str]) -> set[str]:
-    """The values an utterance may repeat: numbers of any length, the digits inside dates kept as well."""
+    """발화가 되풀이해도 되는 값(출처)들: 길이 제한 없는 숫자, 날짜 안의 숫자도 숫자로 함께 남긴다.
+
+    출처 쪽을 이렇게 넓게 잡아 오탐(지어내지 않은 값을 지어냈다고 세는 것)을 줄인다.
+    """
     out: set[str] = set()
     for text in texts:
         text = _normal(text)
@@ -151,19 +152,19 @@ def grounded(token: str, sources: set[str]) -> bool:
     return False
 
 
-# ---------------------------------------------------------------- one episode
+# ---------------------------------------------------------------- 에피소드 하나
 
 
-# 시뮬레이터 호출마다 (호출 기록, 그때까지 상담원이 시뮬레이터에게 한 말들, 그 발화가 에이전트 기록에 들어가기
-# 전까지의 도구 결과)를 만든다.
 # user_messages는 시뮬레이터 쪽 기록이라 role이 user인 것이 상담원의 말이다. k번째 호출은 상담원 말 k+1개를 본
 # 상태에서 답했다.
 def _simulator_turns(episode: dict[str, Any]) -> list[tuple[dict[str, Any], list[str], list[str]]]:
-    """Each simulator call with the agent texts it had seen and the tool results that came before it."""
+    """시뮬레이터 호출마다 (호출 기록, 그때까지 본 상담원의 말들, 그 발화보다 앞선 도구 결과)를 만든다.
+
+    도구 결과는 그 발화가 에이전트 기록에 들어가기 전까지의 것이다.
+    """
     calls = sorted((c for c in episode["llm_calls"] if c["who"] == "user"), key=lambda c: c["index"])
     seen = [m["content"] for m in episode["user_messages"] if m["role"] == "user"]
     messages = episode["messages"]
-    # Where each simulator reply entered the agent's history; a bare end token (the last reply) never did.
     # 에이전트 기록에서 고객 발화가 들어간 자리(하니스 안내문 제외). k번째 시뮬레이터 답은 arrived[k]에
     # 들어갔으므로 그 앞의 도구 결과만 출처로 친다. 종료 토큰만 있던 마지막 답은 들어가지 않았으므로 기록
     # 끝까지를 본다.
@@ -187,7 +188,7 @@ def _said(call: dict[str, Any]) -> str:
 def invented_values(
     episode: dict[str, Any], task: Task, prompt: set[str] | None = None
 ) -> list[tuple[int, list[str]]]:
-    """(simulator call index, values found nowhere it could have them from) for each utterance with any."""
+    """지어낸 값이 있는 발화마다 (시뮬레이터 호출 번호, 알 수 있었던 출처 어디에도 없는 값들)."""
     if prompt is None:
         prompt = source_tokens([build_user_prompt(task)])
     out = []
@@ -203,10 +204,9 @@ def invented_values(
 
 
 # 값 전 STOP(1차 계수 하나): 전달 값이 있는 과제에서 시뮬레이터가 STOP으로 끝냈는데, 그때까지 상담원이
-# 시뮬레이터에게 한 말에 전달 값이 하나라도 없었는가. 판정과 같은 value_found로 본다. 전달 값이 없는 과제나
-# infra 오류는 None(분모에서 뺌).
+# 시뮬레이터에게 한 말에 전달 값이 하나라도 없었는가. 판정과 같은 value_found로 본다.
 def stop_before_values(episode: dict[str, Any], task: Task) -> bool | None:
-    """None when the task has no required value (or the episode was an infra error)."""
+    """과제에 전달 값이 없으면(또는 에피소드가 infra 오류면) None이다(분모에서 뺌)."""
     if episode["status"] == "infra_error" or not task.required_values:
         return None
     if episode["termination"] != "user_stop":
@@ -215,11 +215,10 @@ def stop_before_values(episode: dict[str, Any], task: Task) -> bool | None:
     return not all(value_found(value, seen) for value in task.required_values)
 
 
-# 끝난 이유와 상관없이 시뮬레이터가 전달 값을 끝내 다 듣지 못했는가. 2026-10-09 규칙 변경으로 "값을 끝내 못
-# 들은 에피소드 중 STOP" 비율의 분모가 됐다. 상담원이 값을 더 많이 전하기만 해도 값 전 STOP의 단순 비율이
-# 내려가는 문제를 피하려는 것이다.
+# 2026-10-09 규칙 변경으로 "값을 끝내 못 들은 에피소드 중 STOP" 비율의 분모가 됐다. 상담원이 값을 더 많이
+# 전하기만 해도 값 전 STOP의 단순 비율이 내려가는 문제를 피하려는 것이다.
 def values_never_heard(episode: dict[str, Any], task: Task) -> bool | None:
-    """True when the simulator never read every required value, however the episode ended."""
+    """에피소드가 어떻게 끝났든 시뮬레이터가 전달 값을 끝내 다 읽지 못했으면 True."""
     if episode["status"] == "infra_error" or not task.required_values:
         return None
     seen = [m["content"] for m in episode["user_messages"] if m["role"] == "user"]
@@ -229,7 +228,7 @@ def values_never_heard(episode: dict[str, Any], task: Task) -> bool | None:
 # 보고용: 정답 쓰기가 있는 과제에서 STOP으로 끝났는데 빠진 쓰기가 있는가(10단계 스모크에서 7B 고객이 상담원이
 # 쓰기를 부르기 전에 대화를 끝낸 꼴).
 def stop_with_writes_left(episode: dict[str, Any], task: Task) -> bool | None:
-    """None when the task has no gold write (or the episode was an infra error)."""
+    """과제에 정답 쓰기가 없으면(또는 에피소드가 infra 오류면) None."""
     if episode["status"] == "infra_error" or not task.gold_actions:
         return None
     return episode["termination"] == "user_stop" and episode["verdict"]["missing_writes"] > 0
@@ -242,15 +241,15 @@ def format_problems(call: dict[str, Any]) -> list[str]:
     if _THINK_TAG.search(text):
         problems.append("think_tag")
     if call.get("finish_reason") == "length":
-        problems.append("cut_off")  # USER_MAX_TOKENS ran out
+        problems.append("cut_off")  # USER_MAX_TOKENS를 다 썼다
     if call.get("tool_calls"):
-        problems.append("tool_call")  # the simulator is offered no tools
+        problems.append("tool_call")  # 시뮬레이터에게는 도구를 주지 않는다
     if _END_LEFTOVER.search(unicodedata.normalize("NFKC", split_ending(text)[0])):
         problems.append("broken_end")
     return problems
 
 
-# ---------------------------------------------------------------- one run
+# ---------------------------------------------------------------- 실행 하나
 
 
 # tasks/의 모든 과제 파일(smoke, dev, test)을 id로 묶는다. 실행 기록이 어느 과제 파일에서 나왔는지와 상관없이
@@ -289,7 +288,7 @@ def run_counts(run_dir: Path) -> dict[str, Any]:
             continue
         task = tasks.get(episode["task_id"])
         if task is None or hashes[task.id] != episode.get("task_sha256"):
-            counts["changed_tasks"] += 1  # the scenario the simulator had is not the one in the file now
+            counts["changed_tasks"] += 1  # 시뮬레이터가 받은 시나리오가 지금 파일의 것과 다르다
             continue
         counts["episodes"] += 1
         before = stop_before_values(episode, task)
@@ -366,14 +365,13 @@ def counts_table(run_dirs: list[Path]) -> str:
     return "\n".join(lines + ([""] + skipped if skipped else []))
 
 
-# ---------------------------------------------------------------- the smoke run (not a measurement)
+# ---------------------------------------------------------------- 스모크 실행 (측정이 아님)
 
 
-# 12단계 스모크 관문: 8단계와 같은 S0(infra 오류 0)·S1(두 모델 모두 GPU, 다시 읽기 없음)과, T1(시뮬레이터 답에
-# 사고 태그 0건). 측정이 아니라 하니스 확인이다.
+# 측정이 아니라 하니스 확인이다.
 def smoke_gates(run_dir: Path) -> list[tuple[str, str, bool]]:
-    """S0 (no infra error) and S1 (both models on the GPU, no reload) of stage 8, and T1: no reasoning tag in
-    what the simulator said (think=false honoured)."""
+    """12단계 스모크 관문: 8단계의 S0(infra 오류 없음)·S1(두 모델 모두 GPU, 다시 읽기 없음)과,
+    T1: 시뮬레이터가 한 말에 사고(reasoning) 태그가 없음(think=false가 지켜짐)."""
     gates = [gate for gate in stage8_smoke_gates(run_dir) if gate[0] in ("S0", "S1")]
     calls = [
         c for e in load_episodes(run_dir) if e["status"] != "infra_error" for c in e["llm_calls"]
@@ -405,7 +403,7 @@ def smoke_report(run_dir: Path) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------- the paired report
+# ---------------------------------------------------------------- 짝지은 보고서
 
 
 # 두 실행을 짝지어도 되는지 확인한다: 둘 다 개발용이어야 하고, 시뮬레이터 모델은 달라야 하며, 시뮬레이터
@@ -441,10 +439,10 @@ def _paired(
     return diff, low, high, len(usable)
 
 
-# analyze sim-check: 12단계 보고서. pass^1·pass^4와 U0 대비 차이, 유형별 pass^1, 종료 사유, 두 실행의 계수표,
+# analyze sim-check가 부른다. pass^1·pass^4와 U0 대비 차이, 유형별 pass^1, 종료 사유, 두 실행의 계수표,
 # 그리고 다음 라운드 후보 규칙의 결과를 만든다. 판정은 하지 않는다(보고만).
 def check(base_dir: Path, cand_dir: Path) -> tuple[str, dict[str, Any]]:
-    """The stage 12 report: U1 (another simulator) against U0 (the 7B record), same agent, same tasks."""
+    """12단계 보고서: U1(다른 시뮬레이터)을 U0(7B 기록)과 비교한다. 에이전트와 과제는 같다."""
     _pairing(base_dir, cand_dir)
     names = (base_dir.name, cand_dir.name)
     episodes = {name: load_episodes(d) for name, d in zip(names, (base_dir, cand_dir), strict=True)}
@@ -485,8 +483,8 @@ def check(base_dir: Path, cand_dir: Path) -> tuple[str, dict[str, Any]]:
     lines += [count_row(name, counts[name]) for name in names]
 
     def stop_share(c: dict[str, Any]) -> float | None:
-        """STOP among the episodes that never heard every value: the simulator's choice when they do not
-        come. None when every episode heard them (nothing to read)."""
+        """값을 끝내 다 듣지 못한 에피소드 가운데 STOP 비율: 값이 오지 않을 때 시뮬레이터가 고른 행동.
+        모든 에피소드가 값을 들었으면 읽을 것이 없으므로 None."""
         return c["stop_before_values"] / c["values_never_heard"] if c["values_never_heard"] else None
 
     def invented_rate(c: dict[str, Any]) -> float:

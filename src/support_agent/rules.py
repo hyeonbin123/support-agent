@@ -1,7 +1,7 @@
-"""Policy arithmetic: return deadline, refund amounts, compensation amounts.
+"""규정 계산: 반품 기한, 환불액, 보상 금액.
 
-Pure functions. No DB, no clock reads: every "now" is an argument. Calendar rules use KST dates.
-The numbers here are the ones written in prompts/policy.md (a test keeps the two in step).
+순수 함수다. DB를 쓰지 않고 시계도 읽지 않는다: 모든 "지금"은 인자다. 날짜 규칙은 KST 날짜로 센다.
+여기 숫자는 prompts/policy.md에 적힌 숫자와 같다(테스트가 둘을 맞춰 둔다).
 """
 
 # [파일 역할] 규정이 정한 계산(반품 기한, 반품 환불액, 보상 쿠폰 금액)만 모은 순수 함수 모듈이다.
@@ -24,15 +24,15 @@ from support_agent.clock import kst_date
 # 반품·교환 기한: 수령일 다음 날부터 7일째 되는 날까지(KST 날짜). 반품 배송비 3,000원은 단순 변심일 때만 받고,
 # 상품 불량·오배송은 0원이다(policy.md 반품 절).
 RETURN_WINDOW_DAYS = 7
-RETURN_FEE_WON = 3000  # charged only when the customer changed their mind
+RETURN_FEE_WON = 3000  # 고객이 단순 변심했을 때만 받는다
 
 # 보상 쿠폰 규정(policy.md 보상 쿠폰 표, docs/design.md 금액 규칙):
 # - 배송 지연: 1~2일 늦으면 2,000원, 3일 이상이면 5,000원. 상품 불량: 3,000원.
 # - 유효 기간 30일(발급 시각 + 30일).
 # - 한도: 고객당 최근 30일(KST 발급일 기준, 오늘 포함) 동안 2장까지. 주문당 1장 제한은 tools.py가 따로
 #   검사한다.
-COUPON_DELAY_SHORT_WON = 2000  # 1-2 days late
-COUPON_DELAY_LONG_WON = 5000  # 3 days late or more
+COUPON_DELAY_SHORT_WON = 2000  # 1~2일 늦음
+COUPON_DELAY_LONG_WON = 5000  # 3일 이상 늦음
 COUPON_DELAY_LONG_FROM_DAYS = 3
 COUPON_DEFECTIVE_WON = 3000
 COUPON_VALID_DAYS = 30
@@ -43,7 +43,7 @@ COUPON_WINDOW_LIMIT = 2
 # 반품·교환을 접수할 수 있는 마지막 KST 날짜. 수령일에 7일을 더한 날이다(9월 2일 수령 → 9월 9일까지). 시각이
 # 아니라 날짜로 계산해 수령 시각이 오후든 오전이든 같은 날 끝나게 한다.
 def return_deadline(delivered_at: datetime) -> date:
-    """The last KST date on which a return or exchange can be requested."""
+    """반품이나 교환을 신청할 수 있는 마지막 KST 날짜."""
     return kst_date(delivered_at) + timedelta(days=RETURN_WINDOW_DAYS)
 
 
@@ -63,16 +63,16 @@ def return_fee_won(reason: db.RequestReason) -> int:
 # docs/experiments.md 공통 규칙 과제). 할인 안분 규칙은 없어서 쓰기 대상 주문은 할인이 0원인 것만
 # 쓴다(judge.validate_task가 검사). max(0, ...)로 음수 환불을 막는다.
 def return_refund_won(items: list[tuple[int, int]], reason: db.RequestReason) -> int:
-    """Sum of unit price x quantity minus the return shipping fee, never below zero."""
+    """단가 × 수량의 합에서 반품 배송비를 뺀 값. 0 아래로 내려가지 않는다."""
     goods = sum(unit_price * quantity for unit_price, quantity in items)
     return max(0, goods - return_fee_won(reason))
 
 
 # 배송 지연 일수 = (수령일, 아직 못 받았으면 오늘) − 도착 예정일. KST 날짜로 센다. 0 이하면 늦지 않은 것이다.
 def delay_days(promised_by: date, delivered_at: datetime | None, now: datetime) -> int:
-    """Days past the promised date, counted to the delivery date or, if not delivered yet, to today (KST).
+    """도착 예정일을 넘긴 일수. 수령일까지, 아직 받지 못했으면 오늘(KST)까지 센다.
 
-    Zero or negative means on time.
+    0이나 음수면 제때 온 것이다.
     """
     reached = kst_date(delivered_at) if delivered_at is not None else kst_date(now)
     return (reached - promised_by).days
@@ -83,9 +83,9 @@ def delay_days(promised_by: date, delivered_at: datetime | None, now: datetime) 
 # 지연 쿠폰 자격이 없으면 None을 돌려주고, 그 처리(P1이면 coupon_not_eligible로 거절, P0이면 위반 기록 뒤
 # 통과)는 tools.py가 정한다.
 def compensation_amount_won(reason: db.CompensationReason, delay_days: int) -> int | None:
-    """The coupon amount the policy fixes, or None when a delivery-delay coupon is not due.
+    """규정이 정한 쿠폰 금액. 배송 지연 쿠폰을 줄 대상이 아니면 None.
 
-    `defective_item` always has an amount; whether a defective request exists is a DB fact the tool checks.
+    `defective_item`은 언제나 금액이 있다. 불량 접수가 실제로 있는지는 도구가 확인하는 DB 사실이다.
     """
     # 불량 보상은 금액이 고정이다. 불량 반품·교환 접수가 실제로 있는지는 DB를 봐야 알 수 있어 도구가 따로
     # 확인한다.
@@ -100,7 +100,7 @@ def compensation_amount_won(reason: db.CompensationReason, delay_days: int) -> i
 # 위반을 기록만 하고 쿠폰 행을 실제로 만드는데, 규정상 정해진 금액이 없으니 이 값으로 채운다(docs/design.md
 # 금액 규칙). 호출 위치: tools.issue_compensation_coupon.
 def fallback_compensation_won(reason: db.CompensationReason) -> int:
-    """The amount of a coupon that is not due but was let through (P0 only): the lowest tier of the reason."""
+    """줄 대상이 아닌데 통과된 쿠폰의 금액(P0 전용): 그 사유의 가장 낮은 단계 금액."""
     if reason == db.CompensationReason.DEFECTIVE_ITEM:
         return COUPON_DEFECTIVE_WON
     return COUPON_DELAY_SHORT_WON

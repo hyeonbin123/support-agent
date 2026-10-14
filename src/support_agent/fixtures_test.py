@@ -1,8 +1,8 @@
-"""Hand-written rows that tasks/test.yaml refers to. Every timestamp is explicit; nothing is random.
+"""tasks/test.yaml이 가리키는 손으로 쓴 행. 모든 시각을 명시했고 난수는 없다.
 
-Ids: customers C-9201.. (one per task: test-0NN talks to C-92NN), addresses AD-C-92NN-n, products P-9201..,
-variants V-92pp-nn, orders O-92001... Every timestamp is before 2026-09-14 10:00 KST, the usual `now` of the
-test tasks. The reasoning behind each row (dates, amounts, the rule it probes) is in the `notes` of the task.
+id: 고객 C-9201..(과제 하나에 하나: test-0NN은 C-92NN과 대화한다), 주소 AD-C-92NN-n, 상품 P-9201..,
+옵션 V-92pp-nn, 주문 O-92001... 모든 시각은 시험용 과제의 보통 `now`인 2026-09-14 10:00 KST보다 앞이다.
+각 행을 그렇게 정한 이유(날짜, 금액, 그 행이 시험하는 규정)는 과제의 `notes`에 있다.
 """
 
 # [파일 역할] 시험용 과제 40개(tasks/test.yaml)가 가리키는 고정 행이다. 고객 40명(C-9201~C-9240, test-0NN은
@@ -43,8 +43,7 @@ _DELAY = db.CompensationReason.DELIVERY_DELAY
 _DEFECT = db.CompensationReason.DEFECTIVE_ITEM
 
 # 시험용 고객. 번호 N이 고객 C-92NN, 전화 0100000-92NN이 된다. 배경 고객 생성에 쓰는 성(seed.SURNAMES)은 쓰지
-# 않는다.
-# (number, name, e-mail local part): customer C-92NN, phone 0100000-92NN. No surname of the generated rows.
+# 않는다. 각 항목: (번호, 이름, 이메일의 @ 앞부분).
 _CUSTOMERS = (
     (1, "남궁현", "hyun.namgung"),
     (2, "문태오", "taeo.moon"),
@@ -90,8 +89,7 @@ _CUSTOMERS = (
 
 # 추가 주소록. 첫 주소(집)는 _home이 고객 번호로 만들고, 여기 있는 고객만 회사·부모님 댁 주소가 더 있다.
 # 수령인이 빈 문자열이면 고객 본인이다. 주소 조회(test-005)와 배송지 변경 과제가 이 주소를 쓴다.
-# Address 1 of every customer is '집' (derived from the customer number). Further addresses, in order:
-# customer number -> ((label, recipient or "" for the customer, postal_code, address), ...)
+# 형식: 고객 번호 -> ((label, 수령인 또는 고객 본인이면 "", postal_code, address), ...), 2번 주소부터 차례로.
 _EXTRA_ADDRESSES: dict[int, tuple[tuple[str, str, str, str], ...]] = {
     5: (("회사", "", "40925", "라온시 달빛구 아름로 88, 가상타워 5층"),),
     12: (("회사", "", "51364", "마루시 은하구 미르로 140, 가상센터 3층"),),
@@ -107,11 +105,11 @@ _EXTRA_ADDRESSES: dict[int, tuple[tuple[str, str, str, str], ...]] = {
 
 # 시험용 상품. 개발용·배경 상품과 따로 두어 재고가 섞이지 않는다. 차콜 / M은 재고 0으로 두어 재입고 문의
 # 과제(test-036)에 쓴다.
-# (product_id, name, category, ((option_label, price_won, stock), ...)); variant ids are V-92pp-01, -02, ...
+# (product_id, name, category, ((option_label, price_won, stock), ...)). 옵션 id는 V-92pp-01, -02, ...
 _PRODUCTS = (
     ("P-9201", "가습기", "생활가전", (("화이트", 43700, 9), ("민트", 43700, 5))),
     ("P-9202", "핸드 블렌더", "주방가전", (("실버", 52600, 7), ("블랙", 52600, 4))),
-    # 차콜 / M is sold out on purpose: test-036 asks when it comes back.
+    # 차콜 / M은 일부러 품절로 둔다: test-036이 언제 재입고되는지 묻는다.
     ("P-9203", "니트 가디건", "의류",
      (("베이지 / M", 46200, 6), ("베이지 / L", 46200, 8), ("차콜 / M", 46200, 0))),
     ("P-9204", "등산 스틱", "스포츠", (("블랙", 33400, 10), ("블루", 33400, 6))),
@@ -141,10 +139,10 @@ _PRODUCTS = (
 @dataclass(frozen=True)
 class _Order:
     order_id: str
-    customer: int  # customer number: 9 -> C-9209
+    customer: int  # 고객 번호: 9 -> C-9209
     status: db.OrderStatus
     ordered_at: datetime
-    lines: tuple[tuple[str, int], ...]  # (variant_id, quantity), line_no = position
+    lines: tuple[tuple[str, int], ...]  # (variant_id, quantity), line_no = 목록 안의 위치
     promised_by: date
     method: db.PaymentMethod = _CARD
     carrier: str = "한빛택배"
@@ -152,8 +150,8 @@ class _Order:
     delivered_at: datetime | None = None
     cancelled_at: datetime | None = None
     cancel_reason: db.CancelReason | None = None
-    refunded: bool = False  # a cancelled order whose refund is already paid out
-    address: int = 1  # n of AD-C-92NN-n
+    refunded: bool = False  # 환불금이 이미 지급된 취소 주문
+    address: int = 1  # AD-C-92NN-n의 n
 
 
 # 2026년 날짜를 짧게 쓰는 도우미(도착 예정일용).
@@ -161,144 +159,125 @@ def _d(month: int, day: int) -> date:
     return date(2026, month, day)
 
 
-# 시험용 주문 표. 각 주문 위의 영어 주석은 그 주문을 쓰는 과제와 정답 금액의 계산이고, 한국어 주석은
-# tasks/test.yaml의 purpose를 옮긴 것이다. 짝 과제(test-011/023, test-017/031)는 같은 규정의 경계 양쪽을
-# 시험한다.
+# 시험용 주문 표. 각 주문 위의 주석은 그 주문을 쓰는 과제, 그 과제가 확인하는 것(tasks/test.yaml의 purpose를
+# 옮김), 그리고 정답 금액의 계산이나 주문의 상황이다. 짝 과제(test-011/023, test-017/031)는 같은 규정의 경계
+# 양쪽을 시험한다.
 _ORDERS = (
-    # test-001 조회: 취소된 두 줄 주문의 환불 금액(27,100원, 환불진행중)과 취소 시각을 알려 주는지.
-    # test-001 lookup: cancelled two-line order, 12,400 + 11,700 + 3,000 = 27,100, refund pending
+    # test-001 조회: 취소된 두 줄 주문의 환불 금액(27,100원, 환불진행중)과 취소 시각을 알려 주는지. 계산:
+    # 12,400 + 11,700 + 배송비 3,000 = 27,100.
     _Order("O-92001", 1, _CANCELLED, kst(9, 8, 20, 10), (("V-9207-01", 1), ("V-9215-02", 1)), _d(9, 11),
            method=_SIMPLE, cancelled_at=kst(9, 9, 8, 45), cancel_reason=db.CancelReason.CHANGED_MIND),
     # test-002 조회: 배송중 주문의 도착 예정일(9월 16일)과 송장 번호를 알려 주는지.
-    # test-002 lookup: in transit, promised 9/16
     _Order("O-92002", 2, _SHIPPED, kst(9, 11, 13, 25), (("V-9214-01", 1),), _d(9, 16), carrier="새벽택배",
            shipped_at=kst(9, 12, 17, 10)),
     # test-003 조회: 배송완료 시각과 택배사를 알려 주는지. 도착 예정일(9월 11일)과 수령일(9월 10일)이 달라
     # 둘을 구별해야 한다.
-    # test-003 lookup: delivered 9/10 (promised 9/11, so the two dates differ)
     _Order("O-92003", 3, _DELIVERED, kst(9, 7, 9, 30), (("V-9209-01", 1),), _d(9, 11), carrier="나래택배",
            shipped_at=kst(9, 8, 15, 20), delivered_at=kst(9, 10, 16, 40)),
     # test-004 조회: 주문 번호를 모르는 고객의 주문 세 건 중 8월 주문을 찾아 주문 번호와 결제 금액을 알려
-    # 주는지.
-    # test-004 lookup: three orders, the August one is 43,700 + 9,400 = 53,100
+    # 주는지. 8월 주문은 43,700 + 9,400 = 53,100원이다.
     _Order("O-92004", 4, _DELIVERED, kst(8, 19, 21, 5), (("V-9201-01", 1), ("V-9220-02", 1)), _d(8, 22),
            method=_SIMPLE, carrier="두루택배", shipped_at=kst(8, 20, 14, 0), delivered_at=kst(8, 21, 13, 15)),
     _Order("O-92005", 4, _DELIVERED, kst(9, 2, 10, 40), (("V-9215-01", 1),), _d(9, 5),
            shipped_at=kst(9, 3, 13, 30), delivered_at=kst(9, 4, 11, 30)),
     _Order("O-92006", 4, _PAID, kst(9, 13, 19, 20), (("V-9216-02", 1),), _d(9, 17)),
     # test-006 조회: 이미 접수된 반품(1번 줄, 단순 변심, _REQUESTS)의 환불 예정 금액과 접수일을 알려 주는지.
-    # test-006 lookup: a return (line 1, changed mind) was filed on 9/11: 33,400 - 3,000 = 30,400
+    # 반품은 9월 11일에 접수했고 환불액은 33,400 - 3,000 = 30,400원이다.
     _Order("O-92007", 6, _DELIVERED, kst(9, 5, 12, 15), (("V-9204-01", 1), ("V-9212-01", 1)), _d(9, 8),
            method=_BANK, carrier="새벽택배", shipped_at=kst(9, 6, 16, 45), delivered_at=kst(9, 8, 15, 5)),
     # test-007 조회: 주문에서 상품 번호를 알아낸 뒤 get_product로 다른 옵션의 가격과 재고를 알려 주는지.
-    # test-007 lookup: product id and price come from this order, stock from get_product
+    # 상품 번호와 가격은 이 주문에서, 재고는 get_product에서 나온다.
     _Order("O-92008", 7, _DELIVERED, kst(8, 24, 17, 50), (("V-9208-01", 1),), _d(8, 27), carrier="나래택배",
            shipped_at=kst(8, 25, 15, 0), delivered_at=kst(8, 27, 12, 20)),
     # test-008 조회: 최근 주문 두 건 중 아직 오지 않은 주문을 찾아 도착 예정일과 송장 번호를 알려 주는지.
-    # test-008 lookup: one of two recent orders is still on its way
     _Order("O-92009", 8, _DELIVERED, kst(9, 9, 8, 20), (("V-9206-02", 1),), _d(9, 12), carrier="두루택배",
            shipped_at=kst(9, 10, 11, 0), delivered_at=kst(9, 11, 14, 50)),
     _Order("O-92010", 8, _SHIPPED, kst(9, 10, 22, 40), (("V-9217-02", 1),), _d(9, 15), method=_SIMPLE,
            shipped_at=kst(9, 12, 9, 35)),
-    # test-009 처리: 배송준비중 주문을 고객이 말한 사유로 취소하고 환불 금액을 알려 주는지.
-    # test-009 action: cancel while preparing, 83,500
+    # test-009 처리: 배송준비중 주문을 고객이 말한 사유로 취소하고 환불 금액(83,500원)을 알려 주는지.
     _Order("O-92011", 9, _PREPARING, kst(9, 11, 9, 10), (("V-9219-02", 1),), _d(9, 16)),
-    # test-010 처리: 주문 번호를 모르는 고객의 결제완료 주문을 목록에서 찾아 취소하는지.
-    # test-010 action: the customer does not know the order number; 11,700 x 2 + 3,000 = 26,400
+    # test-010 처리: 주문 번호를 모르는 고객의 결제완료 주문을 목록에서 찾아 취소하는지. 환불액은
+    # 11,700 × 2 + 3,000 = 26,400원이다.
     _Order("O-92012", 10, _DELIVERED, kst(8, 15, 11, 30), (("V-9220-01", 2),), _d(8, 18), carrier="새벽택배",
            shipped_at=kst(8, 16, 15, 10), delivered_at=kst(8, 18, 10, 25)),
     _Order("O-92013", 10, _PAID, kst(9, 13, 23, 10), (("V-9215-01", 2),), _d(9, 17), method=_SIMPLE),
     # test-011 처리: 반품 기한의 마지막 날(9월 7일 수령 → 9월 14일)에 온 단순 변심 반품을 한 줄만 접수하는지.
-    # test-023과 짝을 이루는 경계 사례다.
-    # test-011 action: received 9/7, so 9/14 is the last day; line 1 only: 48,700 - 3,000 = 45,700
+    # test-023과 짝을 이루는 경계 사례다. 1번 줄만이므로 환불액은 48,700 - 3,000 = 45,700원이다.
     _Order("O-92014", 11, _DELIVERED, kst(9, 4, 18, 30), (("V-9213-02", 1), ("V-9207-02", 1)), _d(9, 8),
            carrier="나래택배", shipped_at=kst(9, 5, 16, 0), delivered_at=kst(9, 7, 19, 45)),
-    # test-012 처리: 같은 주문의 두 줄(1, 3번)을 한 번의 호출로 묶어 반품하는지. 배송비는 한 번만 빠진다.
-    # test-012 action: lines 1 and 3 in one call: 46,200 + 35,600 - 3,000 = 78,800
+    # test-012 처리: 같은 주문의 두 줄(1, 3번)을 한 번의 호출로 묶어 반품하는지. 배송비는 한 번만 빠진다:
+    # 46,200 + 35,600 - 3,000 = 78,800원.
     _Order("O-92015", 12, _DELIVERED, kst(9, 6, 11, 0),
            (("V-9203-01", 1), ("V-9215-01", 1), ("V-9218-01", 1)), _d(9, 10), carrier="두루택배",
            shipped_at=kst(9, 8, 10, 30), delivered_at=kst(9, 10, 12, 30)),
-    # test-013 처리: 상품 불량 반품을 배송비 없이, 수량 2개인 줄 전체로 접수하는지.
-    # test-013 action: defective, quantity 2: 16,300 x 2 = 32,600, no fee
+    # test-013 처리: 상품 불량 반품을 배송비 없이, 수량 2개인 줄 전체로 접수하는지. 환불액은
+    # 16,300 × 2 = 32,600원이다.
     _Order("O-92016", 13, _DELIVERED, kst(9, 7, 14, 45), (("V-9210-01", 2),), _d(9, 10), method=_BANK,
            shipped_at=kst(9, 8, 17, 0), delivered_at=kst(9, 10, 10, 10)),
     # test-014 처리: 기한 안의 사이즈 교환(240mm → 250mm)을 같은 상품의 맞는 옵션 번호로 접수하는지.
-    # test-014 action: size exchange 240mm -> 250mm
     _Order("O-92017", 14, _DELIVERED, kst(9, 5, 20, 20), (("V-9208-01", 1),), _d(9, 9), carrier="새벽택배",
            shipped_at=kst(9, 7, 9, 40), delivered_at=kst(9, 9, 13, 40)),
-    # test-015 처리: 두 줄 주문에서 불량인 2번 줄만 같은 상품의 다른 색으로 교환하는지.
-    # test-015 action: defective exchange of line 2 (black -> white)
+    # test-015 처리: 두 줄 주문에서 불량인 2번 줄만 같은 상품의 다른 색(블랙 → 화이트)으로 교환하는지.
     _Order("O-92018", 15, _DELIVERED, kst(9, 6, 9, 50), (("V-9216-01", 1), ("V-9217-01", 1)), _d(9, 10),
            method=_SIMPLE, carrier="나래택배", shipped_at=kst(9, 7, 14, 20), delivered_at=kst(9, 9, 17, 25)),
     # test-016 처리: 배송준비중 주문의 배송지를 주소록의 세 번째 주소로 바꾸는지.
-    # test-016 action: address change to the third address
     _Order("O-92019", 16, _PREPARING, kst(9, 12, 15, 35), (("V-9213-01", 1),), _d(9, 16)),
     # test-017 처리: 예전 보상 쿠폰 두 장 중 한 장만 최근 30일 안에 있을 때 하루 지연 쿠폰을 발급하는지(한도
-    # 2장 안). test-031과 짝이다.
-    # test-017 action: coupons of 8/15 (outside the 30 days) and 9/5 (inside); O-92022 came one day late
+    # 2장 안). test-031과 짝이다. 쿠폰은 8월 15일(30일 밖)과 9월 5일(안)에 받았고, 하루 늦게 온 주문은
+    # O-92022다.
     _Order("O-92020", 17, _DELIVERED, kst(8, 8, 10, 0), (("V-9212-02", 1),), _d(8, 11), carrier="두루택배",
            shipped_at=kst(8, 10, 11, 0), delivered_at=kst(8, 14, 15, 30)),
     _Order("O-92021", 17, _DELIVERED, kst(8, 30, 19, 40), (("V-9209-02", 1),), _d(9, 2),
            shipped_at=kst(9, 1, 10, 0), delivered_at=kst(9, 4, 14, 10)),
     _Order("O-92022", 17, _DELIVERED, kst(9, 8, 10, 5), (("V-9204-02", 1),), _d(9, 11), carrier="새벽택배",
            shipped_at=kst(9, 10, 16, 30), delivered_at=kst(9, 12, 18, 20)),
-    # test-018 처리: 이미 불량 교환이 접수된 주문에 상품 불량 보상 쿠폰을 발급하는지.
-    # test-018 action: a defective exchange was filed on 9/10, the coupon was not asked for then
+    # test-018 처리: 이미 불량 교환이 접수된 주문에 상품 불량 보상 쿠폰을 발급하는지. 불량 교환은 9월 10일에
+    # 접수했고 그때는 쿠폰을 요청하지 않았다.
     _Order("O-92023", 18, _DELIVERED, kst(9, 4, 21, 15), (("V-9211-02", 1),), _d(9, 8), carrier="나래택배",
            shipped_at=kst(9, 6, 10, 10), delivered_at=kst(9, 8, 11, 0)),
     # test-019 처리: 환불완료로 표시되지만 입금을 못 받았다는 문의를 환불 분류 티켓으로 남기는지.
-    # test-019 action: refund marked as paid out, the customer has not seen the money
     _Order("O-92024", 19, _CANCELLED, kst(9, 1, 13, 0), (("V-9218-02", 1),), _d(9, 4), method=_BANK,
            cancelled_at=kst(9, 2, 9, 30), cancel_reason=db.CancelReason.CHANGED_MIND, refunded=True),
     # test-020 처리: 주문과 무관한 상품 문의를 상품 분류 티켓으로 남기는지. 기존 티켓(_TICKETS)이 있어 새
-    # 번호는 TK-C-9220-2다.
-    # test-020 action: an old order with an old ticket, so the new ticket is TK-C-9220-2
+    # 번호는 TK-C-9220-2다. 이 주문은 그 옛 티켓이 가리키는 옛 주문이다.
     _Order("O-92025", 20, _DELIVERED, kst(7, 27, 16, 20), (("V-9207-01", 1),), _d(7, 30), carrier="두루택배",
            shipped_at=kst(7, 28, 13, 0), delivered_at=kst(7, 30, 11, 45)),
     # test-021 처리: 고객이 처음부터 사람 상담원을 분명히 요구할 때 이관하는지.
-    # test-021 action (hand-off on request)
     _Order("O-92026", 21, _DELIVERED, kst(9, 8, 12, 40), (("V-9206-01", 1),), _d(9, 11),
            shipped_at=kst(9, 9, 15, 30), delivered_at=kst(9, 11, 13, 5)),
     # test-022 처리: 업무 범위 밖 요청(결제 수단 변경)을 거절한 뒤 고객이 요구하면 이관하는지.
-    # test-022 action (hand-off, out of scope: payment method change)
     _Order("O-92027", 22, _PAID, kst(9, 13, 16, 45), (("V-9219-01", 1),), _d(9, 17)),
     # test-023 거절: 반품 기한이 하루 지난(9월 6일 수령 → 9월 13일까지) 단순 변심 반품을 거절하는지.
     # test-011의 짝이다.
-    # test-023 refusal: received 9/6, last day was 9/13
     _Order("O-92028", 23, _DELIVERED, kst(9, 3, 10, 30), (("V-9202-01", 1),), _d(9, 7), carrier="새벽택배",
            shipped_at=kst(9, 4, 14, 0), delivered_at=kst(9, 6, 15, 30)),
     # test-024 거절: 아직 배송 중인 주문의 반품을 거절하는지(return_not_delivered, 시험용에만 있는 코드).
-    # test-024 refusal: still in transit
     _Order("O-92029", 24, _SHIPPED, kst(9, 11, 19, 0), (("V-9205-02", 2),), _d(9, 16), method=_SIMPLE,
            carrier="나래택배", shipped_at=kst(9, 13, 10, 20)),
     # test-025 거절: 이미 출고된 주문의 취소를 거절하는지.
-    # test-025 refusal: shipped, cannot be cancelled
     _Order("O-92030", 25, _SHIPPED, kst(9, 11, 8, 40), (("V-9214-02", 1),), _d(9, 15), carrier="두루택배",
            shipped_at=kst(9, 13, 14, 0)),
-    # test-026 거절: 이미 출고된 주문의 배송지 변경을 거절하는지.
-    # test-026 refusal: shipped 9/12, address cannot change
+    # test-026 거절: 이미 출고된(9월 12일) 주문의 배송지 변경을 거절하는지.
     _Order("O-92031", 26, _SHIPPED, kst(9, 10, 12, 0), (("V-9206-02", 1),), _d(9, 15),
            shipped_at=kst(9, 12, 18, 30)),
     # test-027 거절: 기한 안이어도 다른 상품으로의 교환을 거절하는지.
-    # test-027 refusal: exchange for another product
     _Order("O-92032", 27, _DELIVERED, kst(9, 7, 8, 55), (("V-9201-02", 1),), _d(9, 10), method=_SIMPLE,
            carrier="새벽택배", shipped_at=kst(9, 8, 13, 40), delivered_at=kst(9, 10, 14, 0)),
-    # test-028 거절: 교환 기한이 하루 지난 사이즈 교환을 거절하는지. 이 과제만 now가 9월 16일이다.
-    # test-028 refusal (now 9/16): received 9/8, last day was 9/15
+    # test-028 거절: 교환 기한이 하루 지난 사이즈 교환을 거절하는지. 이 과제만 now가 9월 16일이다. 9월 8일
+    # 수령이라 마지막 날은 9월 15일이었다.
     _Order("O-92033", 28, _DELIVERED, kst(9, 5, 13, 15), (("V-9218-01", 1),), _d(9, 9), carrier="나래택배",
            shipped_at=kst(9, 7, 11, 30), delivered_at=kst(9, 8, 20, 10)),
-    # test-029 거절: 도착 예정일보다 먼저 받은 주문의 지연 쿠폰 요청을 거절하는지(coupon_not_eligible,
+    # test-029 거절: 도착 예정일보다 하루 먼저 받은 주문의 지연 쿠폰 요청을 거절하는지(coupon_not_eligible,
     # 시험용에만 있는 코드).
-    # test-029 refusal: arrived a day before the promised date
     _Order("O-92034", 29, _DELIVERED, kst(9, 7, 22, 15), (("V-9212-01", 2),), _d(9, 11), carrier="두루택배",
            shipped_at=kst(9, 9, 9, 0), delivered_at=kst(9, 10, 9, 50)),
-    # test-030 거절: 이미 보상 쿠폰이 발급된 주문에 또 발급하지 않는지(주문당 1장).
-    # test-030 refusal: four days late, coupon already issued on 9/9
+    # test-030 거절: 이미 보상 쿠폰이 발급된 주문에 또 발급하지 않는지(주문당 1장). 4일 늦었고 쿠폰은 9월
+    # 9일에 이미 발급됐다.
     _Order("O-92035", 30, _DELIVERED, kst(9, 1, 9, 25), (("V-9213-02", 1),), _d(9, 4),
            shipped_at=kst(9, 3, 17, 45), delivered_at=kst(9, 8, 13, 30)),
     # test-031 거절: 최근 30일에 보상 쿠폰을 2장 받은 고객의 세 번째 발급을 거절하는지. 30일의 첫날(8월
-    # 16일)에 걸린 쿠폰을 포함해 세야 한다(coupon_limit_exceeded). test-017의 짝이다.
-    # test-031 refusal: coupons of 8/16 (first day inside the 30 days) and 9/2; O-92038 came one day late
+    # 16일)에 걸린 쿠폰을 포함해 세야 한다(coupon_limit_exceeded). test-017의 짝이다. 쿠폰은 8월 16일과
+    # 9월 2일에 받았고, 하루 늦게 온 주문은 O-92038이다.
     _Order("O-92036", 31, _DELIVERED, kst(8, 10, 14, 0), (("V-9216-01", 1),), _d(8, 13), carrier="새벽택배",
            shipped_at=kst(8, 12, 10, 0), delivered_at=kst(8, 15, 16, 20)),
     _Order("O-92037", 31, _DELIVERED, kst(8, 28, 20, 30), (("V-9217-01", 1),), _d(8, 31), carrier="나래택배",
@@ -306,48 +285,44 @@ _ORDERS = (
     _Order("O-92038", 31, _DELIVERED, kst(9, 8, 9, 45), (("V-9209-01", 1),), _d(9, 11), carrier="두루택배",
            shipped_at=kst(9, 10, 14, 30), delivered_at=kst(9, 12, 11, 40)),
     # test-032 거절: 취소된 주문의 지연 쿠폰 요청을 거절하는지(coupon_order_cancelled, 시험용에만 있는 코드).
-    # test-032 refusal: cancelled after the promised date had passed, 39,300 refund pending
+    # 도착 예정일이 지난 뒤 취소했고 39,300원 환불이 진행 중이다.
     _Order("O-92039", 32, _CANCELLED, kst(9, 6, 9, 0), (("V-9213-01", 1),), _d(9, 9),
            cancelled_at=kst(9, 12, 20, 30), cancel_reason=db.CancelReason.DELIVERY_TOO_SLOW),
-    # test-033 복합: 한 고객의 두 주문에 취소와 배송지 변경을 각각 맞는 주문에 처리하는지.
-    # test-033 composite: cancel O-92041 (17,200 + 3,000 = 20,200), move O-92040 to the office
+    # test-033 복합: 한 고객의 두 주문에 취소와 배송지 변경을 각각 맞는 주문에 처리하는지. O-92041은
+    # 취소(17,200 + 3,000 = 20,200원), O-92040은 배송지를 회사로 바꾼다.
     _Order("O-92040", 33, _PREPARING, kst(9, 12, 10, 20), (("V-9211-01", 1),), _d(9, 16)),
     _Order("O-92041", 33, _PAID, kst(9, 13, 12, 50), (("V-9212-02", 1),), _d(9, 17)),
     # test-034 복합: 오배송 반품(배송비 0원)과 다른 주문의 4일 지연 쿠폰(5,000원 구간)을 함께 처리하는지. 이
-    # 과제의 now는 9월 15일이다.
-    # test-034 composite (now 9/15): wrong item on line 2 (27,800, no fee); O-92043 came four days late
+    # 과제의 now는 9월 15일이다. 오배송은 2번 줄(27,800원)이고, 4일 늦게 온 주문은 O-92043이다.
     _Order("O-92042", 34, _DELIVERED, kst(9, 6, 15, 10), (("V-9204-02", 1), ("V-9205-02", 1)), _d(9, 9),
            shipped_at=kst(9, 7, 16, 0), delivered_at=kst(9, 9, 12, 45)),
     _Order("O-92043", 34, _DELIVERED, kst(9, 3, 11, 35), (("V-9220-01", 1),), _d(9, 6), method=_SIMPLE,
            carrier="새벽택배", shipped_at=kst(9, 6, 10, 0), delivered_at=kst(9, 10, 15, 15)),
-    # test-035 복합: 사이즈 교환을 접수하고, 직접 처리할 수 없는 계정 문의는 계정 분류 티켓으로 남기는지.
-    # test-035 composite: exchange M -> L, plus an account ticket
+    # test-035 복합: 사이즈 교환(M → L)을 접수하고, 직접 처리할 수 없는 계정 문의는 계정 분류 티켓으로
+    # 남기는지.
     _Order("O-92044", 35, _DELIVERED, kst(9, 8, 19, 5), (("V-9203-01", 1),), _d(9, 11), carrier="나래택배",
            shipped_at=kst(9, 9, 16, 20), delivered_at=kst(9, 11, 10, 30)),
     # test-036 복합: 서로 다른 주문의 배송지 변경과 취소, 품절 옵션의 재입고 문의 티켓까지 세 가지를 모두
-    # 처리하는지.
-    # test-036 composite: address change, cancel (14,600 + 3,000 = 17,600), product ticket
+    # 처리하는지. 취소 환불액은 14,600 + 3,000 = 17,600원이다.
     _Order("O-92045", 36, _PAID, kst(9, 13, 9, 15), (("V-9214-01", 1),), _d(9, 17)),
     _Order("O-92046", 36, _PREPARING, kst(9, 12, 22, 0), (("V-9212-01", 1),), _d(9, 16), method=_SIMPLE),
-    # test-037 복합: 취소는 처리하고, 업무 범위 밖인 가격 조정은 거절한 뒤 고객이 요구하면 이관하는지.
-    # test-037 composite: cancel (13,900 x 2 + 3,000 = 30,800), then a price adjustment nobody here can do
+    # test-037 복합: 취소는 처리하고, 업무 범위 밖인 가격 조정은 거절한 뒤 고객이 요구하면 이관하는지. 취소
+    # 환불액은 13,900 × 2 + 3,000 = 30,800원이다.
     _Order("O-92047", 37, _PAID, kst(9, 13, 21, 30), (("V-9216-01", 2),), _d(9, 17)),
     _Order("O-92048", 37, _DELIVERED, kst(9, 7, 10, 10), (("V-9219-01", 1),), _d(9, 10), carrier="두루택배",
            shipped_at=kst(9, 8, 15, 0), delivered_at=kst(9, 10, 11, 20)),
     # test-038 복합: 불량 반품을 먼저 접수해야 자격이 생기는 불량 보상 쿠폰을 같은 주문에 발급하는지(순서가
-    # 중요).
-    # test-038 composite: defective return of line 1 (52,600), then the defective-item coupon
+    # 중요). 불량 반품은 1번 줄(52,600원)이다.
     _Order("O-92049", 38, _DELIVERED, kst(9, 6, 17, 25), (("V-9202-02", 1), ("V-9210-02", 1)), _d(9, 9),
            shipped_at=kst(9, 7, 15, 30), delivered_at=kst(9, 9, 14, 0)),
-    # test-039 복합: 기한 안의 교환은 접수하고, 기한이 지난 다른 주문의 반품은 거절하는지.
-    # test-039 composite: exchange on O-92050 is fine, return of O-92051 (received 9/1) is too late
+    # test-039 복합: 기한 안의 교환(O-92050)은 접수하고, 기한이 지난 다른 주문(O-92051, 9월 1일 수령)의
+    # 반품은 거절하는지.
     _Order("O-92050", 39, _DELIVERED, kst(9, 6, 12, 0), (("V-9218-01", 1),), _d(9, 9), carrier="새벽택배",
            shipped_at=kst(9, 7, 17, 0), delivered_at=kst(9, 9, 10, 50)),
     _Order("O-92051", 39, _DELIVERED, kst(8, 29, 18, 45), (("V-9215-02", 1),), _d(9, 2), carrier="나래택배",
            shipped_at=kst(8, 31, 9, 30), delivered_at=kst(9, 1, 15, 40)),
-    # test-040 복합: 세 주문에 걸친 여러 줄 반품, 배송지 변경, 2일 지연 쿠폰을 모두 맞게 처리하는지.
-    # test-040 composite: return lines 1+2 (21,300 + 12,400 x 2 - 3,000 = 43,100), address change,
-    # coupon for O-92054 (two days late)
+    # test-040 복합: 세 주문에 걸친 여러 줄 반품, 배송지 변경, 2일 지연 쿠폰을 모두 맞게 처리하는지. 반품은
+    # 1·2번 줄(21,300 + 12,400 × 2 - 3,000 = 43,100원), 쿠폰은 2일 늦게 온 O-92054에 준다.
     _Order("O-92052", 40, _DELIVERED, kst(9, 8, 13, 30),
            (("V-9206-01", 1), ("V-9207-01", 2), ("V-9215-02", 1)), _d(9, 11), carrier="두루택배",
            shipped_at=kst(9, 9, 14, 0), delivered_at=kst(9, 11, 16, 10)),
@@ -358,8 +333,7 @@ _ORDERS = (
 
 # 대화 전에 이미 있는 요청: test-006의 단순 변심 반품, test-018의 불량 교환, test-031 고객의 불량 반품(그 뒤
 # 불량 쿠폰이 발급됨).
-# Returns and exchanges that exist before the conversation:
-# (order_id, kind, reason, line_nos, exchange variant or None, created_at)
+# 형식: (order_id, kind, reason, line_nos, 교환할 옵션 또는 None, created_at)
 _REQUESTS = (
     ("O-92007", _RETURN, db.RequestReason.CHANGED_MIND, (1,), None, kst(9, 11, 10, 30)),
     ("O-92023", _EXCHANGE, db.RequestReason.DEFECTIVE, (1,), "V-9211-01", kst(9, 10, 14, 15)),
@@ -368,19 +342,18 @@ _REQUESTS = (
 
 # 대화 전에 이미 있는 보상 쿠폰. 30일 한도 과제의 핵심이다: test-017 고객은 8/15(30일 밖)·9/5(안) 두 장,
 # test-031 고객은 8/16(30일의 첫날)·9/2 두 장, test-030 주문은 이미 한 장. 금액은 rules.py의 지연 일수 구간과
-# 같다.
-# Compensation coupons that exist before the conversation: (order_id, reason, amount_won, issued_at)
+# 같다. 형식: (order_id, reason, amount_won, issued_at)
 _COUPONS = (
-    ("O-92020", _DELAY, 5000, kst(8, 15, 11, 20)),  # three days late
-    ("O-92021", _DELAY, 2000, kst(9, 5, 9, 40)),  # two days late
-    ("O-92035", _DELAY, 5000, kst(9, 9, 10, 15)),  # four days late
-    ("O-92036", _DELAY, 2000, kst(8, 16, 9, 30)),  # two days late
-    ("O-92037", _DEFECT, 3000, kst(9, 2, 15, 0)),  # after the defective return above
+    ("O-92020", _DELAY, 5000, kst(8, 15, 11, 20)),  # 3일 늦음
+    ("O-92021", _DELAY, 2000, kst(9, 5, 9, 40)),  # 2일 늦음
+    ("O-92035", _DELAY, 5000, kst(9, 9, 10, 15)),  # 4일 늦음
+    ("O-92036", _DELAY, 2000, kst(8, 16, 9, 30)),  # 2일 늦음
+    ("O-92037", _DEFECT, 3000, kst(9, 2, 15, 0)),  # 위의 불량 반품 뒤
 )
 
 # 이미 있는 티켓: test-020 고객의 옛 배송 티켓. 그래서 새 티켓 번호는 TK-C-9220-2가 되어야 한다(티켓 id는
 # 고객별 순번).
-# (customer number, order_id or None, category, body, created_at)
+# 형식: (고객 번호, order_id 또는 None, category, body, created_at)
 _TICKETS = (
     (20, "O-92025", db.TicketCategory.DELIVERY, "부재 시 경비실에 맡겨 달라는 요청", kst(7, 28, 9, 10)),
 )
@@ -389,7 +362,7 @@ _TICKETS = (
 # 고객 번호로 첫 주소(집)의 우편번호와 주소를 만든다. 난수 없이 번호의 나머지로 가상 도시·구·도로를 고르므로
 # 언제나 같은 주소가 나온다.
 def _home(number: int) -> tuple[str, str]:
-    """(postal_code, address) of address 1, spread over the fictional cities by the customer number."""
+    """1번 주소의 (postal_code, address). 고객 번호에 따라 가상 도시들에 고르게 퍼진다."""
     city, district, road = CITIES[number % 5], DISTRICTS[number % 6], ROADS[number % 8]
     unit = f"{101 + number % 9}동 {number % 15 + 1}0{number % 4 + 1}호"
     return f"{10000 + number * 2017:05d}", f"{city} {district} {road} {10 + number * 3}, {unit}"
@@ -398,7 +371,7 @@ def _home(number: int) -> tuple[str, str]:
 # 시험용 고정 행을 Rows에 더한다. 순서: 고객과 주소 → 상품과 옵션 → 주문·결제·배송 → 이미 있는 요청 → 쿠폰 →
 # 티켓. 호출 위치: seed.build_seed_engine.
 def add_fixtures(rows: Rows) -> None:
-    """Append customers, addresses, products, orders and the rest to `rows`."""
+    """고객, 주소, 상품, 주문과 나머지 행을 `rows`에 더한다."""
     addresses: dict[str, db.CustomerAddress] = {}
     for number, name, email in _CUSTOMERS:
         customer_id = f"C-{9200 + number}"

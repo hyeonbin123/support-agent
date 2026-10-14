@@ -1,10 +1,10 @@
-"""Stage 9 (voice V4): the caller's number picks the one customer, and the name heard must be that customer's.
+"""9단계(음성 V4): 발신 번호가 고객 한 명을 고르고, 들은 이름은 그 고객의 이름이어야 한다.
 
-The first rules allowed one jamo (k=1) and stopped at their collision gate; the 2026-10-04 rule change
-registered exact names (k=0) before any measurement (docs/experiments.md, stage 9).
+처음 규칙은 자모 하나(k=1)를 허용했다가 이름 충돌 관문에서 멈췄고, 2026-10-04 규칙 변경으로 측정 전에
+이름 완전 일치(k=0)를 등록했다(docs/experiments.md 9단계).
 
-Everything here runs without a model: tools on the tiny shop, scripted episodes on the seed data, the runner
-with fakes, and the analysis commands on hand-made records.
+여기의 모든 것은 모델 없이 돈다: 작은 가게 위의 도구, seed 데이터 위의 대본 에피소드, 가짜를 끼운 실행기,
+손으로 만든 기록 위의 분석 명령.
 """
 
 # [파일 역할] 9단계(음성 V4: 발신 번호로 하는 본인 확인)를 모델 없이 검증하는 테스트 묶음이다. 구역은 여섯
@@ -53,10 +53,9 @@ from support_agent.voice.channel import SpeechChannel
 TEXT_REGISTRY = build_registry()
 V4_REGISTRY = build_registry(caller_id=True)
 V4 = RunConfig(voice="V4")
-# 지금까지 개발용 기록의 manifest에 남은 에이전트 시스템 프롬프트와 도구 스키마의 sha256. V4를 넣으면서
-# V0~V2의 프롬프트·도구가 한 바이트라도 바뀌면 이전 기록과 짝지을 수 없게 되므로 이 값으로
-# 고정한다(docs/experiments.md 9단계 "V4가 바꾸는 것").
-# Hashes in the manifests of the development runs so far (stage 5 V1/V2, stage 8 P0·7B): V0..V2 keep them.
+# 지금까지 개발용 기록(5단계 V1/V2, 8단계 P0·7B)의 manifest에 남은 에이전트 시스템 프롬프트와 도구 스키마의
+# sha256. V0~V2는 이 값을 그대로 유지해야 한다. V4를 넣으면서 V0~V2의 프롬프트·도구가 한 바이트라도 바뀌면
+# 이전 기록과 짝지을 수 없게 되므로 이 값으로 고정한다(docs/experiments.md 9단계 "V4가 바꾸는 것").
 RECORDED_AGENT_SYSTEM = "7238ce2ba88a44d37e194701bff80b2224156510e84f61dee6fc2520968dafc7"
 RECORDED_TOOLS = "565d3ecc74d8b6cf826ce2c9c74026f3c42542a23628722017367c360e2f937a"
 
@@ -73,13 +72,12 @@ def tools_hash(registry, config) -> str:
 
 
 # 이름 허용 오차: 이름을 자모 단위로 비교한 편집 거리.
-# ------------------------------------------------------------------------------- the name tolerance
+# ------------------------------------------------------------------------------- 이름 허용 오차
 
 
 # 등록한 허용 오차가 0(이름 완전 일치)인지 본다. k=1(규칙 커밋 e7c28c5)은 충돌 관문을 통과하지 못했고
 # 2026-10-04 규칙 변경으로 k=0이 등록됐다. 누군가 값을 바꾸면 측정 규칙과 코드가 어긋난다.
 def test_the_registered_tolerance_is_exact_names():
-    # k=1 (rules e7c28c5) failed its collision gate; the 2026-10-04 rule change registered k=0
     assert NAME_TOLERANCE == 0
 
 
@@ -88,18 +86,18 @@ def test_the_registered_tolerance_is_exact_names():
 # 거리 분포가 처음 k=1을 고른 근거였다(docs/experiments.md 9단계 "재기 전에 정한 것" 1).
 @pytest.mark.parametrize(
     ("said", "registered", "distance"),
-    [  # left-hand names are how the recogniser wrote them in the development V1/V2 runs
+    [  # 왼쪽 이름은 개발용 V1/V2 실행에서 인식기가 적은 그대로다
         ("배성훈", "배성훈", 0),
-        ("배성분", "배성훈", 1),  # ㅂ for ㅎ
-        ("최민서", "채민서", 1),  # ㅚ for ㅐ
-        ("허윤설", "허윤서", 1),  # a final ㄹ added
+        ("배성분", "배성훈", 1),  # ㅎ 대신 ㅂ
+        ("최민서", "채민서", 1),  # ㅐ 대신 ㅚ
+        ("허윤설", "허윤서", 1),  # 받침 ㄹ이 붙음
         ("하도병", "하도경", 1),
-        ("안재기", "안재희", 2),  # ㄱㅣ for ㅎㅢ
+        ("안재기", "안재희", 2),  # ㅎㅢ 대신 ㄱㅣ
         ("송민리", "송민규", 2),
         ("빌태윤희", "길태윤", 3),
-        ("배성훈 고객님", "배성훈", 0),  # spaces and the honorific go first, as in find_customer
+        ("배성훈 고객님", "배성훈", 0),  # find_customer처럼 공백과 존칭을 먼저 뗀다
         ("배 성훈님", "배성훈", 0),
-        ("Bae Sunghoon", "배성훈", 11),  # "BaeSunghoon" against eight jamo
+        ("Bae Sunghoon", "배성훈", 11),  # "BaeSunghoon"과 자모 여덟 개를 비교
     ],
 )
 def test_names_are_compared_jamo_by_jamo(said, registered, distance):
@@ -140,7 +138,7 @@ def test_the_caller_number_and_the_name_verify_the_customer(shop):
     }
     assert ctx.state.verified_customer_id == "C-1"
     order = execute(V4_REGISTRY, shop, ctx, "get_order", {"order_id": "O-1"})
-    assert order.ok  # verified as with find_customer
+    assert order.ok  # find_customer와 똑같이 본인 확인됨
 
 
 # 자모 하나만 다른 이름(김하순)은 k=0에서 name_mismatch로 거절되고 확인 상태가 남지 않으며, 띄어쓰기·호칭만
@@ -148,10 +146,10 @@ def test_the_caller_number_and_the_name_verify_the_customer(shop):
 # 있다.
 def test_one_jamo_off_is_refused_and_the_normalised_name_passes(shop):
     ctx = ToolContext(now=NOW, caller_phone="01000000001")
-    result = verify(shop, ctx, "김하순")  # ㅅ for ㅈ: accepted at k=1, refused at k=0
+    result = verify(shop, ctx, "김하순")  # ㅈ 대신 ㅅ: k=1이면 통과, k=0이면 거절
     assert not result.ok and result.error_code == "name_mismatch"
     assert ctx.state.verified_customer_id is None
-    # spaces and the honorific go first, as in find_customer
+    # find_customer처럼 공백과 존칭을 먼저 뗀다
     for said in ("김하준 고객님", "김 하준님", "김하준"):
         result = verify(shop, ctx, said)
         assert result.ok and json.loads(result.content)["name"] == "김하준", said
@@ -163,10 +161,10 @@ def test_one_jamo_off_is_refused_and_the_normalised_name_passes(shop):
 @pytest.mark.parametrize(
     ("caller", "name", "code"),
     [
-        ("01000000001", "김하순", "name_mismatch"),  # one jamo off
-        ("01000000001", "김하정", "name_mismatch"),  # two jamo off
-        ("01000000001", "이서연", "name_mismatch"),  # another customer's name from this phone
-        ("01000000002", "김하준", "name_mismatch"),  # the name of the other number's customer
+        ("01000000001", "김하순", "name_mismatch"),  # 자모 하나 다름
+        ("01000000001", "김하정", "name_mismatch"),  # 자모 둘 다름
+        ("01000000001", "이서연", "name_mismatch"),  # 이 번호로 말한 다른 고객의 이름
+        ("01000000002", "김하준", "name_mismatch"),  # 다른 번호 고객의 이름
         ("01000000001", "", "name_mismatch"),
         ("01099999999", "김하준", "caller_not_registered"),
         (None, "김하준", "no_caller_number"),
@@ -199,21 +197,21 @@ def test_one_customer_per_conversation_still_holds(shop):
     result = verify(shop, ctx, "김하준")
     assert not result.ok and result.error_code == "already_verified"
     again = ToolContext(now=NOW, caller_phone="01000000001")
-    assert verify(shop, again, "김하준").ok and verify(shop, again, "김하준").ok  # the same one twice is fine
+    assert verify(shop, again, "김하준").ok and verify(shop, again, "김하준").ok  # 같은 고객 두 번은 괜찮다
 
 
 # 에이전트가 보는 것: 도구 목록과 시스템 프롬프트. V4만 바뀌고 V0~V2는 그대로여야 한다.
-# ------------------------------------------------------------------------------- what the agent sees
+# ------------------------------------------------------------------------------- 에이전트가 보는 것
 
 
 # V4 등록부는 find_customer 하나를 verify_caller로 같은 자리(맨 앞)에 바꿔 넣고 나머지 도구는 순서까지 같은지,
 # 기본 등록부(서비스, MCP, V0~V2)에는 verify_caller가 없는지 본다.
 def test_v4_swaps_find_customer_for_verify_caller_and_nothing_else():
-    assert "verify_caller" not in TEXT_REGISTRY and "find_customer" in TEXT_REGISTRY  # service, MCP, V0..V2
+    assert "verify_caller" not in TEXT_REGISTRY and "find_customer" in TEXT_REGISTRY  # 서비스, MCP, V0~V2
     assert "verify_caller" in V4_REGISTRY and "find_customer" not in V4_REGISTRY
     others = [name for name in TEXT_REGISTRY if name != "find_customer"]
     assert [name for name in V4_REGISTRY if name != "verify_caller"] == others
-    assert list(V4_REGISTRY)[0] == "verify_caller"  # in the place find_customer had
+    assert list(V4_REGISTRY)[0] == "verify_caller"  # find_customer가 있던 자리
 
 
 # V4에서 find_customer를 부르면 unknown_tool인지 본다. 받아 적은 연락처로 찾는 경로를 남기면 V2의 실패 경로가
@@ -263,7 +261,7 @@ def test_no_required_value_is_given_away_by_the_v4_prompt(task):
 
 
 # 에피소드 안에서: 하니스가 과제 고객의 가입 번호를 발신 번호로 넣는다.
-# ------------------------------------------------------------------------------- in an episode
+# ------------------------------------------------------------------------------- 에피소드 안에서
 
 
 # seed DB 위에서 대본 에이전트로 과제 하나를 V4(기본) 설정과 등록부로 돌린다. 고객은 한 마디 뒤 STOP한다.
@@ -296,9 +294,9 @@ def test_the_gold_path_with_verify_caller_passes_under_v4(task):
 # dev-002(배성훈)에서 인식기가 적은 '배성분'은 거절되고 다시 부른 '배성훈'은 과제 고객(C-9102)으로 확인되는지,
 # 잘못 들은 이름 한 번으로 끝난 에피소드는 본인 확인 성공으로 세지 않는지 본다.
 def test_the_caller_is_the_task_customer_and_a_misheard_name_is_refused():
-    task = next(t for t in ALL_TASKS if t.id == "dev-002")  # 배성훈, who gave an e-mail address
+    task = next(t for t in ALL_TASKS if t.id == "dev-002")  # 이메일 주소를 댄 배성훈
     script = [
-        ToolCall("verify_caller", {"name": "배성분"}),  # how the recogniser wrote it in the V1/V2 runs
+        ToolCall("verify_caller", {"name": "배성분"}),  # V1/V2 실행에서 인식기가 적은 그대로
         ToolCall("verify_caller", {"name": "배성훈"}),
         "확인되었습니다.",
     ]
@@ -333,7 +331,7 @@ def test_a_text_episode_has_no_caller_number():
 
 
 # 실행기: V4는 V2와 같은 채널을 쓰고 manifest에 허용 오차를 남긴다.
-# ------------------------------------------------------------------------------- the runner
+# ------------------------------------------------------------------------------- 실행기
 
 
 # 가짜 Ollama와 가짜 채널로 V2와 V4 실행을 하나씩 돌려, V4 실행 이름에 V4가 붙고, manifest에 caller_id(도구
@@ -444,7 +442,7 @@ def test_same_setup_can_let_named_prompt_hashes_differ(tmp_path, monkeypatch, ca
 def test_the_collision_check_counts_other_names_within_k_and_sets_same_names_apart():
     names = {"C-1": "김하준", "C-2": "김하순", "C-3": "박서연", "C-4": "김하준", "C-5": "김하정"}
     collisions, same = analyze.name_collisions(names, k=1)
-    # 김하정 is two jamo from 김하준 and three from 김하순: no collision at k=1
+    # 김하정은 김하준과 자모 둘, 김하순과 자모 셋 차이라 k=1에서 충돌이 아니다
     assert [(a, b) for a, b, *_ in collisions] == [
         ("C-1", "C-2"),
         ("C-2", "C-1"),
@@ -472,7 +470,7 @@ def call(name, ok, args=None, content="", code=None):
 # 도구 호출, 발신 번호 오류. k=0에서 '허용 오차로 통과'가 0이 아니면 버그이므로 그 경우를 일부러 넣어 따로
 # 세는지 본다.
 def test_the_caller_id_table_tells_tolerance_passes_apart(tmp_path):
-    # hand-made records: at k=0 the "tolerance" column must stay 0, and a pass counted there is a bug
+    # 손으로 만든 기록: k=0에서 "허용 오차" 칸은 0이어야 하고, 거기 세어진 통과는 버그다
     found = json.dumps({"customer_id": "C-9101", "name": "고은채"}, ensure_ascii=False)
     v4 = [
         episode_with([call("verify_caller", True, {"name": "고은채"}, found)]),
@@ -485,7 +483,7 @@ def test_the_caller_id_table_tells_tolerance_passes_apart(tmp_path):
         episode_with([call("find_customer", False, None, code="unknown_tool")]),
         episode_with([]),
         {**episode_with([call("verify_caller", False, code="no_caller_number")]), "status": "truncated"},
-        {**episode_with([]), "status": "infra_error"},  # left out
+        {**episode_with([]), "status": "infra_error"},  # 빠진다
     ]
     v2 = [episode_with([call("find_customer", True, {"name": "고은채", "contact": "x"}, found)])] * 4
     table = analyze.caller_id_table({"v2": v2, "v4": v4})
@@ -497,7 +495,7 @@ def test_the_caller_id_table_tells_tolerance_passes_apart(tmp_path):
 # 고객 번호까지)가 그대로 나오고 FAIL인지, k=0에서는 0건인지 본다. docs/experiments.md 9단계 "관문 결과" 표가
 # 코드와 seed에서 다시 계산된다는 확인이다.
 def test_the_recorded_gate_result_comes_back_from_the_seed():
-    # docs/experiments.md stage 9: the first gate failed at k=1 with 12 ordered pairs, and the stage stopped
+    # docs/experiments.md 9단계: 첫 관문은 k=1에서 순서쌍 12개로 실패했고 단계가 멈췄다
     names = analyze.seed_names()
     collisions, same = analyze.name_collisions(names, k=1)
     assert len(names) == 109 and len(same) == 6 and len(collisions) == 12
@@ -520,11 +518,11 @@ def test_the_recorded_gate_result_comes_back_from_the_seed():
 # 다시 등록한 k=0 관문이 PASS(0건)이고 동명이인 6쌍은 따로 적히는지, 그리고 analyze name-collisions의 기본 k가
 # 등록한 값(0)이라 인자 없이 돌려도 같은 결과인지 본다. 관문이 실패하면 명령이 0이 아닌 값으로 끝난다.
 def test_the_re_registered_gate_passes_at_exact_names(monkeypatch, capsys):
-    # docs/experiments.md stage 9, rule change of 2026-10-04: k=0, the gate must give 0 before measuring
+    # docs/experiments.md 9단계 2026-10-04 규칙 변경: k=0, 재기 전에 관문이 0건이어야 한다
     report, passed = analyze.collision_report(0)
     assert passed and report.endswith("gate: PASS (0 collisions)")
     assert "k = 0" in report and "same-name ordered pairs (set apart): 6 " in report
-    monkeypatch.setattr("sys.argv", ["analyze", "name-collisions"])  # the default k is the registered one
-    analyze.main()  # a failed gate exits non-zero
+    monkeypatch.setattr("sys.argv", ["analyze", "name-collisions"])  # 기본 k가 등록한 값이다
+    analyze.main()  # 관문이 실패하면 0이 아닌 값으로 끝난다
     out = capsys.readouterr().out
     assert "k = 0" in out and "gate: PASS (0 collisions)" in out

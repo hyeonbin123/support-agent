@@ -1,4 +1,4 @@
-"""Stage 2 candidates: the stall guard (G1) and the rescue of leaked tool calls (F1)."""
+"""2단계 후보: 정체 가드(G1)와 글로 새어 나온 도구 호출 살리기(F1)."""
 
 # [파일 역할] 2단계(개선 실험) 후보 가운데 에이전트 루프에 들어간 것들을 검증하는 테스트 묶음이다: 멈춤 가드
 # G1·G2, 본문에 샌 도구 호출 구제 F1, 그리고 비교 표를 만드는 analyze의 짝지은 부트스트랩. 끝에는 서비스에만
@@ -138,7 +138,7 @@ def test_f1_runs_the_leaked_call_and_still_counts_the_format_error(tiny_engine):
     assert state.llm_log[0].format_error == "rescued_tool_call"
     assert [log.name for log in state.tool_log] == ["toy_cancel_order"]
     assert db.dump_db(engine)["orders"][0]["status"] == "cancelled"
-    assert all(m.delivered for m in state.messages if m.role == "assistant")  # nothing leaked to the customer
+    assert all(m.delivered for m in state.messages if m.role == "assistant")  # 고객에게 새어 나간 것이 없다
 
 
 # 기본값(F0)에서는 샌 호출을 실행하지 않고 형식 오류(leaked_tool_call)로 돌려보내, 도구 기록이 비고 주문이
@@ -205,16 +205,16 @@ def test_compare_pairs_pass_k_over_the_tasks_that_have_k_trials_in_both_runs(tmp
         return run_dir
 
     base = write("base", {"a": [True] * 4, "b": [False] * 4})
-    other = write("other", {"a": [True] * 4, "b": [True, True, True]})  # one trial of b was an infra error
+    other = write("other", {"a": [True] * 4, "b": [True, True, True]})  # b의 시도 하나는 infra 오류였다
     table = analyze.compare(base, [other])
-    assert "| other | 100.0% | +50.0%p" in table  # pass^1 uses both tasks
-    assert "100.0% (1과제)" in table  # pass^4 only the task with four judged trials in both
+    assert "| other | 100.0% | +50.0%p" in table  # pass^1은 두 과제를 모두 쓴다
+    assert "100.0% (1과제)" in table  # pass^4는 두 실행 모두에서 판정된 시도가 넷인 과제만 쓴다
 
 
 # 아래는 언어 가드(L1) 테스트다. qwen2.5가 한국어 대화 중 중국어로 넘어가는 일이 있어, 서비스는 한자·가나가 두
 # 글자 이상인 답을 돌려보내고 한국어로 다시 답하게 한다. 측정하지 않은 가드이고 평가의 기본값은 끈
 # 상태(L0)다(docs/service.md "정한 것과 이유").
-# -------------------------------------------------------------------- the language guard (service only)
+# -------------------------------------------------------------------- 언어 가드 (서비스 전용)
 
 # 실제로 나올 법한 중국어 답의 예. 고객 id와 주문 번호가 섞여 있어도 한자가 여러 글자다.
 CHINESE = "顾客ID为C-9003，您的订单O-90003的状态是已发货。"

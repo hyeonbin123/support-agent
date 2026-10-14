@@ -1,8 +1,8 @@
-"""Stage 12 (simulator sensitivity): --user-think, the automatic simulator counts (P5(b)) and the report that
-pairs a run with another simulator against the stage 8 M2b record.
+"""12단계(시뮬레이터 민감도): --user-think, 시뮬레이터 자동 계수(P5(b)), 다른 시뮬레이터로 돌린 실행을
+8단계 M2b 기록과 짝짓는 보고서.
 
-No model, no GPU: the runner gets a fake provider, the provider a mock server, the counts read hand-made
-records and records written by scripted episodes.
+모델도 GPU도 쓰지 않는다: 실행기는 가짜 제공자를, 제공자는 가짜 서버를 받고, 계수는 손으로 만든 기록과 대본
+에피소드가 쓴 기록을 읽는다.
 """
 
 # [파일 역할] 12단계(시뮬레이터 민감도 점검)를 모델 없이 검증하는 테스트 묶음이다. 구역: 실행기의
@@ -47,13 +47,13 @@ AGENT = "qwen3.5:4b"
 U1 = NEW  # qwen3:4b-instruct-2507-q4_K_M
 DEV = {task.id: task for task in load_tasks(TASKS / "dev.yaml")}
 REGISTRY = build_registry()
-# U1과 짝지을 기록: 8단계 M2b 개발용(7B 시뮬레이터, U0). 다시 재지 않고 이 기록을 쓴다.
-# The record U1 is paired with (docs/experiments.md, stage 12): stage 8 M2b, 7B simulator.
+# U1과 짝지을 기록: 8단계 M2b 개발용(7B 시뮬레이터, U0). 다시 재지 않고 이 기록을 쓴다(docs/experiments.md
+# 12단계).
 M2B_DEV = REPORTS / "20261003-200306-qwen3.5-4b-P1-R0-G0-F0-m2b"
 
 
 # 실행기: --user-think는 시뮬레이터 요청에만 think를 보낸다.
-# ==================================================================== the runner: --user-think
+# ==================================================================== 실행기: --user-think
 
 
 # 가짜 Ollama로 스모크 과제 하나를 돌리고, 만들어진 제공자들과 manifest를 돌려준다(test_stage8.py와 같은
@@ -93,7 +93,6 @@ def test_user_think_goes_to_the_simulator_and_the_manifest(tmp_path, monkeypatch
 # --user-think가 없으면 시뮬레이터에 think를 보내지 않는지 본다. 지금까지의 모든 명령(사고 기능이 없는 7B
 # 시뮬레이터)이 바뀌지 않아야 한다.
 def test_without_user_think_nothing_is_sent_to_the_simulator(tmp_path, monkeypatch):
-    # every earlier command: the 7B simulator never got a think value (it has no thinking)
     made, manifest = start(tmp_path, monkeypatch, "--model", AGENT, "--think", "off")
     assert "think" not in made[1].options
     assert manifest["user_provider"].get("think") is None
@@ -103,7 +102,7 @@ def test_without_user_think_nothing_is_sent_to_the_simulator(tmp_path, monkeypat
 # 옵션(num_ctx, num_gpu)은 같아 모델을 다시 읽지 않는지 본다.
 def test_user_think_with_one_model_in_both_roles_keeps_the_runner_options_equal(tmp_path, monkeypatch):
     made, _ = start(tmp_path, monkeypatch, "--user-think", "off")
-    agent, user = made  # two objects (think is per request), equal runner options (no reload)
+    agent, user = made  # 객체는 둘(think는 요청마다), 실행 옵션은 같음(다시 읽기 없음)
     assert user.options["think"] is False and "think" not in agent.options
     assert agent.options["num_ctx"] == user.options["num_ctx"]
     assert agent.options.get("num_gpu") == user.options.get("num_gpu")
@@ -113,7 +112,7 @@ def test_user_think_with_one_model_in_both_roles_keeps_the_runner_options_equal(
 # num_ctx·temperature(0.3)는 options에 실리는지 본다. U1은 Ollama가 사고 기능을 표시하는 모델이라 서버가 답을
 # 사고로 떼어 내지 않게 명시해야 한다(docs/experiments.md 12단계).
 def test_the_simulator_sends_think_false_on_the_wire():
-    """The simulator's request body carries think: false at the top level, as the agent's does."""
+    """시뮬레이터의 요청 본문도 에이전트의 것처럼 맨 위에 think: false를 싣는다."""
     bodies = []
 
     # 요청 본문을 모아 두고 고정된 고객 답을 돌려주는 가짜 Ollama /api/chat.
@@ -133,7 +132,7 @@ def test_the_simulator_sends_think_false_on_the_wire():
 
 # 시뮬레이터 발화 속 값: 이메일, 날짜(월·일), 하이픈·쉼표를 뺀 4자리 이상 숫자만 값으로
 # 읽는다(docs/experiments.md 12단계 "자동 계수").
-# ==================================================================== values in what the simulator says
+# ==================================================================== 시뮬레이터가 한 말 속의 값
 
 
 # 전화번호·주문 번호·금액·이메일(소문자로)·날짜가 각각 비교 가능한 한 꼴의 토큰으로 읽히는지 본다.
@@ -153,7 +152,6 @@ def test_value_tokens_read_numbers_emails_and_dates_in_one_form():
 # 1~3자리 숫자(수량, 일수, 시각, 신발 크기)는 값으로 읽지 않는지 본다. 정당한 경우가 많아 지어낸 값으로 세면
 # 오탐이 많기 때문이다(대신 계수가 지어낸 값을 덜 센다).
 def test_short_numbers_are_not_values():
-    # quantities, days, sizes and times: too often legitimate to count as invented
     assert sim_report.value_tokens("2개 주문했고 3일 전에 10시쯤 받았어요. 260 사이즈요.") == set()
 
 
@@ -167,17 +165,17 @@ def test_a_date_written_with_digits_is_one_date_not_a_number():
 def test_the_separators_inside_a_number_do_not_matter():
     assert sim_report.value_tokens("010 0000 9101") == {"num:0000", "num:9101"}
     assert sim_report.value_tokens("01000009101") == sim_report.value_tokens("010-0000-9101")
-    assert sim_report.value_tokens("１２，３４５원") == {"num:12345"}  # full-width digits (NFKC)
+    assert sim_report.value_tokens("１２，３４５원") == {"num:12345"}  # 전각 숫자(NFKC)
 
 
 # 출처의 더 긴 숫자에 들어 있는 숫자(전화번호 끝 네 자리)는 출처가 있는 것으로 보고, 출처보다 길거나 다른
 # 숫자는 아닌지 본다.
 def test_a_number_is_grounded_by_a_longer_source_number_that_contains_it():
     sources = sim_report.source_tokens(["가입한 전화번호는 010-0000-9101이다."])
-    assert sim_report.grounded("num:9101", sources)  # the last digits of the phone number
+    assert sim_report.grounded("num:9101", sources)  # 전화번호 끝자리
     assert sim_report.grounded("num:01000009101", sources)
     assert not sim_report.grounded("num:01000009102", sources)
-    assert not sim_report.grounded("num:010000091011", sources)  # longer than any source
+    assert not sim_report.grounded("num:010000091011", sources)  # 어느 출처보다도 길다
 
 
 # 출처 쪽에서는 날짜가 날짜 토큰과 연도 숫자를 함께 남기는지 본다. 시뮬레이터 프롬프트의 '오늘 날짜'에서 온
@@ -198,7 +196,7 @@ def test_emails_and_dates_are_grounded_only_by_the_same_value():
 
 
 # 손으로 만든 기록 위의 계수: 값 전 STOP, 지어낸 값, 쓰기가 남은 채 STOP, 형식 문제.
-# ==================================================================== counts on hand-made records
+# ==================================================================== 손으로 만든 기록 위의 계수
 
 
 # LLM 호출 기록 하나(에이전트 또는 시뮬레이터).
@@ -227,8 +225,8 @@ def call(who, index, text, *, finish="stop", tools=(), prompt_tokens=1000):
 # 에이전트가 들은 글만 바꿀 수 있다.
 def episode(task_id, turns, *, trial=0, success=False, termination="user_stop", status="completed",
             missing_writes=0, values=None, heard=None):  # fmt: skip
-    """turns: (agent text the simulator saw, simulator reply, [tool results the agent got after that reply]).
-    The agent-side history is rebuilt from them; `heard` replaces what the agent heard (voice runs)."""
+    """turns: (시뮬레이터가 본 상담원의 말, 시뮬레이터의 답, [그 답 뒤에 에이전트가 받은 도구 결과]) 목록.
+    에이전트 쪽 대화는 여기서 다시 만든다. `heard`는 에이전트가 들은 글을 바꾼다(음성 실행)."""
     task = DEV[task_id]
     messages, user_messages, sim_calls = [], [], []
     for i, (agent_text, reply, tools) in enumerate(turns):
@@ -326,7 +324,7 @@ def test_a_tool_result_before_the_utterance_grounds_a_value():
 # 시뮬레이터 프롬프트의 모든 칸(이유·아는 것 등)과 오늘 날짜에서 온 값은 지어낸 값이 아닌지 본다. 'known 밖'을
 # 프롬프트 전체로 넓힌 규칙이다.
 def test_the_simulator_prompt_grounds_its_own_fields_and_today():
-    # dev-001 reason says "이틀 전", known gives the phone; today is 2026-09-14 in the simulator's prompt
+    # dev-001의 reason에는 "이틀 전"이, known에는 전화번호가 있다. 시뮬레이터 프롬프트의 오늘은 2026-09-14다
     e = episode("dev-001", [(FIRST_AGENT_MESSAGE, "오늘이 9월 14일인데 2026년 주문이요. 9101 번호로요.", [])])
     assert sim_report.invented_values(e, DEV["dev-001"]) == []
 
@@ -359,7 +357,7 @@ def test_stop_before_values_counts_a_stop_the_value_never_preceded():
 # STOP과 함께 온 말에 상담원이 마지막으로 답하며 값을 말해도(판정상으로는 전달됨) 시뮬레이터는 읽지 못했으므로
 # 값 전 STOP으로 세는지 본다.
 def test_a_value_said_after_the_stop_does_not_count_as_heard():
-    # "알겠습니다 ###STOP###" still gets an answer from the agent, but the simulator never read it
+    # "알겠습니다 ###STOP###"에도 상담원은 답하지만, 시뮬레이터는 그 답을 읽지 못했다
     e = episode("dev-001", [(FIRST_AGENT_MESSAGE, "알겠습니다. ###STOP###", [])], values={"환불 금액": True})
     e["messages"].append({"role": "assistant", "content": "환불 금액은 58,300원입니다."})
     assert sim_report.stop_before_values(e, DEV["dev-001"]) is True
@@ -448,7 +446,7 @@ EARLY = [
 ]
 
 
-# The simulator keeps asking until the turn limit: it never heard the values and did not stop.
+# 시뮬레이터가 턴 한도까지 계속 묻는다: 값을 끝내 듣지 못했고 STOP하지도 않았다.
 ASKING = [
     (FIRST_AGENT_MESSAGE, "환불 금액이 궁금해요.", []),
     ("확인 중입니다.", "환불 금액을 알려 주세요.", []),
@@ -461,7 +459,7 @@ ASKING_INVENTED = [
 
 # n번째 개발용 과제의 전달 값을 상담원이 모두 말한 뒤 STOP하는 대화.
 def heard(n):
-    """Turns in which the agent says every required value of the n-th dev task before the STOP."""
+    """n번째 개발용 과제의 전달 값을 상담원이 STOP 전에 모두 말하는 차례들."""
     task = DEV[sorted(DEV)[n]]
     return [(FIRST_AGENT_MESSAGE, "문의드립니다.", []), (say_values(task), "###STOP###", [])]
 
@@ -469,8 +467,8 @@ def heard(n):
 # 같은 개발용 24과제 × 4회의 U0·U1 실행 한 쌍을 만든다. 패턴 함수가 과제 번호마다 (성공, 대화[, 종료 사유])를
 # 정한다.
 def runs(tmp_path, base_pattern, cand_pattern, **cand):
-    """Two runs over the same 24 dev tasks x 4 trials; a pattern says per task index
-    (success, turns) or (success, turns, termination)."""
+    """같은 개발용 24과제 x 4회의 실행 둘. 패턴이 과제 번호마다 (성공, 차례들) 또는 (성공, 차례들, 종료
+    사유)를 정한다."""
     tasks = sorted(DEV)
 
     def make(pattern):
@@ -504,8 +502,8 @@ def test_the_counts_of_a_run(tmp_path):
     )
     counts = sim_report.run_counts(run_dir)
     assert counts["episodes"] == 3 and counts["infra"] == 1 and counts["changed_tasks"] == 0
-    assert (counts["stop_before_values"], counts["value_tasks"]) == (2, 3)  # dev-007 has a value too
-    assert counts["values_never_heard"] == 2  # EARLY and dev-007; every one of them ended with a STOP
+    assert (counts["stop_before_values"], counts["value_tasks"]) == (2, 3)  # dev-007에도 전달 값이 있다
+    assert counts["values_never_heard"] == 2  # EARLY와 dev-007. 모두 STOP으로 끝났다
     assert (counts["invented_utterances"], counts["invented_episodes"], counts["invented_values"]) == (
         1,
         1,
@@ -569,8 +567,8 @@ def test_lower_counts_without_a_large_difference_name_no_candidate(tmp_path):
 # 변경으로 분모를 바꿨다(위 줄 주석, docs/experiments.md 12단계 "규칙 변경"). 여기서는 U1 쪽 값 전 STOP 수가
 # 줄어도 두 시뮬레이터 모두 못 들으면 바로 끝내므로(비율 1.0 대 1.0) 낮아진 것으로 치지 않는다.
 def test_the_stop_share_is_read_among_episodes_that_never_heard_the_values(tmp_path):
-    # Rule change 2026-10-09: an agent that delivers more values lowers "stop before values" by itself.
-    # Both simulators stop at once whenever the values do not come; U1's agent delivers half of them.
+    # 2026-10-09 규칙 변경: 값을 더 많이 전하는 상담원은 그것만으로 "값 전 STOP"을 낮춘다.
+    # 두 시뮬레이터 모두 값이 오지 않으면 바로 끝내고, U1 쪽 상담원은 값을 절반의 과제에서 전한다.
     base, other = runs(
         tmp_path, lambda n: (False, EARLY), lambda n: (True, heard(n)) if n % 2 == 0 else (False, GOOD)
     )
@@ -666,14 +664,14 @@ def test_analyze_has_the_three_stage_12_commands(tmp_path, monkeypatch, capsys):
 
 
 # 대본 에피소드: 실제 run_episode가 남긴 기록으로도 계수가 맞게 나오는지 본다.
-# ==================================================================== a scripted episode, end to end
+# ==================================================================== 대본 에피소드, 처음부터 끝까지
 
 
 # seed DB 위에서 에이전트는 대본 제공자, 고객은 대본 제공자를 쓰는 LLMUser로 실제 에피소드를 돌려 JSON 기록을
 # 돌려준다. LLMUser를 거쳐야 시뮬레이터 호출이 실제 모델처럼 llm_calls에 남는다.
 def scripted(task_id, agent_script, simulator_lines):
-    """A real episode on the seed data: ScriptedProvider plays the agent and, through LLMUser, the customer
-    (so the simulator's calls are recorded as a model's would be)."""
+    """seed 데이터 위의 실제 에피소드: ScriptedProvider가 에이전트를, LLMUser를 거쳐 고객을 맡는다(그래서
+    시뮬레이터 호출이 실제 모델의 호출처럼 기록된다)."""
     task = DEV[task_id]
     result = run_episode(
         task,
@@ -725,7 +723,7 @@ def test_a_scripted_stop_before_the_value_is_counted():
 
 
 # 짝지을 기록과 문서의 규칙.
-# ==================================================================== the record and the rules
+# ==================================================================== 짝지을 기록과 규칙
 
 
 # 짝지을 기록의 manifest가 등록한 U0 구성인지 본다: 에이전트 qwen3.5:4b(digest 2a654d98e6fb, think false,
@@ -747,7 +745,7 @@ def test_the_paired_record_is_the_stage_8_m2b_dev_run_with_the_7b_simulator():
 def test_the_counts_read_every_episode_of_the_paired_record():
     counts = sim_report.run_counts(M2B_DEV)
     assert counts["episodes"] == 96 and counts["infra"] == 0 and counts["changed_tasks"] == 0
-    assert counts["utterances"] == 854  # every simulator call of the record
+    assert counts["utterances"] == 854  # 그 기록의 모든 시뮬레이터 호출
 
 
 # docs/experiments.md 12단계 절에 짝지을 기록 이름, U1 모델과 digest, 실행기 옵션, 분석 명령, 숫자 값의 최소

@@ -1,4 +1,4 @@
-"""Alembic environment: the shop tables and the service tables are migrated together."""
+"""Alembic 환경: 쇼핑몰 테이블과 서비스 테이블을 함께 마이그레이션한다."""
 
 # [파일 역할] Alembic이 마이그레이션을 돌릴 때 실행하는 환경 스크립트다. 어떤 연결로, 어떤 테이블 선언을
 # 기준으로 돌릴지 정한다.
@@ -32,9 +32,9 @@ def _run(connection) -> None:
 # 커밋하므로 여기서는 커밋하지 않는다.
 # 명령줄에서 부른 경우에는 설정의 주소로 엔진을 만들고 끝에 직접 커밋한다.
 connection = context.config.attributes.get("connection")
-if connection is not None:  # called from bootstrap.migrate with an open connection
+if connection is not None:  # bootstrap.migrate가 열린 연결과 함께 부른 경우
     _run(connection)
-else:  # called from the alembic command line
+else:  # alembic 명령줄에서 부른 경우
     engine = create_engine(context.config.get_main_option("sqlalchemy.url"))
     with engine.connect() as own:
         _run(own)

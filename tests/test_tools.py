@@ -1,4 +1,4 @@
-"""The 14 domain tools, always through toolkit.execute(). The shop rows are described in factories.py."""
+"""도메인 도구 14개를 늘 toolkit.execute()를 거쳐 시험한다. 가게의 행은 factories.py에 설명되어 있다."""
 
 # [파일 역할] 도메인 도구 14개(tools.py)를 항상 toolkit.execute()를 거쳐 검증하는 테스트 묶음이다. 등록부와
 # 스키마, 정상 경로의 출력 키, 읽기 도구의 내용, 본인 확인, 존재·소유 검사, 규정 검사(P0/P1), 쓰기의 효과,
@@ -90,7 +90,7 @@ def code(engine, ctx: ToolContext, name: str, /, **args) -> str | None:
 # 비교에서 빼는 컬럼까지 모두 담은 덤프(ignore=빈 집합)로 한 테이블의 행을 기본 키 문자열로 찾게 한다. 티켓
 # 본문처럼 판정에서 빼는 값도 실제로 저장됐는지 보려고 쓴다.
 def rows(engine, table: str) -> dict[str, dict]:
-    """Rows of one table keyed by their primary key values joined with '/'."""
+    """한 테이블의 행들. 키는 기본 키 값들을 '/'로 이은 문자열이다."""
     pk = [c.name for c in db.Base.metadata.tables[table].primary_key.columns]
     return {"/".join(str(r[k]) for k in pk): r for r in db.dump_db(engine, ignore=frozenset())[table]}
 
@@ -164,7 +164,7 @@ def test_schemas_are_korean_flat_and_list_the_enum_codes():
 
 
 # 정상 경로와 출력 키: 도구마다 성공하는 인자 한 벌과 docs/design.md 도구 표의 출력 키 목록.
-# ------------------------------------------------------------------------------ happy paths and output keys
+# ------------------------------------------------------------------------------ 정상 경로와 출력 키
 
 # 도구 이름 → (성공하는 인자, 출력 JSON의 키 순서). 다른 테스트들도 이 인자를 '그 도구를 정상적으로 부르는
 # 법'으로 재사용한다(본인 확인 전 거절, 반복 쓰기).
@@ -331,7 +331,7 @@ def test_nested_output_keys_match_the_design_table(shop):
 
 
 # 읽기 도구의 내용: 정렬, 코드와 한국어 표기, KST 시각, 판단이 아닌 사실만.
-# ------------------------------------------------------------------------------------------- read contents
+# ------------------------------------------------------------------------------------------- 읽기 도구의 내용
 
 
 # list_orders가 최근 주문부터, 같은 시각이면 주문 번호로 정렬하는지, 상품 요약이 '무선 이어폰 외 1건'처럼
@@ -427,8 +427,8 @@ def test_find_customer_normalises_the_contact_and_verifies(shop, contact):
 @pytest.mark.parametrize(
     ("name", "contact"),
     [
-        ("김하준", "010-0000-0002"),  # another customer's phone
-        ("이서연", "hajun@example.com"),  # another customer's name
+        ("김하준", "010-0000-0002"),  # 다른 고객의 전화번호
+        ("이서연", "hajun@example.com"),  # 다른 고객의 이름
         ("김하", "010-0000-0001"),
         ("김하준", ""),
         ("김하준", "전화번호 모름"),
@@ -485,7 +485,7 @@ def test_tools_that_need_no_verification(shop, name):
 
 
 # 존재와 소유: 항상 막는 무결성 검사(ctx.require). 규정 모드와 무관하다.
-# ---------------------------------------------------------------------------------- existence and ownership
+# ---------------------------------------------------------------------------------- 존재와 소유
 
 # (기대 오류 코드, 도구, 인자) 목록. 없는 고객·상품·주문·주소·줄·옵션, 다른 고객의 것(C-2, O-9, AD-C-2-1),
 # 같은 주소·같은 옵션으로 변경, 재고 없음(V-1-03), 이미 취소된 주문(O-6)에 대한 처리를 도구마다 다룬다.
@@ -625,7 +625,7 @@ def test_other_bad_arguments_fail_validation(shop):
 
 
 # 규정 검사(P축): P1이면 막고, P0이면 위반으로 기록한 채 통과시킨다.
-# -------------------------------------------------------------------------------------------- policy checks
+# -------------------------------------------------------------------------------------------- 규정 검사
 
 
 # O-4에 이미 보상 쿠폰이 하나 있는 상태를 만든다(주문당 1장 규정 시험용).
@@ -756,7 +756,7 @@ def test_every_policy_code_of_the_design_is_covered():
 # 다음 날부터 7일째 되는 날까지, KST 날짜 기준' 규정(docs/design.md)을 시각이 아니라 날짜로 계산하는지, UTC로
 # 계산해 경계가 9시간 밀리지 않는지 확인한다. 접수 번호는 가장 작은 줄 번호로 RT-O-4-1이다.
 def test_the_return_window_closes_at_kst_midnight(shop):
-    args = {"order_id": "O-4", "line_nos": [1], "reason": "defective"}  # delivered 09-02 14:20 KST
+    args = {"order_id": "O-4", "line_nos": [1], "reason": "defective"}  # 09-02 14:20 KST 수령
     assert code(shop, make_ctx(now=kst(9, 10, 0, 0)), "request_return", **args) == "return_window_expired"
     out = ok(shop, make_ctx(now=kst(9, 9, 23, 59)), "request_return", **args)
     assert out["request_id"] == "RT-O-4-1"
@@ -823,7 +823,7 @@ def test_request_return_computes_refund_and_fee(shop):
     ]
     statuses = {k: r["status"] for k, r in rows(shop, "order_items").items() if k.startswith("O-3/")}
     assert statuses == {"O-3/1": "return_requested", "O-3/2": "return_requested"}
-    assert rows(shop, "payments") == before  # the refund happens after the goods come back
+    assert rows(shop, "payments") == before  # 환불은 물건이 돌아온 뒤에 한다
     assert rows(shop, "orders")["O-3"]["status"] == "delivered"
 
 
@@ -938,9 +938,9 @@ def test_p0_coupons_that_are_not_due_get_the_lowest_amount_and_the_next_number(s
 # coupon_limit_exceeded로 막혀야 한다.
 def test_the_coupon_limit_looks_back_30_days_and_ignores_promo_coupons(shop):
     with Session(shop) as session:
-        add_compensation_coupon(session, "CP-O-1-1", "C-1", "O-1", NOW - timedelta(days=30))  # just outside
+        add_compensation_coupon(session, "CP-O-1-1", "C-1", "O-1", NOW - timedelta(days=30))  # 바로 바깥
         add_compensation_coupon(session, "CP-O-2-1", "C-1", "O-2", NOW - timedelta(days=29))
-        add_compensation_coupon(session, "CP-O-9-1", "C-2", "O-9", NOW - timedelta(days=1))  # someone else
+        add_compensation_coupon(session, "CP-O-9-1", "C-2", "O-9", NOW - timedelta(days=1))  # 다른 고객
         session.add(
             db.Coupon(
                 id="CP-C-1-P1",
@@ -958,7 +958,7 @@ def test_the_coupon_limit_looks_back_30_days_and_ignores_promo_coupons(shop):
     ctx = make_ctx()
     ok(shop, ctx, "issue_compensation_coupon", order_id="O-4", reason="delivery_delay")
     with Session(shop) as session:
-        session.get(db.Shipment, "O-5").promised_by = kst(9, 10).date()  # now O-5 is late and would be due
+        session.get(db.Shipment, "O-5").promised_by = kst(9, 10).date()  # 이제 O-5도 늦어져 보상 대상이 된다
         session.commit()
     third = {"order_id": "O-5", "reason": "delivery_delay"}
     assert code(shop, ctx, "issue_compensation_coupon", **third) == "coupon_limit_exceeded"
@@ -1013,7 +1013,7 @@ def test_transfer_to_human_writes_a_handoff_row(shop):
 
 # 반복 호출과 결정성: 같은 쓰기를 두 번 해도 버그가 아니라 정해진 답이 나오고, 같은 호출 묶음은 같은 상태를
 # 만든다.
-# ------------------------------------------------------------------------------ repeated calls, determinism
+# ------------------------------------------------------------------------------ 반복 호출과 결정성
 
 # 같은 인자로 두 번째 부르면 무결성 검사로 거절되어야 하는 쓰기 도구와 그 코드.
 TWICE_REFUSED = {
@@ -1035,7 +1035,7 @@ def test_a_repeated_write_is_answered_not_crashed(shop, name, p1):
     args = HAPPY[name][0]
     ok(shop, ctx, name, **args)
     after_first = db.dump_db(shop)
-    second = call(shop, ctx, name, **args)  # a ToolBugError (IntegrityError) would raise here
+    second = call(shop, ctx, name, **args)  # (버그라면) 여기서 ToolBugError(IntegrityError)가 난다
     if name in TWICE_REFUSED:
         assert (second.ok, second.error_code) == (False, TWICE_REFUSED[name])
         assert db.dump_db(shop) == after_first
@@ -1045,7 +1045,7 @@ def test_a_repeated_write_is_answered_not_crashed(shop, name, p1):
     elif name == "issue_compensation_coupon":
         assert second.ok and second.violations == ("coupon_already_issued_for_order",)
         assert json.loads(second.content)["coupon_id"] == "CP-O-4-2"
-    else:  # tickets and hand-offs are numbered, so a second one is a new row
+    else:  # 티켓과 이관은 번호를 매기므로 두 번째도 새 행이다
         assert second.ok and name in {"create_ticket", "transfer_to_human"}
         assert len(rows(shop, "tickets")) + len(rows(shop, "handoffs")) == 2
 
@@ -1062,7 +1062,7 @@ SEQUENCE: list[tuple[str, dict]] = [
     ),
     ("issue_compensation_coupon", {"order_id": "O-3", "reason": "defective_item"}),
     ("cancel_order", {"order_id": "O-1", "reason": "delivery_too_slow"}),
-    ("cancel_order", {"order_id": "O-2", "reason": "delivery_too_slow"}),  # refused under P1
+    ("cancel_order", {"order_id": "O-2", "reason": "delivery_too_slow"}),  # P1에서는 거절된다
     ("change_shipping_address", {"order_id": "O-5", "address_id": "AD-C-1-2"}),
     ("create_ticket", {"category": "product", "body": "본문은 비교에서 빠진다", "order_id": "O-3"}),
     ("transfer_to_human", {"reason": "customer_request", "summary": "요약도 비교에서 빠진다"}),
@@ -1128,7 +1128,7 @@ def test_no_wall_clock_uuid_or_random(filename):
 
 
 # 규정 문서: 에이전트가 읽는 prompts/policy.md와 코드의 규정 숫자가 같아야 한다.
-# ------------------------------------------------------------------------------------------ policy document
+# ------------------------------------------------------------------------------------------ 규정 문서
 
 
 # policy.md에 규정의 숫자(7일, 3,000원, 2,000원, 5,000원, 30일, 2장)가 있고, rules.py의 상수로 만든 문구가
@@ -1150,4 +1150,4 @@ def test_the_policy_document_states_the_numbers_of_the_rules():
         "주문당 1장",
     ]:
         assert value in text, value
-    assert len(text) < 3500  # it shares a 16k context with the tool schemas and the conversation
+    assert len(text) < 3500  # 도구 스키마, 대화와 함께 16k 컨텍스트를 나눠 쓴다

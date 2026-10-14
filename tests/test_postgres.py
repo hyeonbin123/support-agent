@@ -1,11 +1,11 @@
-"""The service on PostgreSQL. Skipped unless SUPPORT_AGENT_TEST_PG_URL points at a server, for example
+"""PostgreSQL 위의 서비스. SUPPORT_AGENT_TEST_PG_URL이 서버를 가리킬 때만 돌고, 아니면 건너뛴다. 예:
 
     docker compose up -d db
     SUPPORT_AGENT_TEST_PG_URL=postgresql+psycopg://support:support-local@127.0.0.1:55462/support uv run pytest
 
-The tests use their own database (`support_agent_test`) on that server and empty it before every test.
-SQLite, which the other tests use, serialises writers and ignores time zones; these tests are about the
-places where PostgreSQL behaves differently: types, time zones, concurrent deciders.
+테스트는 그 서버에 자기 데이터베이스(`support_agent_test`)를 쓰고, 테스트마다 먼저 비운다.
+다른 테스트가 쓰는 SQLite는 쓰기를 한 줄로 세우고 시간대를 무시한다. 이 테스트들은 PostgreSQL이 다르게
+동작하는 곳을 본다: 타입, 시간대, 동시에 결정하는 사람들.
 """
 
 # [테스트 묶음] 서비스가 PostgreSQL에서만 다르게 움직일 수 있는 곳을 확인한다: 마이그레이션 결과가 선언한
@@ -124,13 +124,13 @@ def test_a_turn_writes_the_change_and_its_audit_row_together(engine, monkeypatch
     ) as client:
         session_id = client.post("/api/sessions").json()["session_id"]
         say(client, session_id, "박도윤, 01000009003입니다. O-90003 취소해 주세요.")
-    assert order_status(engine, "O-90003") == "paid"  # no audit row, no cancellation
+    assert order_status(engine, "O-90003") == "paid"  # 감사 행도 취소도 없다
 
 
 # 한 주문의 반품을 줄마다 나눠 접수해도 합계가 승인 기준에 닿으면 사람 승인으로 가는지를 PostgreSQL에서 다시
 # 확인한다 (test_service.py의 같은 시나리오). 합계 계산이 도구의 트랜잭션 안에서 돈다.
 def test_returns_of_one_order_add_up_against_the_threshold_on_postgresql(engine):
-    returns_one_at_a_time(engine)  # the sum over the order runs in the tool's transaction
+    returns_one_at_a_time(engine)
 
 
 # 큰 취소가 승인 대기에 걸리면 DB는 바뀌지 않는다(롤백). 그 승인을 두 서비스 객체(두 프로세스 흉내)가
@@ -141,7 +141,7 @@ def test_of_two_deciders_one_carries_the_write_out_on_postgresql(engine):
     with make_client(engine, [*verify_and_cancel(BIG), "담당자 확인 후 처리됩니다."]) as client:
         before = db.dump_db(engine)
         ask_for_big_cancel(client)
-        assert db.dump_db(engine) == before  # held for approval: rolled back
+        assert db.dump_db(engine) == before  # 승인을 기다리므로 롤백됐다
     with Session(engine) as session:
         approval_id = session.scalars(select(store.Approval.id)).one()
     services = [ChatService(Settings(), engine, ScriptedProvider([])) for _ in range(2)]

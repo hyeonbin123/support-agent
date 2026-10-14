@@ -1,10 +1,10 @@
-"""Tool contracts: argument base class, context with the policy checks, the @tool decorator and execute().
+"""도구 계약: 인자 기반 클래스, 규정 검사를 담은 문맥, @tool 데코레이터, execute().
 
-execute() is the single path of every caller (agent loop, gold replay, the service and the MCP server):
-look up -> validate -> before_write hook -> handler and on_success hook in one DB session -> commit or
-roll back. Both hooks run only when a caller passes them: the service passes on_success (approval gate and
-audit row, service/core.py); no caller in this package passes before_write. A dry run (R2's preview,
-confirm.py) rolls back what the handler did and skips the hooks.
+execute()는 모든 호출자(에이전트 루프, 정답 재실행, 서비스, MCP 서버)가 지나는 단 하나의 경로다:
+도구 찾기 -> 인자 검증 -> before_write 훅 -> DB 세션 하나 안에서 핸들러와 on_success 훅 -> commit 또는
+rollback. 두 훅은 호출자가 넘겼을 때만 돈다: 서비스는 on_success를 넘기고(승인 관문과 감사 행,
+service/core.py), 이 패키지에서 before_write를 넘기는 호출자는 없다. 미리보기 실행(dry run, R2의 확인 전
+미리보기, confirm.py)은 핸들러가 한 일을 롤백하고 훅을 건너뛴다.
 """
 
 # [파일 역할] 도구 계약 모듈. 도구 인자의 기반 클래스(ToolArgs), 대화 상태·규정 검사를 담은 문맥(ToolContext),
@@ -44,6 +44,9 @@ _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 # 모든 도구 인자 모델의 기반. extra="forbid"라 모델이 지어낸 인자 이름은 invalid_arguments로 거절된다.
+# 이 docstring은 ToolArgs와 모든 하위 클래스의 docstring·필드 설명처럼 pydantic의 model_json_schema()로 도구
+# 설명 스키마에 들어갈 수 있으므로(측정 재현성과 기록된 프롬프트 해시) 영어 원문을 유지한다: 모든 도구 인자
+# 모델의 기반 클래스이고, 지어낸 인자는 거절된다.
 class ToolArgs(BaseModel):
     """Base class of every tool argument model. Invented arguments are rejected."""
 
@@ -51,10 +54,12 @@ class ToolArgs(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    # 인자 안의 모든 문자열(중첩된 dict·list 포함)을 검사한다. NUL 문자와 짝 없는 서로게이트는 PostgreSQL
-    # 드라이버나 기록 파일(JSONL) 쓰기에서 터지므로, 도구가 실행되기 전에 검증 오류로 돌려보낸다.
     def _storable_text(cls, data: Any) -> Any:
-        """Lone surrogates and NUL bytes would crash the database driver or the report writer."""
+        """인자 안의 모든 문자열(중첩된 dict·list 포함)을 검사한다.
+
+        짝 없는 서로게이트와 NUL 문자는 데이터베이스 드라이버(PostgreSQL)나 기록 파일(JSONL)을 쓰는 쪽을
+        터뜨리므로, 도구가 실행되기 전에 검증 오류로 돌려보낸다.
+        """
 
         def check(value: Any) -> None:
             if isinstance(value, str):
@@ -75,30 +80,34 @@ class ToolArgs(BaseModel):
         return data
 
 
-# 예상한 실패(본인 확인 안 됨, 규정 위반 등). execute()가 잡아 "Error: [code] 메시지"로 모델에 돌려준다.
-# 메시지에는 이유만 적고 "다음에 무엇을 하라"는 힌트는 넣지 않는다(P1의 효과에 가르쳐 주는 효과가 섞이지 않게,
-# docs/design.md).
 class ToolError(Exception):
-    """An expected failure that is reported back to the model as `Error: [code] message`."""
+    """예상한 실패(본인 확인 안 됨, 규정 위반 등). 모델에는 `Error: [code] message` 형태로 돌려준다.
+
+    execute()가 이 예외를 잡아 위 형태의 글로 바꾼다. 메시지에는 이유만 적고 "다음에 무엇을 하라"는 힌트는
+    넣지 않는다(P1의 효과에 가르쳐 주는 효과가 섞이지 않게, docs/design.md).
+    """
 
     def __init__(self, code: str, message: str, *, policy: bool = False):
         super().__init__(message)
         self.code = code
         self.message = message
-        self.policy = policy  # True when a policy rule (P axis) refused the call
+        self.policy = policy  # 규정 규칙(P 축)이 호출을 거절했으면 True
 
 
-# 핸들러의 예상 못 한 예외. 에이전트 실패가 아니라 코드 버그이므로 에피소드는 infra_error가 되어 성공률의
-# 분모에서 빠진다(docs/design.md).
 class ToolBugError(RuntimeError):
-    """A handler raised something unexpected. This is our bug, never the agent's failure."""
+    """핸들러가 예상 못 한 예외를 냈다. 이것은 우리 코드의 버그이지 에이전트의 실패가 아니다.
+
+    그래서 이 예외가 난 에피소드는 infra_error가 되어 성공률의 분모에서 빠진다(docs/design.md).
+    """
 
 
-# 한 대화에서 도구 호출을 넘어 기억하는 상태. 지금은 본인 확인된 고객 번호 하나다(대화당 고객 1명). 서비스는
-# 이것을 세션 행에 저장한다.
 @dataclass
 class ConversationState:
-    """What tools remember across calls of one conversation. The service will store this per chat session."""
+    """한 대화 안에서 도구 호출을 넘어 기억하는 상태.
+
+    지금은 본인 확인된 고객 번호 하나뿐이다(대화당 고객 1명). 서비스는 이것을 채팅 세션마다 세션 행
+    (service/store.py의 verified_customer_id)에 저장한다.
+    """
 
     verified_customer_id: str | None = None
 
@@ -106,30 +115,30 @@ class ConversationState:
         return {"verified_customer_id": self.verified_customer_id}
 
 
-# 도구 호출마다 넘기는 문맥.
-# - now: 고정 시계(평가는 과제의 now, 서비스는 설정의 시계). 도구 코드는 datetime.now를 쓰지 않고 이것만 본다
-# - enforce_policy: P1이면 True
-# - violations: P0에서 통과시킨 규정 위반 코드(판정의 보조 지표)
-# - caller_phone: 음성 V4에서만 쓰는 발신 번호(verify_caller)
 @dataclass
 class ToolContext:
-    """Per-conversation input of every tool call. Evaluation injects a fixed `now`."""
+    """대화마다 모든 도구 호출에 넘기는 입력. 평가는 고정된 `now`를 넣는다.
 
-    now: datetime  # timezone-aware
+    - now: 고정 시계(평가는 과제의 now, 서비스는 설정의 시계). 도구 코드는 datetime.now를 쓰지 않고
+      이것만 본다
+    - enforce_policy: P1이면 True
+    - violations: P0에서 통과시킨 규정 위반 코드(판정의 보조 지표)
+    - caller_phone: 음성 V4에서만 쓰는 발신 번호(verify_caller)
+    """
+
+    now: datetime  # 시간대 정보가 있는 시각
     enforce_policy: bool = True  # P1 = True, P0 = False
     state: ConversationState = field(default_factory=ConversationState)
-    violations: list[str] = field(default_factory=list)  # policy codes that were let through (P0 only)
-    caller_phone: str | None = None  # voice V4: the number the call comes from (digits); None elsewhere
+    violations: list[str] = field(default_factory=list)  # 막지 않고 통과시킨 규정 위반 코드(P0에서만)
+    caller_phone: str | None = None  # 음성 V4: 전화가 걸려 온 번호(숫자만). 그 밖에서는 None
 
-    # 무결성·본인 확인 검사. P0·P1과 상관없이 항상 막는다.
     def require(self, ok: bool, code: str, message: str) -> None:
-        """Integrity and identity checks. Refused in every mode."""
+        """무결성·본인 확인 검사. P0·P1과 상관없이 어느 모드에서든 막는다."""
         if not ok:
             raise ToolError(code, message)
 
-    # 코드로 확인할 수 있는 규정. P1이면 policy=True인 ToolError로 막고, P0면 위반 코드만 기록하고 통과시킨다.
     def check_policy(self, ok: bool, code: str, message: str) -> None:
-        """Policy rules that code can verify. P1 refuses; P0 records the violation and lets the call pass."""
+        """코드로 확인할 수 있는 규정. P1은 policy=True인 ToolError로 막고, P0는 위반만 기록하고 넘긴다."""
         if ok:
             return
         if self.enforce_policy:
@@ -151,10 +160,10 @@ class ToolSpec:
     description: str
     args_model: type[ToolArgs]
     handler: Handler
-    write: bool  # True = changes the DB (confirmation, approval and the MCP write scope apply)
-    unordered_args: tuple[str, ...] = ()  # list arguments whose order carries no meaning
-    terminates: bool = False  # True = the conversation ends after a successful call (hand-off)
-    uncompared_args: tuple[str, ...] = ()  # free text and the like: ignored when calls are compared
+    write: bool  # True = DB를 바꾼다(쓰기 전 확인, 승인, MCP 쓰기 범위가 적용됨)
+    unordered_args: tuple[str, ...] = ()  # 순서에 의미가 없는 목록 인자
+    terminates: bool = False  # True = 호출이 성공하면 대화가 끝난다(상담원 이관)
+    uncompared_args: tuple[str, ...] = ()  # 자유 글 같은 인자: 호출끼리 비교할 때 무시한다
 
     # 모델과 MCP에 주는 도구 설명: 이름, 설명(핸들러의 docstring), 평탄하게 만든 인자 JSON Schema.
     def schema(self) -> dict[str, Any]:
@@ -169,11 +178,11 @@ class ToolSpec:
 @dataclass(frozen=True)
 class ToolResult:
     ok: bool
-    content: str  # JSON text on success, "Error: [code] message" on failure
-    error_code: str | None = None  # unknown_tool | invalid_arguments | a code raised by the handler or a hook
+    content: str  # 성공이면 JSON 글, 실패면 "Error: [code] message"
+    error_code: str | None = None  # unknown_tool | invalid_arguments | 핸들러나 훅이 낸 코드
     policy_blocked: bool = False
-    args: dict[str, Any] | None = None  # canonical arguments (None when validation failed)
-    violations: tuple[str, ...] = ()  # policy codes this call violated while being let through (P0)
+    args: dict[str, Any] | None = None  # 정규화된 인자(검증에 실패하면 None)
+    violations: tuple[str, ...] = ()  # 이 호출이 위반했지만 통과된 규정 코드(P0)
 
     @staticmethod
     def error(
@@ -187,14 +196,12 @@ class ToolResult:
 # 서비스의 승인 관문은 핸들러가 계산한 실제 환불액을 봐야 해서 이 훅이 아니라 OnSuccess 훅에 있다(a5717ce).
 Registry = dict[str, ToolSpec]
 BeforeWrite = Callable[[ToolSpec, dict[str, Any]], ToolResult | None]
-# Runs after the handler, inside its transaction: (session, spec, canonical args, the handler's answer).
-# Rows it adds are committed with the tool's changes or not at all; a ToolError it raises rolls the
-# call back like a refusal of the tool itself.
+# OnSuccess는 핸들러 다음에 같은 트랜잭션 안에서 돈다: (세션, 도구 정의, 정규화된 인자, 핸들러의 답).
+# 이 훅이 추가한 행은 도구의 변경과 함께 commit되거나 함께 버려지고, 이 훅이 ToolError를 내면 도구 자체가
+# 거절한 것처럼 호출 전체가 롤백된다.
 OnSuccess = Callable[[Session, ToolSpec, dict[str, Any], dict[str, Any]], None]
 
 
-# 핸들러 함수를 ToolSpec으로 바꾸는 데코레이터. args 매개변수의 타입 힌트에서 인자 모델을, docstring에서 도구
-# 설명을 가져온다. 둘 중 하나라도 없으면 정의 시점에 TypeError로 멈춘다.
 def tool(
     *,
     write: bool,
@@ -202,9 +209,11 @@ def tool(
     terminates: bool = False,
     uncompared_args: tuple[str, ...] = (),
 ) -> Callable[[Handler], ToolSpec]:
-    """Turn `def name(session, ctx, args: SomeArgs) -> dict` with a docstring into a ToolSpec.
+    """docstring이 있는 `def name(session, ctx, args: SomeArgs) -> dict`를 ToolSpec으로 바꾸는 데코레이터.
 
-    The ToolSpec is callable with the same arguments, so tests may call `cancel_order(session, ctx, args)`.
+    args 매개변수의 타입 힌트에서 인자 모델을, docstring에서 도구 설명을 가져온다. 둘 중 하나라도 없으면
+    정의 시점에 TypeError로 멈춘다. ToolSpec은 같은 인자로 부를 수 있으므로 테스트는
+    `cancel_order(session, ctx, args)`처럼 직접 불러도 된다.
     """
 
     def wrap(fn: Handler) -> ToolSpec:
@@ -227,11 +236,12 @@ def tool(
     return wrap
 
 
-# 등록부를 만들며 작은 모델이나 MCP SDK가 잘 다루지 못하는 정의를 거절한다: 이름 규칙 위반·중복, 추가 인자를
-# 허용하는 모델, 필수 인자가 하나도 없는 도구(Ollama의 도구 호출 파서가 처리하지 못함), $ref·anyOf가 남은
-# 스키마, 없는 필드를 가리키는 unordered_args·uncompared_args.
 def make_registry(*specs: ToolSpec) -> Registry:
-    """Build a registry and refuse tool definitions that small models or the MCP SDK handle badly."""
+    """등록부를 만들며 작은 모델이나 MCP SDK가 잘 다루지 못하는 도구 정의를 거절한다.
+
+    거절하는 것: 이름 규칙 위반·중복, 추가 인자를 허용하는 모델, 필수 인자가 하나도 없는 도구(Ollama의 도구
+    호출 파서가 처리하지 못함), $ref·anyOf가 남은 스키마, 없는 필드를 가리키는 unordered_args·uncompared_args.
+    """
     registry: Registry = {}
     for spec in specs:
         if not _NAME_RE.match(spec.name):
@@ -242,7 +252,7 @@ def make_registry(*specs: ToolSpec) -> Registry:
             raise ValueError(f"{spec.name}: the args model must forbid extra fields")
         schema = llm_schema(spec.args_model)
         if not schema.get("required"):
-            # Ollama's generic tool-call parser cannot handle a call whose arguments are all optional.
+            # Ollama의 일반 도구 호출 파서는 인자가 모두 선택인 호출을 처리하지 못한다.
             raise ValueError(f"{spec.name}: at least one argument must be required")
         flat = json.dumps(schema)
         if "$ref" in flat or "anyOf" in flat:
@@ -254,11 +264,12 @@ def make_registry(*specs: ToolSpec) -> Registry:
     return registry
 
 
-# pydantic의 JSON Schema를 작은 모델이 읽기 쉽게 평탄하게 만든다: $ref로 따로 둔 정의(enum 등)를 제자리에 풀어
-# 넣고, Optional(X | None)의 anyOf를 X 하나로 접고, title과 기본값 None을 지운다. 인자 모델의 docstring은
-# 스키마에 넣지 않는다.
 def llm_schema(model: type[BaseModel]) -> dict[str, Any]:
-    """Flatten pydantic's JSON Schema for small models: inline $ref, fold Optional, drop titles."""
+    """pydantic의 JSON Schema를 작은 모델이 읽기 쉽게 평탄하게 만든다.
+
+    $ref로 따로 둔 정의(enum 등)를 제자리에 풀어 넣고, Optional(X | None)의 anyOf를 X 하나로 접고, title과
+    기본값 None을 지운다. 인자 모델의 docstring(맨 위 description)은 스키마에 넣지 않는다.
+    """
     schema = model.model_json_schema()
     defs = schema.pop("$defs", {})
 
@@ -282,7 +293,7 @@ def llm_schema(model: type[BaseModel]) -> dict[str, Any]:
         return out
 
     flat = walk(schema)
-    flat.pop("description", None)  # the docstring of the args model is not part of the schema
+    flat.pop("description", None)  # 인자 모델의 docstring은 스키마에 넣지 않는다
     return flat
 
 
@@ -295,10 +306,11 @@ def short_errors(error: ValidationError, limit: int = 3) -> str:
     return "; ".join(parts) + (f" (+{more} more)" if more > 0 else "")
 
 
-# 검증된 인자를 비교할 수 있는 형태로: JSON 타입, None 제거, 순서 없는 목록은 정렬. 판정(정답 동작과 비교),
-# 서비스 승인 대기열(같은 요청 찾기), R2 확인(confirm.py)이 이 형태를 쓴다.
 def canonical_args(spec: ToolSpec, args: ToolArgs) -> dict[str, Any]:
-    """Validated arguments in a comparable form: JSON types, no None, order-free lists sorted."""
+    """검증된 인자를 비교할 수 있는 형태로 바꾼다: JSON 타입, None 제거, 순서 없는 목록은 정렬.
+
+    판정(정답 동작과 비교), 서비스 승인 대기열(같은 요청 찾기), R2 확인(confirm.py)이 이 형태를 쓴다.
+    """
     out = args.model_dump(mode="json", exclude_none=True)
     for name in spec.unordered_args:
         if isinstance(out.get(name), list):
@@ -306,10 +318,9 @@ def canonical_args(spec: ToolSpec, args: ToolArgs) -> dict[str, Any]:
     return out
 
 
-# 도구 호출 한 번을 실행한다. 순서: 이름 확인 → 인자 검증 → (쓰기 도구면) before_write 훅 → DB 세션 하나에서
-# 핸들러 → on_success 훅 → commit, 실패하면 rollback. 두 훅은 넘겼을 때만 돈다. 평가(에이전트 루프, 정답
-# 재실행)는 둘 다 넘기지 않고, 서비스는 on_success만 넘긴다(service/core.py _run_tool).
-# 예상한 실패는 ToolResult로 돌려주고, 핸들러 버그는 ToolBugError로 올린다.
+# 순서: 이름 확인 → 인자 검증 → (쓰기 도구면) before_write 훅 → DB 세션 하나에서 핸들러 → on_success 훅 →
+# commit, 실패하면 rollback. 두 훅은 넘겼을 때만 돈다. 평가(에이전트 루프, 정답 재실행)는 둘 다 넘기지 않고,
+# 서비스는 on_success만 넘긴다(service/core.py _run_tool).
 def execute(
     registry: Registry,
     engine: Engine,
@@ -321,11 +332,10 @@ def execute(
     on_success: OnSuccess | None = None,
     dry_run: bool = False,
 ) -> ToolResult:
-    """Run one tool call. Expected failures come back as ToolResult; a handler bug raises ToolBugError.
+    """도구 호출 한 번을 실행한다. 예상한 실패는 ToolResult로 돌려주고, 핸들러 버그는 ToolBugError로 올린다.
 
-    dry_run (R2's preview): the handler runs and everything it did is rolled back, the conversation state
-    and the recorded violations included; the hooks do not run. The answer and the violations the call would
-    have are returned."""
+    dry_run(R2의 미리보기): 핸들러는 돌지만 그것이 한 일은 대화 상태와 기록된 위반까지 모두 롤백되고, 훅은
+    돌지 않는다. 그 호출을 했다면 나왔을 답과 위반 코드를 돌려준다."""
     spec = registry.get(name)
     if spec is None:
         return ToolResult.error("unknown_tool", f"{name} 도구는 없습니다.")
@@ -363,7 +373,7 @@ def execute(
             # 거절된 호출은 아무것도 바꾸지 않았으므로 위반도 없던 것으로 지운다.
             session.rollback()
             ctx.state = saved_state
-            del ctx.violations[seen:]  # a refused call changed nothing, so it violated nothing
+            del ctx.violations[seen:]
             return ToolResult.error(error.code, error.message, policy=error.policy, args=clean)
         except Exception as error:
             # 예상 못 한 예외: 롤백하고 상태를 되돌린 뒤 ToolBugError로 감싸 올린다. 메시지에 도구 이름과

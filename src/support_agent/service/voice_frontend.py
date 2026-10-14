@@ -1,7 +1,7 @@
-"""Speech in front of the chat: recognise what the customer said, read the agent's reply aloud.
+"""채팅 앞에 붙는 음성: 고객이 한 말을 인식하고, 에이전트의 답을 소리 내어 읽는다.
 
-Optional (SUPPORT_AGENT_VOICE=1, needs the `voice` dependency group). The chat itself does not change: a
-recognised utterance takes the same path as a typed message.
+선택 기능이다(SUPPORT_AGENT_VOICE=1, `voice` 의존성 그룹이 필요). 채팅 자체는 바뀌지 않는다: 인식된 말은
+글로 쓴 메시지와 같은 길을 간다.
 """
 
 # [파일 역할] 채팅 서비스의 음성 앞단. 고객의 녹음을 글로 바꾸고(인식 → 표기 고침), 에이전트의 답을 소리로
@@ -34,28 +34,30 @@ class VoiceFrontEnd:
         self.speaker, self.listener, self.normalizer = speaker, listener, normalizer
         # 요청은 여러 작업 스레드에서 동시에 올 수 있지만 음성 모델은 스레드 안전하게 만들어지지 않았으므로,
         # 인식과 합성을 합쳐 한 번에 하나만 돌린다(docs/voice.md 구성 표 "모델 호출은 한 번에 하나").
-        self._lock = threading.Lock()  # one model call at a time: the models are not built for threads
+        self._lock = threading.Lock()
 
     # 합성기·인식기의 describe() 결과(모델 이름, 장치 등)를 한 dict로 합친다.
     def describe(self) -> dict[str, Any]:
         return {**self.speaker.describe(), **self.listener.describe()}
 
-    # 녹음 바이트 → (인식 원문, 에이전트가 받을 글). 인식 원문은 감사 로그의 customer_message.via에 남기고,
-    # 에이전트에게는 고친 글을 준다.
     # 잠금은 모델을 부르는 인식 단계에만 건다. 정규화는 순수 함수라 잠금 밖에서 돈다. 너무 긴 녹음이면
     # 인식기가 AudioTooLongError를 내고 app.py가 안내 문장으로 바꾼다.
     def listen(self, audio: bytes) -> tuple[str, str]:
-        """(what the recogniser wrote, what the agent receives)."""
+        """녹음 바이트 → (인식기가 적은 원문, 에이전트가 받을 글).
+
+        인식 원문은 감사 로그의 customer_message.via에 남기고, 에이전트에게는 고친 글을 준다.
+        """
         with self._lock:
             heard = self.listener.transcribe(audio)
         return heard, (self.normalizer(heard) if self.normalizer else heard)
 
-    # 답 글을 말로 풀어 쓴 뒤 합성한 WAV 바이트를 돌려준다. 합성 seed는 0으로 고정해 같은 글은 같은 소리가
-    # 된다.
     # 풀어 쓴 글에 한글 음절이 하나도 없으면(기호나 영문만 남은 경우) 합성하지 않고 b""를 돌려주며, app.py는
     # 이때 204(내용 없음)로 답한다.
     def speak(self, text: str) -> bytes:
-        """A WAV file of `text` read aloud; b"" when nothing in it can be pronounced."""
+        """`text`를 소리 내어 읽은 WAV 파일. 그 안에 발음할 수 있는 것이 없으면 b"".
+
+        답 글을 말로 풀어 쓴 뒤 합성한다. 합성 seed는 0으로 고정해 같은 글은 같은 소리가 된다.
+        """
         spoken = verbalize(text)
         if not any("가" <= ch <= "힣" for ch in spoken):
             return b""
@@ -63,11 +65,12 @@ class VoiceFrontEnd:
             return self.speaker.synthesize(spoken, 0).wav
 
 
-# 서비스에서 인식 결과에 적용하는 고침 순서: 먼저 V2 표기 규칙(주문 번호의 O, 이메일의 골뱅이와 도메인,
-# 전화번호 구분, 만 단위 금액), 그다음 사람이 부른 번호를 숫자로. load_voice_front_end가 normalizer로 넘긴다.
+# load_voice_front_end가 이 함수를 normalizer로 넘긴다.
 def repair_heard(text: str) -> str:
-    """What the agent receives instead of the raw transcript: the notation rules that the measurement
-    adopted (V2, docs/experiments.md stage 5), then the numbers a person read aloud as words."""
+    """인식 원문 대신 에이전트가 받는 글: 측정이 채택한 표기 규칙(V2, docs/experiments.md 5단계)을 먼저
+    적용하고, 그다음 사람이 말로 부른 번호를 숫자로 되돌린다.
+
+    V2 표기 규칙은 주문 번호의 O, 이메일의 골뱅이와 도메인, 전화번호 구분, 만 단위 금액을 고친다."""
     return spoken_to_written(normalize_heard(text))
 
 

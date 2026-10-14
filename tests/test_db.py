@@ -1,4 +1,4 @@
-"""db.py helpers: the UTC datetime type, constraints, engine copies, dumps, diffs, hashes."""
+"""db.py 도우미: UTC 시각 타입, 제약, 엔진 복사, 덤프, 차이, 해시."""
 
 # [테스트 묶음] db.py의 도우미를 확인한다: UTC 시각 타입, enum과 외래 키 제약, 메모리 엔진 복사, 판정용
 # 덤프(dump_db)와 차이(diff_dumps), 상태 해시(state_hash).
@@ -68,10 +68,10 @@ def test_utc_datetime_round_trips_as_utc(tiny_engine):
 # VARCHAR + CHECK로 두 DB의 스키마를 같게 한 설계를 확인한다.
 def test_enum_rejects_invalid_string(tiny_engine):
     with Session(tiny_engine) as session:
-        with pytest.raises(StatementError):  # validate_strings: caught before it reaches the database
+        with pytest.raises(StatementError):  # validate_strings: DB에 닿기 전에 잡힌다
             session.execute(update(db.Order).where(db.Order.id == "O-1").values(status="lost"))
     with tiny_engine.connect() as conn:
-        with pytest.raises(IntegrityError):  # the CHECK constraint
+        with pytest.raises(IntegrityError):  # CHECK 제약
             conn.execute(text("UPDATE orders SET status = 'lost' WHERE id = 'O-1'"))
         conn.rollback()
         conn.execute(text("UPDATE orders SET status = 'preparing' WHERE id = 'O-1'"))
@@ -277,7 +277,7 @@ def test_state_hash_is_stable(tiny_engine):
     assert digest == db.state_hash(db.dump_db(db.memory_engine(tiny_engine)))
     assert digest == db.state_hash(
         dict(reversed(list(copy.deepcopy(dump).items())))
-    )  # key order is irrelevant
+    )  # 키 순서는 상관없다(같은 내용을 키 순서만 뒤집어 넣어도 해시가 같다)
 
     changed = copy.deepcopy(dump)
     changed["orders"][0]["total_won"] += 1

@@ -1,4 +1,4 @@
-"""Measuring again after a spoken-form fix: run --episode and analyze respelled/stitch."""
+"""말로 푼 꼴을 고친 뒤 다시 재기: run --episode와 analyze respelled/stitch."""
 
 # [테스트 묶음] 말로 풀어 쓰기를 고친 뒤 바뀐 발화가 든 에피소드만 다시 재는 도구를 확인한다: 실행기의
 # --episode(고른 에피소드만, 전체 실행의 seed와 manifest로), respell.py의 바뀐 에피소드 찾기와 끼워 넣기.
@@ -20,8 +20,7 @@ from support_agent.chat import ChatProvider, ChatResponse
 from support_agent.paths import REPORTS
 from support_agent.voice.verbalize import verbalize
 
-# 실행기: --episode
-# ==================================================================== the runner: --episode
+# ==================================================================== 실행기: --episode
 
 
 # 고객(도구 없이 불림)은 바로 끝내고, 상담원은 인사만 한다. 에피소드마다 같은 답을 낸다.
@@ -71,7 +70,7 @@ def test_episode_runs_only_the_chosen_episodes_and_describes_the_full_run(tmp_pa
     measured = json.loads((REPORTS / _V2_DEV_9 / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["only_episodes"] == [["dev-002", 3], ["dev-018", 1]]
     assert manifest["trials"] == 4
-    assert manifest["task_sha256"] == measured["task_sha256"]  # all 24 tasks, not the two that ran
+    assert manifest["task_sha256"] == measured["task_sha256"]  # 돌린 두 과제가 아니라 24과제 전체
     assert manifest["prompt_sha256"] == measured["prompt_sha256"]
 
 
@@ -89,10 +88,10 @@ def test_without_episode_every_trial_runs_and_the_manifest_is_as_before(tmp_path
 @pytest.mark.parametrize(
     "argv",
     [
-        ["--episode", "dev-018:4"],  # trial 4 of --trials 4
-        ["--episode", "dev-999:0"],  # no such task
-        ["--episode", "dev-018"],  # no trial
-        ["--episode", "dev-018:1", "--task-id", "dev-018"],  # --episode picks the tasks itself
+        ["--episode", "dev-018:4"],  # --trials 4에서 시도 번호 4(0부터 세므로 없음)
+        ["--episode", "dev-999:0"],  # 없는 과제
+        ["--episode", "dev-018"],  # 시도 번호 없음
+        ["--episode", "dev-018:1", "--task-id", "dev-018"],  # --episode가 과제를 스스로 고른다
     ],
 )
 def test_a_wrong_episode_stops_before_any_model(tmp_path, monkeypatch, argv):
@@ -110,11 +109,11 @@ def test_parse_episodes():
         run.parse_episodes(["dev-002:x"], ["dev-002"], 4)
 
 
-# 바뀐 에피소드 찾기와 끼워 넣기
 # ==================================================================== respelled, stitch
+# (바뀐 에피소드 찾기와 끼워 넣기)
 
 SAID = "송장 번호는 5551-0914-9121입니다."
-BEFORE = "송장 번호는 오천오백오십일 구백십사에서 구천백이십일 입니다."  # the spoken form before the fix
+BEFORE = "송장 번호는 오천오백오십일 구백십사에서 구천백이십일 입니다."  # 고치기 전의 말로 푼 꼴
 
 
 def item(said: str, spoken: str | None = None) -> dict:
@@ -192,7 +191,7 @@ def test_stitch_replaces_only_the_changed_episodes(tmp_path):
     assert stitched["replaced"] == [["dev-001", 1]]
     assert analyze.setup_differences(original, out, ignore=()) == []
     assert respell.changed_episodes(out) == []
-    with pytest.raises(ValueError, match="itself stitched"):  # always from the run that was measured
+    with pytest.raises(ValueError, match="itself stitched"):  # 언제나 측정한 실행에서 시작한다
         respell.stitch(out, rerun, tmp_path / "again")
 
 

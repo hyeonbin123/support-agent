@@ -75,5 +75,5 @@ def test_pass_hat_k_uses_every_valid_trial_and_names_tasks_that_were_never_measu
     lost.status, lost.verdict = "infra_error", None
     summary = run.summarise([*results, lost])
     assert summary["by_task"] == {"smoke-action-01": "2/3"}
-    assert summary["pass_hat_k"][1] == 2 / 3  # not 0.0: the first trial alone would say so
+    assert summary["pass_hat_k"][1] == 2 / 3  # 0.0이 아니다: 첫 시도만 보면 0.0이 나온다
     assert summary["tasks_without_valid_trials"] == ["smoke-lookup-01"]

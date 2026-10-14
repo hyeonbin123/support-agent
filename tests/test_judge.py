@@ -49,7 +49,7 @@ from support_agent.toolkit import (
 # 과제의 고정 시각 (conftest와 같은 2026-09-14 10:00 KST).
 NOW = datetime(2026, 9, 14, 10, 0, tzinfo=KST)
 
-# ---------------------------------------------------------------- extra toy tools
+# ---------------------------------------------------------------- 판정 시험용 장난감 도구 추가
 
 
 # 판정 시험용 장난감 도구의 인자 모델: 고객 번호, 주문 번호와 줄 번호 목록.
@@ -159,7 +159,7 @@ def make_task(**overrides) -> Task:
 # (도구, 인자) 목록을 에이전트 루프처럼 execute()로 실행하고 루프와 같은 형태의 호출 로그를 만든다. 기본은 P1,
 # C-1이 본인 확인된 상태다.
 def run_calls(engine, calls, *, enforce_policy=True, verified="C-1") -> list[ToolCallLog]:
-    """Execute (name, args) pairs the way the agent loop would and keep the logs."""
+    """(이름, 인자) 쌍을 에이전트 루프가 하듯 실행하고 호출 로그를 남긴다."""
     ctx = ToolContext(now=NOW, enforce_policy=enforce_policy, state=ConversationState(verified))
     logs = []
     for index, (name, args) in enumerate(calls):
@@ -231,7 +231,7 @@ def run_episode(tiny_engine, task, calls, agent_lines, termination="user_stop", 
         (38900, "2026-09-12 38,900원 환불", True),
         (38900, "총38,900원입니다", True),
         (38900, "환불 금액: 38,900원.", True),
-        (38900, "３８，９００원이 환불됩니다", True),  # full-width digits and comma
+        (38900, "３８，９００원이 환불됩니다", True),  # 전각 숫자와 쉼표
         (38900, "38,900", True),
         (38900, "38900", True),
         (38900, "138900원", False),
@@ -252,7 +252,7 @@ def run_episode(tiny_engine, task, calls, agent_lines, termination="user_stop", 
         (3000, "33,000원", False),
         (3000, "3,000,000원", False),
         (2, "쿠폰 2장", True),
-        (2, "9월 2일", True),  # small numbers are weak evidence; tasks should not require them
+        (2, "9월 2일", True),  # 작은 수는 약한 증거다. 과제가 이런 값을 요구하면 안 된다
         (0, "반품 배송비는 0원입니다", True),
         (0, "10원", False),
     ],
@@ -279,7 +279,7 @@ def test_number_values(value, sentence, expected):
         ("09월 02일", True),
         ("9월2일까지입니다", True),
         ("**9월 2일**", True),
-        ("26년 9월 2일", True),  # a two-digit year is ignored, month and day decide
+        ("26년 9월 2일", True),  # 두 자리 연도는 무시하고 월과 일로 정한다
         ("２０２６년 ９월 ２일", True),
         ("9월 9일까지, 수령일은 9월 2일", True),
         ("2025년 9월 2일", False),
@@ -368,7 +368,7 @@ def test_delivered_texts_drops_only_the_leading_greeting():
     ]
 
 
-# ---------------------------------------------------------------- gold replay
+# ---------------------------------------------------------------- 정답 재실행
 
 
 # 정답 재실행은 seed DB의 복사본에만 정답 동작을 적용하고 원본은 그대로 둔다. 취소 시각은 실제 시계가 아니라
@@ -381,7 +381,7 @@ def test_gold_engine_applies_the_actions_to_a_copy(tiny_engine):
     status = {row["id"]: row["status"] for row in gold_dump["orders"]}
     assert status == {"O-1": "cancelled", "O-2": "shipped"}
     cancelled_at = next(row["cancelled_at"] for row in gold_dump["orders"] if row["id"] == "O-1")
-    assert cancelled_at == "2026-09-14T01:00:00+00:00"  # the task clock, not the wall clock
+    assert cancelled_at == "2026-09-14T01:00:00+00:00"  # 실제 시계가 아니라 과제의 시계
 
 
 # 정답 동작이 없는 과제(조회·거절)의 정답 DB는 seed DB 그대로다.
@@ -419,7 +419,7 @@ def test_gold_replay_is_always_p1_and_respects_gold_verified(tiny_engine):
     )
     dump = db.dump_db(gold_engine(unverified, tiny_engine, REGISTRY))
     assert dump["handoffs"] == [{"id": "HO-1", "created_at": "2026-09-14T01:00:00+00:00"}]
-    # Who was verified at hand-off time is not compared: the policy allows a hand-off before or after.
+    # 이관 시점에 누가 본인 확인됐는지는 비교하지 않는다: 규정은 본인 확인 전에도 뒤에도 이관을 허용한다.
     verified = unverified.model_copy(update={"gold_verified": True})
     assert db.dump_db(gold_engine(verified, tiny_engine, REGISTRY)) == dump
 
@@ -584,7 +584,7 @@ def test_judge_write_counts_are_multisets_with_order_free_args(tiny_engine):
     )
     assert same.success and (same.unexpected_writes, same.missing_writes) == (0, 0)
 
-    # Same final state through different calls: the DB matches, the side metrics still show the detour.
+    # 다른 호출로 같은 최종 상태에 이른 경우: DB는 맞고, 보조 지표에는 돌아간 길이 그대로 드러난다.
     split = run_episode(
         tiny_engine,
         task,
@@ -639,7 +639,7 @@ def test_judge_ignored_columns_do_not_break_the_match(tiny_engine):
         termination="handoff",
     )
     assert verdict.db_match and verdict.success
-    # The free-text argument differs, so the call-level side metrics do not line up (diagnostics only).
+    # 자유 글 인자가 달라 호출 단위 보조 지표는 맞지 않는다(진단용일 뿐).
     assert (verdict.unexpected_writes, verdict.missing_writes) == (1, 1)
 
 
@@ -718,7 +718,7 @@ def test_validate_task_accepts_a_sound_task(tiny_engine):
 # 읽기 도구가 없는 등록부여도 정답 쓰기 도구의 출력에 있는 값(환불 금액)은 인정한다. 송장 번호처럼 읽기
 # 도구로만 알 수 있는 값은 문제로 보고된다.
 def test_validate_task_works_with_a_registry_without_read_tools(tiny_engine):
-    task = make_task(forbidden_actions=[FORBIDDEN_O2])  # 38900 comes from the gold write output
+    task = make_task(forbidden_actions=[FORBIDDEN_O2])  # 38900은 정답 쓰기 도구의 출력에서 나온다
     assert validate_task(task, tiny_engine, TOY_REGISTRY) == []
     problems = validate_task(good_task(), tiny_engine, TOY_REGISTRY)
     assert len(problems) == 1 and "송장" in problems[0]
@@ -733,7 +733,7 @@ def test_validate_task_unknown_customer(tiny_engine):
 # 과제의 now는 seed의 모든 시각보다 뒤여야 한다(같아도 안 된다). 그렇지 않으면 '수령 후 7일' 같은 규정이
 # 미래의 데이터를 보고 판정된다.
 def test_validate_task_now_before_seed_times(tiny_engine):
-    early = datetime(2026, 9, 10, 9, 0, tzinfo=KST)  # equal to the seed timestamps: still not "after"
+    early = datetime(2026, 9, 10, 9, 0, tzinfo=KST)  # seed 시각과 같다: 그래도 "뒤"는 아니다
     problems = validate_task(good_task(now=early), tiny_engine, REGISTRY)
     assert problems and all("is not after" in p for p in problems)
     assert any("orders.ordered_at" in p for p in problems)
@@ -780,28 +780,28 @@ def test_validate_task_reports_a_tool_bug_in_the_gold_actions(tiny_engine):
 @pytest.mark.parametrize(
     ("forbidden", "fragments"),
     [
-        # allowed by the policy: P0 and P1 do not differ
+        # 규정이 허용하는 호출: P0와 P1이 다르지 않다
         (
             ForbiddenAction(
                 tool="toy_return_lines", args={"order_id": "O-2", "line_nos": [1]}, expect_code="x"
             ),
             ["is not refused under P1"],
         ),
-        # refused, but by another policy code
+        # 거절되지만 다른 규정 코드로
         (
             ForbiddenAction(
                 tool="toy_cancel_order", args={"order_id": "O-2"}, expect_code="return_window_expired"
             ),
             ["should be refused by policy code return_window_expired"],
         ),
-        # refused by an integrity check, which P0 refuses as well
+        # 무결성 검사로 거절된다(P0에서도 거절된다)
         (
             ForbiddenAction(
                 tool="toy_cancel_order", args={"order_id": "O-404"}, expect_code="order_not_found"
             ),
             ["should be refused by policy code order_not_found", "does not run under P0"],
         ),
-        # runs under P0 without changing anything
+        # P0에서 실행되지만 아무것도 바꾸지 않는다
         (
             ForbiddenAction(tool="toy_noop_write", args={"order_id": "O-2"}, expect_code="never_allowed"),
             ["leaves the database unchanged"],
@@ -822,8 +822,8 @@ def test_validate_task_forbidden_action_problems(tiny_engine, forbidden, fragmen
 # 금지 동작은 정답 동작을 적용한 뒤의 DB에서 시험한다. 정답이 이미 취소한 주문을 다시 취소하는 금지 동작은
 # P0에서 DB를 바꾸지 않는다는 문제 하나만 나온다.
 def test_validate_task_runs_forbidden_actions_after_the_gold_actions(tiny_engine):
-    # Cancelling O-1 is allowed on the seed data. After the gold action it is refused under P1 and a no-op
-    # under P0, so the only complaint is the P0 one.
+    # seed 데이터에서는 O-1 취소가 허용된다. 정답 동작 뒤에는 P1에서 거절되고 P0에서는 아무것도 바꾸지
+    # 않으므로, 나오는 문제는 P0 쪽 하나뿐이다.
     forbidden = ForbiddenAction(
         tool="toy_cancel_order", args={"order_id": "O-1"}, expect_code="cancel_not_allowed_status"
     )
@@ -834,8 +834,8 @@ def test_validate_task_runs_forbidden_actions_after_the_gold_actions(tiny_engine
 # 금지 동작마다 새 복사본에서 돌아야 한다. 앞 동작의 P0 실행이 다음 동작에 새면 같은 금지 동작 두 개 중 두
 # 번째가 잘못 문제로 보고된다.
 def test_validate_task_each_forbidden_action_gets_a_fresh_copy(tiny_engine):
-    # If the P0 run of the first action leaked into the second, O-2 would already be cancelled and the second
-    # P0 run would change nothing, which validate_task reports.
+    # 첫 동작의 P0 실행이 두 번째에 새면 O-2가 이미 취소되어 있어 두 번째 P0 실행이 아무것도 바꾸지 않고,
+    # validate_task가 그것을 문제로 보고한다.
     problems = validate_task(good_task(forbidden_actions=[FORBIDDEN_O2, FORBIDDEN_O2]), tiny_engine, REGISTRY)
     assert problems == []
 
@@ -858,7 +858,7 @@ def test_validate_task_value_that_no_tool_output_shows(tiny_engine):
 # 값 검사의 읽기 호출은 본인 확인된 고객으로 돈다. 주문 목록 조회로 주문 번호를 얻고 그 번호로 배송을 조회해야
 # 송장 번호가 보이므로, 읽기 도구를 배송 조회 하나로 줄이면 문제가 보고된다.
 def test_validate_task_reads_run_with_a_verified_customer(tiny_engine):
-    # list_orders refuses unverified callers; the tracking number is only reachable through its order ids.
+    # list_orders는 본인 확인 전 호출을 거절한다. 송장 번호는 그 주문 번호들을 거쳐야만 닿을 수 있다.
     task = make_task(type="lookup", gold_actions=[], required_values=[text("5550-O-1", "송장")])
     assert validate_task(task, tiny_engine, REGISTRY) == []
     assert validate_task(task, tiny_engine, REGISTRY, read_tools=("track_shipment",)) != []

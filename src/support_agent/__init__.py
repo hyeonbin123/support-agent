@@ -1,1 +1,1 @@
-"""Korean customer-support agent with tool calls, and the environment that measures it."""
+"""도구 호출로 일하는 한국어 고객센터 상담 에이전트와, 그 에이전트를 재는 평가 환경."""

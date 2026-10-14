@@ -1,36 +1,36 @@
-"""Recompute numbers from the episode records of a run. Nothing here calls a model.
+"""실행의 에피소드 기록에서 수치를 다시 계산한다. 여기서는 모델을 부르지 않는다.
 
-Usage:
-    uv run python -m support_agent.analyze table outputs/runs/<run_id> [more run dirs ...]
-    uv run python -m support_agent.analyze compare reports/<baseline> reports/<candidate> [...]
+사용법:
+    uv run python -m support_agent.analyze table outputs/runs/<run_id> [실행 폴더 더 ...]
+    uv run python -m support_agent.analyze compare reports/<기준> reports/<후보> [...]
     uv run python -m support_agent.analyze misses outputs/runs/<run_id>
     uv run python -m support_agent.analyze sample outputs/runs/<run_id> --n 20
-    uv run python -m support_agent.analyze voice reports/<text run> reports/<voice run> [...]
-    uv run python -m support_agent.analyze voice-worst reports/<voice run on the development tasks>
-    uv run python -m support_agent.analyze claims reports/<run> [more run dirs ...]
-    uv run python -m support_agent.analyze same-setup reports/<run> reports/<run to pair it with>
-        [--ignore voice] [--ignore-prompt tools agent_system]   (stage 9: V2 and V4 differ in those two)
-    uv run python -m support_agent.analyze smoke outputs/runs/<smoke run of a stage 8 candidate>
-    uv run python -m support_agent.analyze select reports/<P1 7B dev> reports/<P0 7B dev> reports/<cand> ..
-    uv run python -m support_agent.analyze verdict reports/<P1 7B test> reports/<P0 7B test> reports/<cand>
-    uv run python -m support_agent.analyze blind reports/<dev run A> reports/<dev run B> .. --n 20 --out <dir>
-    uv run python -m support_agent.analyze unblind <dir>
-    uv run python -m support_agent.analyze name-collisions [--k K]   (default: the registered tolerance)
-    uv run python -m support_agent.analyze caller-id reports/<V2 run> reports/<V4 run> [...]
-    uv run python -m support_agent.analyze confirm reports/<R2 run> [...]   (stage 10: previews and answers)
-    uv run python -m support_agent.analyze confirm-smoke outputs/runs/<R2 smoke run>
-    uv run python -m support_agent.analyze confirm-check reports/<M2b run> reports/<R2 run> [--test]
-    uv run python -m support_agent.analyze confirm-sheet reports/<R2 dev run> --n 20 --out <dir>
-    uv run python -m support_agent.analyze confirm-marks <dir>
-    uv run python -m support_agent.analyze sim-counts reports/<run> [...]   (stage 12: simulator slips, P5(b))
-    uv run python -m support_agent.analyze sim-smoke outputs/runs/<smoke run with another simulator>
-    uv run python -m support_agent.analyze sim-check reports/<run, 7B simulator> reports/<other simulator>
-    uv run python -m support_agent.analyze respelled reports/<voice run> [...]   (after a spoken-form fix)
-    uv run python -m support_agent.analyze stitch reports/<voice run> reports/<rerun> [--out <dir>]
+    uv run python -m support_agent.analyze voice reports/<텍스트 실행> reports/<음성 실행> [...]
+    uv run python -m support_agent.analyze voice-worst reports/<개발용 과제의 음성 실행>
+    uv run python -m support_agent.analyze claims reports/<실행> [실행 폴더 더 ...]
+    uv run python -m support_agent.analyze same-setup reports/<실행> reports/<짝지을 실행>
+        [--ignore voice] [--ignore-prompt tools agent_system]   (9단계: V2와 V4는 이 둘이 다르다)
+    uv run python -m support_agent.analyze smoke outputs/runs/<8단계 후보의 스모크 실행>
+    uv run python -m support_agent.analyze select reports/<P1 7B dev> reports/<P0 7B dev> reports/<후보> ..
+    uv run python -m support_agent.analyze verdict reports/<P1 7B test> reports/<P0 7B test> reports/<후보>
+    uv run python -m support_agent.analyze blind reports/<개발용 A> reports/<개발용 B> .. --n 20 --out <폴더>
+    uv run python -m support_agent.analyze unblind <폴더>
+    uv run python -m support_agent.analyze name-collisions [--k K]   (기본: 등록한 허용 오차)
+    uv run python -m support_agent.analyze caller-id reports/<V2 실행> reports/<V4 실행> [...]
+    uv run python -m support_agent.analyze confirm reports/<R2 실행> [...]   (10단계: 미리보기와 답)
+    uv run python -m support_agent.analyze confirm-smoke outputs/runs/<R2 스모크 실행>
+    uv run python -m support_agent.analyze confirm-check reports/<M2b 실행> reports/<R2 실행> [--test]
+    uv run python -m support_agent.analyze confirm-sheet reports/<R2 개발용 실행> --n 20 --out <폴더>
+    uv run python -m support_agent.analyze confirm-marks <폴더>
+    uv run python -m support_agent.analyze sim-counts reports/<실행> [...]   (12단계: 시뮬레이터 잘못, P5(b))
+    uv run python -m support_agent.analyze sim-smoke outputs/runs/<다른 시뮬레이터의 스모크 실행>
+    uv run python -m support_agent.analyze sim-check reports/<7B 시뮬레이터 실행> reports/<다른 시뮬레이터>
+    uv run python -m support_agent.analyze respelled reports/<음성 실행> [...]   (말로 풀어 쓰기를 고친 뒤)
+    uv run python -m support_agent.analyze stitch reports/<음성 실행> reports/<다시 잰 실행> [--out <폴더>]
 
-`table` prints the markdown tables that go into docs/experiments.md. `misses` lists episodes whose database
-matched but whose required value was not found, so that a person can check the value matcher. `sample` draws
-episodes with a fixed seed for the simulator check ("시뮬레이터 점검").
+`table`은 docs/experiments.md에 들어가는 마크다운 표를 출력한다. `misses`는 DB는 맞았지만 꼭 전달할 값을
+찾지 못한 에피소드를 나열해, 사람이 값 찾기 규칙을 점검할 수 있게 한다. `sample`은 "시뮬레이터 점검"용
+에피소드를 고정 seed로 뽑는다.
 """
 
 # [파일 역할] 실행 기록(reports/·outputs/runs/의 episodes.jsonl, manifest.json, summary.json)에서 모든 수치를
@@ -88,7 +88,6 @@ _COUNT_COLUMNS = (
 )
 # 형식 오류로 세지 않는 format_error 값. 멈춤(stall)과 근거 없는 완료 주장(unbacked_claim)은 형식이 맞는 답을
 # 가드가 돌려보낸 것이라 따로 센다. run.py의 summary와 같은 기준이다.
-# Replies held back by a guard are well formed; they are counted on their own.
 _NOT_A_FORMAT_ERROR = (None, "stall", "unbacked_claim")
 
 
@@ -106,8 +105,8 @@ def task_type(task_id: str, types: dict[str, str]) -> str:
 # 같고, 전달 값이 모두 있음. 고객 턴 한도(max_user_turns)는 2026-09-19에 판정 대상으로 옮겼으므로, 그 전에 쓴
 # 기록의 verdict.success를 그대로 쓰지 않고 이렇게 다시 계산한다.
 def is_success(episode: dict[str, Any]) -> bool:
-    """Success by the current rules, recomputed from the recorded parts of the verdict (older records were
-    written when fewer endings were judged)."""
+    """지금 규칙에 따른 성공. 기록된 판정 요소에서 다시 계산한다(옛 기록은 판정하는 종료가 지금보다 적을
+    때 쓰였다)."""
     verdict = episode["verdict"]
     return bool(
         verdict
@@ -136,7 +135,7 @@ def pass_k(by_task: dict[str, list[bool]], k: int) -> float:
 # 때문이다(같은 시나리오·같은 DB). 과제별 점수를 10,000번 다시 뽑아 평균을 정렬하고 2.5%·97.5% 위치를 구간
 # 끝으로 쓴다.
 def bootstrap_interval(by_task: dict[str, list[bool]], k: int) -> tuple[float, float]:
-    """95% interval of pass^k, resampling tasks (not episodes): trials of one task are not independent."""
+    """pass^k의 95% 구간. 에피소드가 아니라 과제를 복원 추출한다: 한 과제의 시도들은 독립이 아니다."""
     tasks = [v for v in by_task.values() if len(v) >= k]
     if not tasks:
         return float("nan"), float("nan")
@@ -152,8 +151,8 @@ def bootstrap_interval(by_task: dict[str, list[bool]], k: int) -> tuple[float, f
 def paired_difference(
     base: dict[str, list[bool]], other: dict[str, list[bool]], k: int
 ) -> tuple[float, float, float]:
-    """pass^k of `other` minus `base` with a 95% interval. Tasks are resampled and each task keeps its pair,
-    because the same tasks were run under both settings."""
+    """`other`의 pass^k에서 `base`의 것을 뺀 값과 95% 구간. 같은 과제를 두 설정에서 돌렸으므로, 과제를
+    복원 추출하되 과제마다 짝을 유지한다."""
     if set(base) != set(other):
         raise ValueError("both runs must cover the same tasks")
     diffs = [
@@ -179,8 +178,8 @@ def compare(base_dir: Path, other_dirs: list[Path]) -> str:
         other = successes_by_task(load_episodes(run_dir))
         cells = []
         for k in (1, 4):
-            # A trial lost to an infra error leaves a task with fewer than k judged trials: pass^k is then
-            # paired over the tasks that have k in both runs, and the cell says over how many.
+            # infra_error로 시도를 잃은 과제는 판정된 시도가 k보다 적을 수 있다. 그때 pass^k는 두 실행 모두
+            # k번 이상인 과제끼리만 짝짓고, 칸에 몇 과제로 계산했는지 적는다.
             usable = [t for t in base if len(base[t]) >= k and len(other.get(t, ())) >= k]
             mine, theirs = {t: base[t] for t in usable}, {t: other[t] for t in usable}
             diff, low, high = paired_difference(mine, theirs, k)
@@ -312,8 +311,8 @@ def sample(run_dir: Path, n: int) -> str:
 # 검사한다. 검출기가 코드라 가드 없이 돈 실행의 기록에도 그대로 댈 수 있다(가드를 켜기 전 기준 기록에서 거짓
 # 완료가 얼마나 전달됐는지).
 def delivered_claims(episode: dict[str, Any]) -> list[str]:
-    """Sentences that reached the customer saying work was done which no earlier tool result showed.
-    The detector is code, so it reads the records of any run, also of one that ran without the guard."""
+    """고객에게 전달된 문장 가운데, 앞선 어떤 도구 결과도 보여 주지 않은 일을 끝냈다고 말한 것.
+    검출기가 코드라서 어떤 실행의 기록이든 읽는다. 가드 없이 돈 실행의 기록도 마찬가지다."""
     from support_agent.chat import Message
     from support_agent.claims import unbacked_claim
 
@@ -331,8 +330,8 @@ def delivered_claims(episode: dict[str, Any]) -> list[str]:
 # 다른 말, 형식 오류, 끝. 안내문을 받은 모델이 실제로 도구를 불렀는지 보려는 지표다(7단계 결과: 7B는 거의
 # 부르지 않았다).
 def after_a_held_claim(episode: dict[str, Any]) -> list[str]:
-    """What the agent's next LLM call was after each reply the claim guard held back:
-    write | write_failed | read | claim_again | reply | format_error | nothing (the episode ended)."""
+    """완료 주장 가드가 붙잡은 답마다, 에이전트의 다음 LLM 호출이 무엇이었는지:
+    write | write_failed | read | claim_again | reply | format_error | nothing(에피소드가 끝남)."""
     calls = [c for c in episode["llm_calls"] if c["who"] == "agent"]
     tools = {t["agent_call"]: t for t in episode["tool_calls"]}
     out = []
@@ -388,7 +387,7 @@ def load_manifest(run_dir: Path) -> dict[str, Any]:
 # 시험용 과제의 실행인지. 과제 파일 이름이나 과제 id(test-…)로 판단한다. 시험용 기록으로는 아무것도 만들지
 # 않는다는 규칙을 지키려고, 점검표·실패 분석 명령이 이 검사로 시험용을 거부한다.
 def is_test_run(run_dir: Path) -> bool:
-    """True when the run is on the test tasks: those records are not for building anything from."""
+    """시험용 과제의 실행이면 True: 그 기록으로는 아무것도 만들지 않는다."""
     manifest = load_manifest(run_dir)
     return "test" in Path(str(manifest.get("tasks_file", ""))).stem or any(
         task_id.startswith("test-") for task_id in manifest.get("task_sha256", {})
@@ -403,12 +402,11 @@ def is_test_run(run_dir: Path) -> bool:
 def setup_differences(
     run_a: Path, run_b: Path, ignore: tuple[str, ...] = ("voice",), ignore_prompts: tuple[str, ...] = ()
 ) -> list[str]:
-    """Why two runs may not be paired as "the same setup but for `ignore`". Empty when they may.
+    """두 실행을 "`ignore` 말고는 같은 설정"으로 짝지을 수 없는 이유들. 짝지어도 되면 빈 목록.
 
-    Compared: every config field but the ignored axes (a field an older manifest lacks counts as its default),
-    trials, task hashes, seed hash, prompt hashes but `ignore_prompts` (V4 changes the agent prompt and the
-    tool list on purpose), both providers (model digest, server version, options), and per task the trials
-    that were judged.
+    비교 항목: 무시할 축을 뺀 모든 설정 필드(옛 manifest에 없는 필드는 기본값으로 본다), 시도 수, 과제
+    해시, seed 해시, `ignore_prompts`를 뺀 프롬프트 해시(V4는 에이전트 프롬프트와 도구 목록을 일부러
+    바꾼다), 두 제공자(모델 digest, 서버 버전, 옵션), 그리고 과제별로 판정된 시도.
     """
     a, b = load_manifest(run_a), load_manifest(run_b)
     for manifest in (a, b):
@@ -447,7 +445,7 @@ def setup_differences(
     return out
 
 
-# ---------------------------------------------------------------- stage 9: voice V4, the caller's number
+# ---------------------------------------------------------------- 9단계: 음성 V4, 발신 번호
 
 
 # 9단계 관문: 고객 id → 이름 표에서, A의 번호로 건 전화에서 B의 이름을 말했을 때 verify_caller가 받아들이는
@@ -458,11 +456,11 @@ def setup_differences(
 def name_collisions(
     names: dict[str, str], k: int
 ) -> tuple[list[tuple[str, str, str, str, int]], list[tuple[str, str]]]:
-    """The gate of stage 9, on customer id -> name: (collisions, same-name pairs).
+    """고객 id -> 이름 표에 대한 9단계 관문: (충돌, 동명이인 쌍).
 
-    A collision is an ordered pair (A, B) where B's name is not A's name but verify_caller, called from A's
-    number with B's name, would accept it (jamo distance <= k). Pairs with the very same name are set apart:
-    exact matching accepts them as well, and the customer verified is A, the owner of the number.
+    충돌은 B의 이름이 A의 이름과 다른데도, A의 번호로 B의 이름을 넣어 verify_caller를 부르면 받아들여지는
+    (자모 거리 <= k) 순서쌍 (A, B)다. 이름이 완전히 같은 쌍은 따로 둔다: 정확한 비교도 그 쌍을 받아들이고,
+    확인되는 고객은 번호의 주인 A이기 때문이다.
     """
     from support_agent.tools import _normalise_name, name_distance
 
@@ -508,8 +506,7 @@ def collision_report(k: int) -> tuple[str, bool]:
 
 
 # 하니스가 쓸 수 있는 발신 번호를 주지 못했다는 오류들. 에이전트 탓이 아니라 하니스 버그이므로 표에서 따로
-# 센다(seed의 전화번호는 모두 달라 나오면 안 된다).
-# verify_caller refusals that mean the harness gave no usable number: a bug, never the agent's doing.
+# 센다(seed의 전화번호는 모두 달라 나오면 안 된다). 모두 verify_caller의 거절 코드다.
 CALLER_HARNESS_ERRORS = ("no_caller_number", "caller_not_registered", "caller_shared")
 
 
@@ -517,7 +514,7 @@ CALLER_HARNESS_ERRORS = ("no_caller_number", "caller_not_registered", "caller_sh
 # find_customer·verify_caller의 성공/호출, 허용 오차 덕에 통과한 호출, 없는 도구 호출(V4에서 find_customer를
 # 부른 것), 발신 번호 오류. V2와 V4를 나란히 비교하는 데 쓴다.
 def caller_id_table(runs: dict[str, list[dict[str, Any]]]) -> str:
-    """How the customer got identified, per run: find_customer (V0..V2) or verify_caller (V4)."""
+    """실행별로 고객 본인 확인이 어떻게 됐는지: find_customer(V0..V2) 또는 verify_caller(V4)."""
     from support_agent.tools import name_distance
 
     lines = [
@@ -554,21 +551,20 @@ def caller_id_table(runs: dict[str, list[dict[str, Any]]]) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------- stage 8: a new-generation agent model
-# 8단계 문턱값(docs/experiments.md 8단계, 측정 전에 커밋).
+# ---------------------------------------------------------------- 8단계: 새 세대 에이전트 모델
+# 8단계 문턱값(docs/experiments.md 8단계 규칙에 적어 측정 전에 커밋한 값).
 # - RELOAD_MS: load_duration이 1초를 넘는 호출은 모델을 다시 읽은 것으로 본다(S1).
 # - S2: 에이전트 호출당 평균이 P1·7B 0.34.2 기록 589 ms의 3배(약 1,767 ms) 이하. 미리 거르는 값이다.
 # - S3: prompt_eval 중앙값 500 ms 이하. 캐시를 다시 쓰면 수십 ms, 매번 처음부터 계산하면 수 초라 그 사이에 둔
 #   값이다.
 # - S4: 형식 오류 + think 태그가 에피소드당 1.0 이하(P1·7B 비율 48/96의 2배). S5: 한자·가나 섞인 답 10% 이하.
 # - 선택: pass^1 +5%p 이상, 호출당 시간 기준의 3배 이하.
-# Thresholds of the stage 8 rules in docs/experiments.md, written down and committed before measuring.
 
-RELOAD_MS = 1_000.0  # a call whose load_duration is longer than this waited for its model to be loaded again
-SMOKE_REFERENCE_AGENT_CALL_MS = 588.9  # P1·7B, reports/20260920-190957-...-p1 (Ollama 0.34.2): a pre-filter
+RELOAD_MS = 1_000.0  # load_duration이 이보다 긴 호출은 모델을 다시 읽느라 기다린 것이다
+SMOKE_REFERENCE_AGENT_CALL_MS = 588.9  # P1·7B, reports/20260920-190957-...-p1 (Ollama 0.34.2): 사전 거름용
 SMOKE_MAX_CALL_RATIO = 3.0
-SMOKE_MAX_PROMPT_EVAL_MEDIAN_MS = 500.0  # far below a prompt evaluated from scratch, far above a cached one
-SMOKE_MAX_FORMAT_ERRORS_PER_EPISODE = 1.0  # twice the P1·7B rate (48 in 96 episodes)
+SMOKE_MAX_PROMPT_EVAL_MEDIAN_MS = 500.0  # 처음부터 계산한 프롬프트보다 훨씬 작고, 캐시된 것보다 훨씬 크다
+SMOKE_MAX_FORMAT_ERRORS_PER_EPISODE = 1.0  # P1·7B 비율(96 에피소드에 48)의 2배
 SMOKE_MAX_OTHER_SCRIPT_SHARE = 0.10
 SELECT_MIN_GAIN = 0.05
 SELECT_MAX_CALL_RATIO = 3.0
@@ -591,13 +587,13 @@ def _format_errors(calls: list[dict[str, Any]]) -> int:
 
 
 def _think_leaks(calls: list[dict[str, Any]]) -> int:
-    """Replies with a reasoning tag in their text: a thinking model whose thoughts were not split off."""
+    """본문에 추론 태그가 든 답: 사고 모델의 생각이 본문에서 떨어지지 않은 경우다."""
     return sum(bool(_THINK_TAG.search(c.get("text") or "")) for c in calls)
 
 
 # 고객에게 실제로 전달된 상담원 본문 답만 모은다(도구 호출 메시지와 전달하지 않은 답 제외).
 def delivered_replies(episode: dict[str, Any]) -> list[str]:
-    """What the agent said to the customer: assistant text that was delivered and was not a tool call."""
+    """에이전트가 고객에게 한 말: 전달됐고 도구 호출이 아닌 assistant 글."""
     return [
         m["content"]
         for m in episode["messages"]
@@ -647,7 +643,7 @@ def load_summary(run_dir: Path) -> dict[str, Any]:
 # 끝날 때의 /api/ps 기록에서 모델이 GPU에 올라간 비율(size_vram / size). 서버가 그 모델을 들고 있지 않았으면
 # None이다.
 def _gpu_share(ps: list[dict[str, Any]], model: str) -> float | None:
-    """size_vram / size of a loaded model; None when the server did not hold it."""
+    """적재된 모델의 size_vram / size. 서버가 그 모델을 들고 있지 않았으면 None."""
     for m in ps:
         if m.get("name") == model:
             size = m.get("size") or 0
@@ -668,7 +664,7 @@ def _placement(user_provider: dict[str, Any]) -> str:
 # S0 infra 오류 0, S1 모델 자리와 다시 읽기 0, S2 호출당 시간, S3 prompt_eval 중앙값, S4 형식 오류, S5 다른
 # 문자 섞인 답. 10단계(confirm_report.py)도 이 중 S0·S1·S4·S5를 다시 쓴다.
 def smoke_gates(run_dir: Path) -> list[tuple[str, str, bool]]:
-    """The stage 8 smoke gates S0-S5 as (gate, what was seen, passed). The smoke run is not a measurement."""
+    """8단계 스모크 관문 S0-S5를 (관문, 본 것, 통과)로 낸다. 스모크 실행은 측정이 아니다."""
     episodes = load_episodes(run_dir)
     manifest = load_manifest(run_dir)
     ps = load_summary(run_dir).get("ollama_ps_at_end")
@@ -765,7 +761,7 @@ def smoke_report(run_dir: Path) -> str:
 # 시험용)이며, 과제 해시와 Ollama 버전이 기준과 같아야 한다. Ollama가 0.35로 바뀌어 0.34.x 기록과 짝짓지
 # 않기로 했기 때문이다(README 8단계).
 def _check_runs(base_dir: Path, p0_dir: Path, cand_dirs: list[Path], *, test: bool) -> None:
-    """The references are what the stage 8 rule names: the same tasks, the same Ollama, the right policy."""
+    """비교 대상이 8단계 규칙이 정한 것인지 본다: 같은 과제, 같은 Ollama, 맞는 정책."""
     base = load_manifest(base_dir)
     expected = {base_dir: "P1", p0_dir: "P0"} | dict.fromkeys(cand_dirs, "P1")
     for run_dir, policy in expected.items():
@@ -785,13 +781,13 @@ def _check_runs(base_dir: Path, p0_dir: Path, cand_dirs: list[Path], *, test: bo
 # agent_provider 차이는 막지 않고, 시뮬레이터를 일부 CPU로 옮긴 것(num_gpu)도 사다리 규칙대로 허용해 표에
 # 적기만 한다.
 def _pairing(base_dir: Path, cand_dir: Path) -> tuple[list[str], str]:
-    """Why a candidate cannot be paired with the baseline (empty when it can), and where its simulator sat.
-    The agent model (and its think value) is the axis; a simulator moved to the CPU is recorded, not refused.
+    """후보를 기준과 짝지을 수 없는 이유(짝지을 수 있으면 비어 있음)와 그 시뮬레이터가 있던 자리.
+    에이전트 모델(think 값 포함)이 축이고, CPU로 옮긴 시뮬레이터는 거절하지 않고 기록만 한다.
     """
     blocking = []
     for line in setup_differences(base_dir, cand_dir, ignore=("model",)):
         if line.startswith(("agent_provider differs", "judged trials of")):
-            continue  # the axis itself; tasks lost to infra errors are paired over the rest
+            continue  # 축 자체다. infra_error로 잃은 과제는 나머지 과제끼리 짝짓는다
         if line == "user_provider differs (num_gpu)":
             continue
         blocking.append(line)
@@ -813,7 +809,7 @@ def _paired_pass1(base: dict[str, list[bool]], other: dict[str, list[bool]]) -> 
 # 만족한 후보 중 pass^1이 가장 높은 것을 고르고(같으면 앞에 준 작은 모델), 시뮬레이터를 CPU에 둔 후보는
 # 시험용을 재지 않는다.
 def select(base_dir: Path, p0_dir: Path, cand_dirs: list[Path]) -> str:
-    """The stage 8 selection rule on the development tasks. base: P1·7B, p0: P0·7B (the write reference)."""
+    """개발용 과제에 대한 8단계 선택 규칙. base: P1·7B, p0: P0·7B(쓰기 참조)."""
     _check_runs(base_dir, p0_dir, cand_dirs, test=False)
     base_eps = load_episodes(base_dir)
     base_by = successes_by_task(base_eps)
@@ -887,7 +883,7 @@ def select(base_dir: Path, p0_dir: Path, cand_dirs: list[Path]) -> str:
     if not eligible:
         lines.append("선택: 없음 (시험용은 재지 않고 '개선 없음'으로 적는다)")
     else:
-        # the highest pass^1; max() keeps the first of equals, and the candidates are given smallest first
+        # pass^1이 가장 높은 후보. max()는 같은 값 중 앞의 것을 남기고, 후보는 작은 모델부터 주어진다
         _, chosen, placement = max(eligible, key=lambda item: item[0])
         if placement == "CPU":
             lines.append(
@@ -904,7 +900,7 @@ def select(base_dir: Path, p0_dir: Path, cand_dirs: list[Path]) -> str:
 # pass^1 차이의 95% 구간 아래 끝 > 0, 2: 정답에 없는 쓰기 ≤ P0·7B. 둘 다면 개선, 1만이면 '성공률은 올랐지만
 # 위험한 쓰기가 늘었음', 1이 아니면 '개선을 확인하지 못함'. 짝지을 수 없으면 판정하지 않고 오류를 낸다.
 def verdict(base_dir: Path, p0_dir: Path, cand_dir: Path) -> str:
-    """The stage 8 verdict on the test tasks: the stage 2 table, with the P0·7B count as the write limit."""
+    """시험용 과제에 대한 8단계 판정: 2단계 판정표에서 쓰기 상한만 P0·7B의 수로 바꾼 것."""
     _check_runs(base_dir, p0_dir, [cand_dir], test=True)
     blocking, placement = _pairing(base_dir, cand_dir)
     if blocking:
@@ -953,11 +949,10 @@ _TOOL_RESULT_CHARS = 300
 # 공유하는 두 장은 배치가 같아져 다른 실행이 드러나기 때문이다(docstring).
 # 출력: sheet.md(읽는 사람용), key.json(어느 것이 어느 실행인지), marks.template.json(채울 양식).
 def blind(*run_dirs: Path, n: int, out_dir: Path) -> None:
-    """P5(a): the same n (task, trial) pairs from two or more development runs, shuffled into one sheet,
-    with no run names or verdicts. Every run of one check goes into one sheet: the draw and the shuffle
-    use fixed seeds, so two sheets that share a run have the same layout and its episodes give the
-    other run away.
-    sheet.md is for the reader, key.json says which is which, marks.json is what the reader fills in."""
+    """P5(a): 개발용 실행 둘 이상에서 같은 (과제, 시도) n쌍을 뽑아, 실행 이름과 판정 없이 한 장에 섞는다.
+    한 점검의 실행은 모두 한 장에 넣는다: 추출과 섞기가 고정 seed라서, 실행 하나를 공유하는 두 장은 배치가
+    같아지고 그 실행의 에피소드가 다른 실행을 드러낸다.
+    sheet.md는 읽는 사람용, key.json은 어느 것이 어느 실행인지, marks.json은 읽는 사람이 채우는 것이다."""
     from support_agent.paths import TASKS
     from support_agent.tasks import load_tasks
 
@@ -1026,7 +1021,7 @@ def blind(*run_dirs: Path, n: int, out_dir: Path) -> None:
 # 읽는 사람이 채운 marks.json을 key.json과 합쳐 실행별 코드 수를 센다. 모든 항목에 표시가 있는지, 모르는
 # 코드가 없는지 먼저 확인한다. 관찰만 하고 이것으로 무엇도 고르지 않는다.
 def unblind(out_dir: Path) -> str:
-    """Counts of each code per run from the reader's marks.json. Observation only, nothing is chosen by it."""
+    """읽는 사람의 marks.json에서 실행별 코드 수를 센다. 관찰일 뿐이고, 이것으로 무엇도 고르지 않는다."""
     key = json.loads((out_dir / "key.json").read_text(encoding="utf-8"))
     marks = json.loads((out_dir / "marks.json").read_text(encoding="utf-8"))
     missing = sorted(set(key) - set(marks))
@@ -1048,7 +1043,7 @@ def unblind(out_dir: Path) -> str:
 # 10단계(R2) 하위 명령을 confirm_report.py로 넘긴다. confirm_report.py가 이 모듈을 가져다 쓰므로, 순환
 # import를 피하려고 함수 안에서 가져온다.
 def _confirm_command(args: argparse.Namespace) -> None:
-    """Stage 10 (R2) commands; the code is in confirm_report.py."""
+    """10단계(R2) 명령. 코드는 confirm_report.py에 있다."""
     from support_agent import confirm_report
 
     if args.command == "confirm":
@@ -1069,7 +1064,7 @@ def _confirm_command(args: argparse.Namespace) -> None:
 # 12단계(시뮬레이터 민감도) 하위 명령을 sim_report.py로 넘긴다. sim_report.py도 이 모듈을 가져다 쓰므로 같은
 # 이유로 함수 안에서 가져온다.
 def _sim_command(args: argparse.Namespace) -> None:
-    """Stage 12 (simulator sensitivity) commands; the code is in sim_report.py."""
+    """12단계(시뮬레이터 민감도) 명령. 코드는 sim_report.py에 있다."""
     from support_agent import sim_report
 
     if args.command == "sim-counts":
@@ -1083,7 +1078,7 @@ def _sim_command(args: argparse.Namespace) -> None:
 # 말로 풀어 쓰기를 고친 뒤의 재측정 명령을 respell.py로 넘긴다. respell.py도 이 모듈을 가져다 쓰므로 함수
 # 안에서 가져온다. stitch는 끼워 넣을 수 없으면 이유를 내고 종료 코드 1로 끝난다.
 def _respell_command(args: argparse.Namespace) -> None:
-    """Measuring again after a spoken-form fix; the code is in respell.py."""
+    """말로 풀어 쓰기를 고친 뒤의 재측정 명령. 코드는 respell.py에 있다."""
     from support_agent import respell
 
     if args.command == "respelled":
@@ -1118,38 +1113,41 @@ def main() -> None:
     pairing = commands.add_parser("same-setup")
     pairing.add_argument("run_a", type=Path)
     pairing.add_argument("run_b", type=Path)
-    pairing.add_argument("--ignore", nargs="*", default=["voice"], help="config axes that may differ")
+    pairing.add_argument("--ignore", nargs="*", default=["voice"], help="달라도 되는 설정 축")
     pairing.add_argument(
         "--ignore-prompt",
         nargs="*",
         default=[],
-        help="prompt hashes that may differ (V4: tools agent_system)",
+        help="달라도 되는 프롬프트 해시 (V4: tools agent_system)",
     )
     commands.add_parser("smoke").add_argument("run_dir", type=Path)
     selector = commands.add_parser("select")
-    selector.add_argument("base_dir", type=Path, help="P1 7B on the development tasks")
-    selector.add_argument("p0_dir", type=Path, help="P0 7B on the development tasks (the write reference)")
-    selector.add_argument("run_dirs", nargs="+", type=Path, help="candidates, the smallest model first")
+    selector.add_argument("base_dir", type=Path, help="개발용 과제의 P1 7B 실행")
+    selector.add_argument("p0_dir", type=Path, help="개발용 과제의 P0 7B 실행 (쓰기 참조)")
+    selector.add_argument("run_dirs", nargs="+", type=Path, help="후보 실행들, 작은 모델부터")
     judging = commands.add_parser("verdict")
-    judging.add_argument("base_dir", type=Path, help="P1 7B on the test tasks")
-    judging.add_argument("p0_dir", type=Path, help="P0 7B on the test tasks (the write reference)")
-    judging.add_argument("run_dir", type=Path, help="the selected candidate on the test tasks")
+    judging.add_argument("base_dir", type=Path, help="시험용 과제의 P1 7B 실행")
+    judging.add_argument("p0_dir", type=Path, help="시험용 과제의 P0 7B 실행 (쓰기 참조)")
+    judging.add_argument("run_dir", type=Path, help="선택된 후보의 시험용 과제 실행")
     blinder = commands.add_parser("blind")
-    blinder.add_argument("run_dirs", nargs="+", type=Path, help="every run of one check, in one sheet")
+    blinder.add_argument("run_dirs", nargs="+", type=Path, help="한 점검의 모든 실행 (한 장에 넣는다)")
     blinder.add_argument("--n", type=int, default=20)
     blinder.add_argument("--out", type=Path, required=True)
     commands.add_parser("unblind").add_argument("out_dir", type=Path)
     colliding = commands.add_parser("name-collisions")
     colliding.add_argument(
-        "--k", type=int, default=NAME_TOLERANCE, help="jamo edits verify_caller allows (default: registered)"
+        "--k",
+        type=int,
+        default=NAME_TOLERANCE,
+        help="verify_caller가 허용하는 자모 편집 수 (기본: 등록한 값)",
     )
     commands.add_parser("caller-id").add_argument("run_dirs", nargs="+", type=Path)
     commands.add_parser("confirm").add_argument("run_dirs", nargs="+", type=Path)
     commands.add_parser("confirm-smoke").add_argument("run_dir", type=Path)
     checking = commands.add_parser("confirm-check")
-    checking.add_argument("base_dir", type=Path, help="the stage 8 M2b record (R0)")
-    checking.add_argument("run_dir", type=Path, help="the R2 run on the same tasks")
-    checking.add_argument("--test", action="store_true", help="the test verdict (default: development)")
+    checking.add_argument("base_dir", type=Path, help="8단계 M2b 기록 (R0)")
+    checking.add_argument("run_dir", type=Path, help="같은 과제의 R2 실행")
+    checking.add_argument("--test", action="store_true", help="시험용 판정을 낸다 (기본: 개발용 조건)")
     sheeting = commands.add_parser("confirm-sheet")
     sheeting.add_argument("run_dir", type=Path)
     sheeting.add_argument("--n", type=int, default=20)
@@ -1158,17 +1156,17 @@ def main() -> None:
     commands.add_parser("sim-counts").add_argument("run_dirs", nargs="+", type=Path)
     commands.add_parser("sim-smoke").add_argument("run_dir", type=Path)
     sim_checking = commands.add_parser("sim-check")
-    sim_checking.add_argument("base_dir", type=Path, help="the development run with the 7B simulator (U0)")
-    sim_checking.add_argument("run_dir", type=Path, help="the same setup with another simulator")
+    sim_checking.add_argument("base_dir", type=Path, help="7B 시뮬레이터로 돈 개발용 실행 (U0)")
+    sim_checking.add_argument("run_dir", type=Path, help="다른 시뮬레이터로 돈 같은 설정의 실행")
     commands.add_parser("respelled").add_argument("run_dirs", nargs="+", type=Path)
     stitching = commands.add_parser("stitch")
-    stitching.add_argument("original", type=Path, help="the voice run as it was measured")
-    stitching.add_argument("rerun", type=Path, help="its changed episodes, run again with run --episode")
-    stitching.add_argument("--out", type=Path, default=None, help="default: <original>-respelled")
+    stitching.add_argument("original", type=Path, help="잰 그대로의 음성 실행")
+    stitching.add_argument("rerun", type=Path, help="그 실행의 바뀐 에피소드를 run --episode로 다시 돈 실행")
+    stitching.add_argument("--out", type=Path, default=None, help="기본: <original>-respelled")
     args = parser.parse_args()
 
     # Windows 콘솔의 기본 인코딩으로는 한국어 표가 깨지거나 오류가 나므로 표준 출력을 UTF-8로 바꾼다.
-    sys.stdout.reconfigure(encoding="utf-8")  # Korean on a Windows console
+    sys.stdout.reconfigure(encoding="utf-8")  # Windows 콘솔에서 한국어를 내기 위해
     if args.command == "table":
         print(table(args.run_dirs))
     elif args.command == "compare":

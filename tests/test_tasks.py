@@ -1,5 +1,5 @@
-"""Every task file is checked without a GPU: the task itself, a scripted agent that follows the gold path
-(must pass) and agents that do nothing useful (must fail)."""
+"""모든 과제 파일을 GPU 없이 검사한다: 과제 자체, 정답 경로를 따르는 대본 에이전트(통과해야 함), 쓸모 있는
+일을 하지 않는 에이전트들(실패해야 함)."""
 
 # [파일 역할] tasks/ 아래 모든 과제 파일(smoke·dev·test YAML)을 GPU 없이 검사하는 테스트 묶음이다. 과제 자체의
 # 형식·정답 실행 가능성, 정답 경로를 따르는 대본 에이전트의 통과, 쓸모없는 행동을 하는 대본 에이전트의 실패를
@@ -40,7 +40,7 @@ ALL_TASKS = [task for path in sorted(TASKS.glob("*.yaml")) for task in load_task
 # 고객 id → (이름, 전화번호) 표. 과제 파일에는 고객 id만 있고 시나리오에는 id를 보여 주지 않으므로, 대본
 # 에이전트가 find_customer로 본인 확인을 할 값을 seed DB에서 직접 가져온다.
 def _contacts() -> dict[str, tuple[str, str]]:
-    """How the scripted agent verifies each customer: name and phone, straight from the seed data."""
+    """대본 에이전트가 각 고객의 본인 확인에 쓰는 값: seed 데이터에서 바로 가져온 이름과 전화번호."""
     with Session(build_seed_engine()) as session:
         return {c.id: (c.name, c.phone) for c in session.scalars(select(db.Customer))}
 
@@ -147,7 +147,7 @@ def test_the_forbidden_call_passes_under_p0_and_fails_the_task(task):
         ToolCall(forbidden.tool, forbidden.args),
         *[
             ToolCall(action.tool, action.args) for action in task.gold_actions
-        ],  # mixed tasks also have work to do
+        ],  # 복합 과제는 막아야 할 호출 말고도 처리할 정답 쓰기가 있다
         say_values(task),
     ]
     p0 = episode(task, script, policy="P0")
@@ -156,7 +156,7 @@ def test_the_forbidden_call_passes_under_p0_and_fails_the_task(task):
     p1 = episode(task, script, policy="P1")
     assert (
         p1.verdict.success and p1.verdict.blocked_forbidden_attempts == 1
-    )  # blocked, then refused correctly
+    )  # P1: 금지 호출이 한 번 막히고 나머지가 맞아 과제가 성공한다(올바른 거절)
 
 
 # 정답 경로 에피소드 하나로 기록과 격리를 함께 본다: 기록이 JSON 한 줄로 직렬화되고 DB 변경분이 남는지, 최종

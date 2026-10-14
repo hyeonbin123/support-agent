@@ -1,16 +1,16 @@
-"""Row-building helpers for the tool tests. They extend conftest's tiny database; nothing depends on seed.py.
+"""도구 테스트용 행 만들기 도우미. conftest의 작은 데이터베이스를 넓히고, seed.py에는 기대지 않는다.
 
-The shop after `extend_tiny_rows` (NOW is 2026-09-14 10:00 KST):
+`extend_tiny_rows` 뒤의 가게 (NOW는 2026-09-14 10:00 KST):
 
-  C-1 김하준  addresses AD-C-1-1 (집, default), AD-C-1-2 (회사)
-    O-1 paid       V-1-01 x1            promised 09-13, not delivered (1 day late)
-    O-2 shipped    V-1-01 x1            promised 09-13, not delivered (1 day late)
-    O-3 delivered  V-1-01 x1, V-2-01 x2 delivered 09-08 15:00, promised 09-09 (on time, window open)
-    O-4 delivered  V-1-01 x1            delivered 09-02 14:20, promised 08-30 (3 days late, window closed)
-    O-5 preparing  V-1-01 x1            promised 09-16 (not late)
-    O-6 cancelled  V-1-01 x1
-  C-2 이서연  address AD-C-2-1
-    O-9 paid       V-1-01 x1
+  C-1 김하준  주소 AD-C-1-1 (집, 기본), AD-C-1-2 (회사)
+    O-1 결제 완료  V-1-01 x1            도착 예정 09-13, 미배송 (1일 지연)
+    O-2 출고       V-1-01 x1            도착 예정 09-13, 미배송 (1일 지연)
+    O-3 배송 완료  V-1-01 x1, V-2-01 x2 09-08 15:00 수령, 도착 예정 09-09 (제때, 반품 기한 안)
+    O-4 배송 완료  V-1-01 x1            09-02 14:20 수령, 도착 예정 08-30 (3일 지연, 반품 기한 지남)
+    O-5 상품 준비  V-1-01 x1            도착 예정 09-16 (지연 아님)
+    O-6 취소       V-1-01 x1
+  C-2 이서연  주소 AD-C-2-1
+    O-9 결제 완료  V-1-01 x1
   P-1 무선 이어폰: V-1-01 블랙 (5), V-1-02 화이트 (3), V-1-03 레드 (0)   P-2 텀블러: V-2-01 (10), V-2-02 (10)
 """
 
@@ -87,7 +87,7 @@ def add_address(
 def add_product(
     session: Session, product_id: str, name: str, variants: list[tuple[str, str, int, int]]
 ) -> None:
-    """variants: (variant_id, option_label, price_won, stock)."""
+    """variants: (variant_id, option_label, price_won, stock) 목록."""
     if session.get(db.Product, product_id) is None:
         session.add(db.Product(id=product_id, name=name, category="생활"))
         session.flush()
@@ -106,9 +106,9 @@ def add_product(
 
 # 주문 하나와 그에 딸린 줄·결제·배송 행을 한 번에 만든다. 금액은 옵션 가격 × 수량의 합 + 배송비로 계산해
 # 행끼리 맞게 한다.
-# 취소 상태로 만들면 cancel_order 도구가 쓰는 것과 같은 행을 남긴다: 취소 시각·사유(단순 변심), 모든 줄
-# cancelled, 결제는 환불 대기(refund_pending)에 결제액 전액 환불. 도구가 취소한 주문과 같은 모양이어야 '이미
-# 취소된 주문' 검사를 제대로 시험할 수 있다.
+# 취소 상태로 만들 때 남기는 행: 취소 시각·사유(단순 변심), 모든 줄 cancelled, 결제는 환불
+# 대기(refund_pending)에 결제액 전액 환불. 도구가 취소한 주문과 같은 모양이어야 '이미 취소된 주문' 검사를
+# 제대로 시험할 수 있다.
 def add_order(
     session: Session,
     order_id: str,
@@ -122,7 +122,7 @@ def add_order(
     delivered_at: datetime | None = None,
     shipping_fee_won: int = 0,
 ) -> None:
-    """lines: (variant_id, quantity). A cancelled order gets the rows cancel_order would have written."""
+    """lines: (variant_id, quantity) 목록. 취소 상태 주문에는 cancel_order가 썼을 행을 그대로 남긴다."""
     address = session.get(db.CustomerAddress, address_id)
     cancelled = status == db.OrderStatus.CANCELLED
     # 줄마다 옵션 행을 읽어 가격을 가져오고, 상품 금액 합과 총액을 계산한다 (할인은 0원).
@@ -215,14 +215,14 @@ def add_compensation_coupon(
     session.flush()
 
 
-# 모듈 docstring의 가게를 만든다. 주문별로 시험하는 상황이 다르다.
+# 주문별로 시험하는 상황이 다르다.
 # - O-3: 9월 8일 수령, 반품 기한 안(9월 15일까지), 두 상품 세 개라 일부 반품·교환을 시험할 수 있다.
 # - O-4: 9월 2일 수령, 반품 기한(9월 9일)이 지났고 도착 예정보다 3일 늦었다.
 # - O-5: 상품 준비 중(취소·배송지 변경 가능), 도착 예정이 지나지 않았다.
 # - O-6: 이미 취소된 주문.
 # - O-9: 다른 고객(C-2)의 주문이라 '본인 주문이 아님' 검사에 쓴다.
 def extend_tiny_rows(session: Session) -> None:
-    """Add the rows of the module docstring on top of conftest.add_tiny_rows."""
+    """conftest.add_tiny_rows 위에 모듈 docstring의 가게 행을 더한다."""
     add_address(session, "AD-C-1-2", "C-1", "회사", "서울특별시 중구 가상로 22")
     add_customer(session, "C-2", "이서연", "01000000002", "seoyeon@example.com")
     add_address(session, "AD-C-2-1", "C-2", "집", "부산광역시 가상구 모의로 3", is_default=True)

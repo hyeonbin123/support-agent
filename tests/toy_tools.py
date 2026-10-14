@@ -1,4 +1,4 @@
-"""A toy registry for tests that must not depend on the real domain tools."""
+"""실제 도메인 도구에 기대면 안 되는 테스트를 위한 장난감 도구 등록부."""
 
 # [파일 역할] 실제 도메인 도구(tools.py의 14개) 대신 테스트에서 쓰는 작은 장난감 도구 등록부다. 조회 1개, 쓰기
 # 1개, 항상 예외를 내는 도구 1개, 대화를 끝내는 이관 도구 1개, think 도구 1개로 이루어진다.

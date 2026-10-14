@@ -1,4 +1,4 @@
-"""What the speech channel did to the customer's words, computed from episode records. No model here."""
+"""음성 채널이 고객의 말에 무엇을 했는지 에피소드 기록에서 계산한다. 여기서는 모델을 쓰지 않는다."""
 
 # [파일 역할] 음성 채널(5·9·11단계)이 고객의 말에 무엇을 했는지를 에피소드 기록(episodes.jsonl의 voice
 # 항목)만으로 다시 계산한다. 글자 오류율, 엔티티(이메일·전화번호·주문 번호·금액·날짜) 생존율, 본인 확인
@@ -23,8 +23,8 @@ from typing import Any
 # 고정이라 같은 기록이면 같은 구간이 나온다.
 BOOTSTRAP_ROUNDS = 10_000
 BOOTSTRAP_SEED = 20260921
-# Written-form entities the agent needs to get right. Checked one after the other; a match is cut out of the
-# text before the next pattern runs, so "O-91010" is not counted again as a number.
+# 에이전트가 정확히 받아야 하는 글 표기의 엔티티. 차례로 검사하고, 맞은 부분은 다음 패턴을 돌리기 전에 글에서
+# 잘라 내므로 "O-91010"이 숫자로 한 번 더 세어지지 않는다.
 ENTITY_PATTERNS: tuple[tuple[str, str], ...] = (
     # 이메일: 영문·숫자·._+- 로 된 아이디 @ 점으로 이어진 도메인.
     ("email", r"[A-Za-z0-9._+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"),
@@ -50,10 +50,9 @@ ENTITY_LABELS = {
 _IGNORED = re.compile(r"[\s.,?!~'\"“”‘’()\[\]·:;-]")
 
 
-# 두 글을 비교하는 정규형. 글자 오류율, '그대로 전달' 여부, voice_real.py의 같은 지표가 모두 이 형태로
-# 비교한다.
+# 글자 오류율, '그대로 전달' 여부, voice_real.py의 같은 지표가 모두 이 형태로 비교한다.
 def squeeze(text: str) -> str:
-    """The form in which two transcripts are compared: no spaces, no punctuation, lower case."""
+    """두 받아쓰기를 비교하는 정규형: 공백과 문장부호를 지우고 소문자로 바꾼다."""
     return _IGNORED.sub("", text).lower()
 
 
@@ -82,14 +81,13 @@ def entities(said: str) -> list[tuple[str, str]]:
     return found
 
 
-# 엔티티가 에이전트가 받은 글(text)에 '도구 인자로 쓸 수 있는 형태로' 남았는지 본다. 종류마다 허용하는 표기
-# 차이가 다르다. 더 긴 값의 일부로만 들어 있는 경우는 남은 것으로 치지 않는다.
+# 종류마다 허용하는 표기 차이가 다르다.
 def survived(kind: str, entity: str, text: str) -> bool:
-    """True when the agent can read the entity in `text` as the tools need it, and not as a part of a
-    longer one ("O-12" inside "O-123", "1,000원" inside "11,000원")."""
+    """에이전트가 `text`에서 엔티티를 도구가 필요로 하는 형태 그대로 읽을 수 있으면 True. 더 긴 값의
+    일부로만 들어 있으면("O-123" 안의 "O-12", "11,000원" 안의 "1,000원") 남은 것으로 치지 않는다."""
     # 전화번호: 같은 숫자열이면 구분자를 어떻게 넣었든 인정한다. 숫자 사이마다 선택적 구분자를 넣은 정규식을
     # 만들고, 앞뒤에 숫자가 더 붙지 않아야 한다.
-    if kind == "phone":  # any grouping of the same digits
+    if kind == "phone":
         wanted = r"[- .]?".join(re.sub(r"\D", "", entity))
         return re.search(rf"(?<!\d){wanted}(?!\d)", text) is not None
     # 금액: 양쪽 모두 숫자 사이 쉼표와 공백을 지우고 비교한다. 앞에 숫자나 쉼표가 없어야 하므로 "1,000원"이
@@ -103,7 +101,7 @@ def survived(kind: str, entity: str, text: str) -> bool:
     if kind == "date":
         wanted = re.escape(re.sub(r"\s", "", entity))
         return re.search(rf"(?<!\d){wanted}", re.sub(r"\s", "", text)) is not None
-    # email, id: the very string, not inside a longer one
+    # 이메일, 번호(id): 똑같은 문자열이어야 하고, 더 긴 문자열 안에 든 것은 치지 않는다.
     return (
         re.search(rf"(?<![0-9A-Za-z._-]){re.escape(entity)}(?![0-9A-Za-z])", text, re.IGNORECASE) is not None
     )
@@ -143,13 +141,12 @@ def channel_summary(episodes: list[dict[str, Any]]) -> dict[str, Any]:
 
 # 본인 확인 도구 이름. 5단계까지는 find_customer, 9단계 V4는 발신 번호로 확인하는 verify_caller다.
 # analyze.py의 smoke 표도 이 튜플로 '확인 도구를 부르지 않은 에피소드'를 센다.
-IDENTITY_TOOLS = ("find_customer", "verify_caller")  # verify_caller: voice V4 (stage 9)
+IDENTITY_TOOLS = ("find_customer", "verify_caller")  # verify_caller: 음성 V4(9단계)
 
 
-# 에피소드에서 본인 확인 도구가 한 번이라도 성공했는지. 모든 과제가 본인 확인에서 시작하므로, 기준 성공률이
-# 낮아 pass^1로 차이가 안 보일 때를 대비한 2차 지표다 (docs/experiments.md 5단계 "지표").
+# 기준 성공률이 낮아 pass^1로 차이가 안 보일 때를 대비한 2차 지표다 (docs/experiments.md 5단계 "지표").
 def identified(episode: dict[str, Any]) -> bool:
-    """The customer was verified at least once: the first thing every task needs."""
+    """에피소드에서 고객 본인 확인이 한 번이라도 성공했는가: 모든 과제가 맨 먼저 필요로 하는 일이다."""
     return any(call["name"] in IDENTITY_TOOLS and call["ok"] for call in episode["tool_calls"])
 
 
@@ -163,11 +160,10 @@ def identified_by_task(episodes: list[dict[str, Any]]) -> dict[str, float]:
     return {task: sum(v) / len(v) for task, v in by_task.items()}
 
 
-# 두 실행의 과제별 비율 차이(other − base)의 평균과 95% 부트스트랩 구간. 과제를 다시 뽑을 때 같은 과제의 두
-# 값이 짝으로 함께 뽑히므로, 과제 난이도 차이가 구간을 넓히지 않는다.
+# 과제를 다시 뽑을 때 같은 과제의 두 값이 짝으로 함께 뽑히므로, 과제 난이도 차이가 구간을 넓히지 않는다.
 # 두 실행의 과제 집합이 다르면 짝을 지을 수 없어 ValueError를 낸다.
 def paired_mean_difference(base: dict[str, float], other: dict[str, float]) -> tuple[float, float, float]:
-    """Mean over tasks of (other - base) with a 95% interval; tasks are resampled and keep their pair."""
+    """과제별 (other - base)의 평균과 95% 부트스트랩 구간. 과제를 다시 뽑되 두 값은 짝으로 함께 뽑는다."""
     if set(base) != set(other):
         raise ValueError("both runs must cover the same tasks")
     diffs = [other[task] - base[task] for task in sorted(base)]
@@ -180,11 +176,10 @@ def paired_mean_difference(base: dict[str, float], other: dict[str, float]) -> t
     )
 
 
-# docs/experiments.md에 붙일 마크다운 표 세 개(채널 요약, 엔티티 생존, 본인 확인 성공과 기준과의 차이)를
-# 만든다. 첫 실행이 짝지은 차이의 기준이다.
+# 표는 세 개다: 채널 요약, 엔티티 생존, 본인 확인 성공과 기준과의 차이.
 # 호출 위치: analyze.py의 voice 명령 (analyze voice <텍스트 실행> <음성 실행> ...).
 def voice_table(runs: dict[str, list[dict[str, Any]]]) -> str:
-    """Markdown tables for docs/experiments.md. The first run is the base of the paired differences."""
+    """docs/experiments.md에 붙일 마크다운 표. 첫 실행이 짝지은 차이의 기준이다."""
     names = list(runs)
     lines = [
         "| 실행 | 발화 | 그대로 전달 | 인식 안 됨 | 글자 오류율 | 음성 길이 합 | 합성 p50 | 인식 p50 |",
@@ -231,12 +226,12 @@ def voice_table(runs: dict[str, list[dict[str, Any]]]) -> str:
     return "\n".join(lines)
 
 
-# 엔티티를 잃은 발화를 (같은 글은 한 번만) 최대 limit개 보여 준다. V2 정규화 규칙(normalize.py)은 개발용 V1
-# 기록에서 이 목록만 보고 만들었다 (docs/experiments.md 5단계 "V2의 규칙은 개발용 기록만 보고 만든다").
+# 같은 글은 한 번만, 최대 limit개 보여 준다. V2 정규화 규칙(normalize.py)은 개발용 V1 기록에서 이 목록만 보고
+# 만들었다 (docs/experiments.md 5단계 "V2의 규칙은 개발용 기록만 보고 만든다").
 # 호출 위치: analyze.py의 voice-worst 명령. 시험용 실행이면 그쪽에서 거부한다 (시험용 기록을 보고 규칙을
 # 만들지 않으려는 장치).
 def worst(episodes: list[dict[str, Any]], limit: int = 40) -> str:
-    """Utterances that lost an entity: the material the normaliser is built from (development tasks only)."""
+    """엔티티를 잃은 발화들: 정규화 규칙을 만드는 재료다(개발용 과제만)."""
     out, seen = [], set()
     for u in utterances(episodes):
         lost = [entity for kind, entity in entities(u["said"]) if not survived(kind, entity, u["text"])]

@@ -1,8 +1,8 @@
-"""Stage 11 (V4-R, stage A): the customer utterances of the stage 9 V4 development run, synthesised again with
-the same seeds and recognised twice, clean and through telephone-call conditions (docs/experiments.md).
+"""11단계(V4-R, A단계): 9단계 V4 개발용 실행의 고객 발화를 같은 seed로 다시 합성해, 깨끗한 그대로와 전화
+통화 조건을 거친 뒤로 두 번 받아 적는다(docs/experiments.md).
 
-The signal tests need numpy and scipy (the `voice` dependency group) and are skipped without them. The runner
-and the report are tested with fake speech models and hand-made records, so they run anywhere.
+신호 테스트는 numpy와 scipy(`voice` 의존성 그룹)가 필요하고, 없으면 건너뛴다. 실행기와 보고서는 가짜 음성
+모델과 손으로 만든 기록으로 시험하므로 어디서나 돈다.
 """
 
 # [파일 역할] 11단계 V4-R A단계(전화 통화 조건에서 인식만 재기)를 검증하는 테스트 묶음이다. 구역: 열화
@@ -39,7 +39,7 @@ SOURCE = REPORTS / voice_real.SOURCE_RUN
 
 # 열화 구현(voice/degrade.py) 테스트. 순서는 말소리 효과(먹먹함) → 소리 환경(배경·돌발 소음, 음량) → 채널(전화
 # 대역, 8 kHz, μ-law, 프레임 손실) → 16 kHz.
-# ==================================================================== the degradation (voice/degrade.py)
+# ==================================================================== 열화 (voice/degrade.py)
 
 
 # degrade 모듈. numpy·scipy가 없으면 이 픽스처를 쓰는 테스트를 모두 건너뛴다(CI는 voice 그룹 없이 돈다).
@@ -73,15 +73,15 @@ def band_energy(np, samples, low, high):
 
 # 전화 대역과 μ-law: whisper-ko-ft channel.py의 telephone()과 같은 구현이어야 해서, 그 코드로 계산한
 # 출력값으로 고정한다.
-# --- the telephone band and mu-law: the implementation of whisper-ko-ft's channel.py, fixed by its values
+# --- 전화 대역과 mu-law: whisper-ko-ft channel.py의 구현이며, 그 출력값으로 고정한다
 
 
 # 네 사인파(두 개는 대역 밖)를 넣은 출력의 표본 8개, 전체 에너지, μ-law 왕복 값이 whisper-ko-ft 코드로 계산한
 # 기준값과 같은지 본다. 같은 PC에서 그 프로젝트가 잰 '전화 대역·μ-law만의 영향'과 같은 구현이어야 두 결과를
 # 이어 읽을 수 있다(docs/experiments.md 11단계 "왜 하는가").
 def test_telephone_gives_what_whisper_ko_fts_channel_gives(dg, np):
-    """Reference values computed with whisper-ko-ft src/whisper_ko_ft/channel.py (commit 51616d5's code,
-    numpy 2.4.6, scipy 1.17.1) on the same input: four tones, two of them outside the band."""
+    """같은 입력(사인파 넷, 그중 둘은 대역 밖)에 whisper-ko-ft src/whisper_ko_ft/channel.py(커밋 51616d5의
+    코드, numpy 2.4.6, scipy 1.17.1)로 계산한 기준값."""
     t = np.arange(8000) / 16_000
     x = (
         0.3 * np.sin(2 * np.pi * 440 * t)
@@ -154,7 +154,7 @@ def test_very_short_input_is_returned_unchanged(dg, np):
 
 
 # 조건: τ-Voice Realistic 값을 재기 전에 등록했다.
-# --- the conditions: tau-Voice "Realistic" values, fixed before measuring
+# --- 조건: tau-Voice "Realistic" 값, 재기 전에 고정
 
 
 # 코드의 열화 값(배경 소음 15 dB ±3, 분홍·갈색, 돌발 소음 분당 1회 −5~+10 dB와 네 종류, 먹먹함 20%·500 ms·전환
@@ -197,7 +197,7 @@ def test_gilbert_elliott_loses_two_percent_in_bursts_of_100_ms(dg, np):
     lost = dg.gilbert_elliott(300_000, 0.02, 5, np.random.default_rng(7))
     assert lost.mean() == pytest.approx(0.02, abs=0.003)
     starts = np.flatnonzero(lost & ~np.concatenate(([False], lost[:-1])))
-    assert lost.sum() / len(starts) == pytest.approx(5.0, abs=0.4)  # mean run of lost 20 ms frames
+    assert lost.sum() / len(starts) == pytest.approx(5.0, abs=0.4)  # 연달아 잃는 20 ms 프레임 수의 평균
 
 
 # 열화 조건(plan)이 seed로 정해지고(같은 seed는 같은 조건, 다른 seed는 다른 조건), JSON으로 왕복되며, 프레임
@@ -219,7 +219,7 @@ def test_the_plans_of_many_utterances_follow_the_registered_rates(dg, np):
     assert 12.0 <= min(snrs) and max(snrs) <= 18.0 and sum(snrs) / 3000 == pytest.approx(15.0, abs=0.3)
     assert sum(p.colour == "pink" for p in plans) / 3000 == pytest.approx(0.5, abs=0.05)
     bursts = [b for p in plans for b in p.bursts]
-    assert len(bursts) / 3000 == pytest.approx(5 / 60, abs=0.015)  # one a minute
+    assert len(bursts) / 3000 == pytest.approx(5 / 60, abs=0.015)  # 분당 1회
     assert {b[0] for b in bursts} == set(dg.REALISTIC.burst_kinds)
     assert all(-5.0 <= b[2] <= 10.0 and 0 <= b[1] < 80_000 for b in bursts)
     frames = sum(p.frames for p in plans)
@@ -236,7 +236,7 @@ def band_rms(dg, np, x):
 
 # 모든 효과를 끈 조건에서 시험할 효과 하나만 켠 plan을 만든다.
 def quiet_plan(dg, length, **changes):
-    """A plan with every effect off: noise 300 dB under the speech, nothing muffled, lost or burst."""
+    """모든 효과를 끈 plan: 소음은 말소리보다 300 dB 아래, 먹먹함·손실·돌발 소음 없음."""
     base = dict(muffle_start=None, colour="pink", snr_db=300.0, noise_seed=1, bursts=(), frames=0, lost=())
     base.update(changes)
     base["frames"] = dg.frame_count(length)
@@ -281,7 +281,7 @@ def test_every_burst_kind_is_sound_in_the_telephone_band(dg, np, kind):
     sound = dg.burst_sound(kind, np.random.default_rng(0))
     assert len(sound) == int(16_000 * dg.BURST_SECONDS[kind]) and np.isfinite(sound).all()
     assert band_rms(dg, np, sound) > 0.1 * float(np.sqrt(np.mean(sound**2)))
-    assert sound[0] == 0 and abs(sound[-1]) < 1e-3  # faded in and out: no click
+    assert sound[0] == 0 and abs(sound[-1]) < 1e-3  # 서서히 들어가고 나온다: 딸깍 소리 없음
 
 
 # 먹먹함이 정한 구간(500 ms와 앞뒤 100 ms 전환)에서만 3 kHz 소리를 크게 낮추고, 구간 밖은 그대로 두는지 본다.
@@ -289,7 +289,7 @@ def test_muffling_lowers_high_frequencies_only_in_its_segment(dg, np):
     speech = tone(np, 3000, 3.0, 0.2)
     plan = quiet_plan(dg, len(speech), muffle_start=8000)
     mixed, _gain = dg.mix(speech, plan)
-    plateau = slice(8000 + 1600 + 200, 8000 + 1600 + 8000 - 200)  # inside the 500 ms, away from the ramps
+    plateau = slice(8000 + 1600 + 200, 8000 + 1600 + 8000 - 200)  # 500 ms 안, 경사 구간에서 먼 곳
     assert np.abs(mixed[plateau]).max() < 0.02 * 0.2
     span = 8000 + 2 * 1600 + 8000
     assert np.abs(mixed[:8000] - speech[:8000]).max() < 1e-4
@@ -302,7 +302,7 @@ def test_lost_frames_are_silence_after_the_channel(dg, np):
     speech = tone(np, 700, 1.0, 0.3)
     plan = quiet_plan(dg, len(speech), lost=(10, 11))
     out = dg.apply(speech, plan)[0]
-    gap = out[10 * 320 + 40 : 12 * 320 - 40]  # 16 kHz samples of two 20 ms frames, without the filter's edge
+    gap = out[10 * 320 + 40 : 12 * 320 - 40]  # 20 ms 프레임 둘의 16 kHz 표본, 필터 가장자리 제외
     assert np.abs(gap).max() < 1e-3
     assert np.abs(out[5 * 320 : 9 * 320]).max() > 0.2 and np.abs(out[13 * 320 : 20 * 320]).max() > 0.2
 
@@ -329,7 +329,7 @@ def test_degrade_is_fixed_by_its_seed_and_returns_16k_float32(dg, np):
 
 
 # 원본 발화: 9단계 V4 개발용 기록에서 다시 합성할 발화를 읽는다.
-# ==================================================================== the source utterances
+# ==================================================================== 원본 발화
 
 
 # 원본 실행의 manifest와 발화 목록(모듈에서 한 번만 읽음).
@@ -421,7 +421,7 @@ def test_the_speech_models_must_be_the_ones_of_the_source_run():
 
 
 # 실행기: 가짜 음성 모델로 발화마다 기록 한 줄을 남기고, 캐시에서 이어 가는지 본다.
-# ==================================================================== the runner, with fake speech models
+# ==================================================================== 실행기 (가짜 음성 모델)
 
 
 # 가짜 합성기: 풀어 쓴 글을 그대로 '소리'로 돌려주고 불린 글과 seed를 기록한다.
@@ -440,7 +440,7 @@ class FakeSpeaker:
 # 가짜 인식기: 깨끗한 소리는 그대로, 열화를 거친 소리는 마지막 글자를 잃은 채 받아 적는다. 두 받아쓰기가
 # 다르게 나와 짝이 섞이지 않는지 볼 수 있다.
 class FakeListener:
-    """Hears the clean audio as it was said, and loses the last character through the degradation."""
+    """깨끗한 소리는 말한 그대로 듣고, 열화를 거친 소리는 마지막 글자를 잃는다."""
 
     def describe(self):
         return {"stt": "fake", "device": "cpu"}
@@ -498,7 +498,7 @@ def test_the_runner_writes_one_record_per_utterance_and_resumes_from_its_cache(t
     assert [{k: v for k, v in r.items() if k != "cached"} for r in again] == [
         {k: v for k, v in r.items() if k != "cached"} for r in records
     ]
-    # Other degradation parameters are another key: nothing comes from the cache.
+    # 열화 매개변수가 다르면 키도 달라서 캐시에서 오는 것이 없다.
     out3 = tmp_path / "three"
     out3.mkdir()
     changed = dict(kwargs, description={"degrade": "test-2"})
@@ -552,7 +552,7 @@ def test_the_plan_gate_bounds_are_the_registered_ones():
 
 
 # 결과 표: 기록에서 지표와 짝지은 구간을 다시 계산한다(모델 없음).
-# ==================================================================== the report
+# ==================================================================== 보고서
 
 
 # utterances.jsonl 한 줄을 손으로 만든다. recorded를 주면 9단계에 기록된 받아쓰기를 깨끗한 쪽과 다르게 둔다.
@@ -591,7 +591,7 @@ def test_the_counts_of_one_record():
     assert counts["id"] == ((1, 1), (0, 1))
     assert counts["exact"] == ((1, 1), (0, 1))
     assert counts["cer"][0] == (0, len("정예준이고주문은o-91001이에요".replace("-", "")))
-    assert counts["cer"][1][0] == 2  # 순 for 준, a lost digit
+    assert counts["cer"][1][0] == 2  # 준 대신 순, 숫자 하나 잃음
     assert counts["empty"] == ((0, 1), (0, 1))
     other = voice_real.counts(record("dev-001", "환불 금액 알려 주세요.", "환불 금액 알려 주세요.", ""))
     assert other["name"] == ((0, 0), (0, 0)) and other["empty"] == ((0, 1), (1, 1))
@@ -605,7 +605,7 @@ def test_the_task_bootstrap_of_a_pooled_difference():
     worse = {"a": ((2, 2), (1, 2)), "b": ((4, 4), (2, 4)), "c": ((0, 0), (0, 0))}
     diff, low, high = voice_real.pooled_difference(worse)
     assert diff == pytest.approx(-0.5) and low <= diff <= high
-    assert voice_real.pooled_difference(worse) == (diff, low, high)  # fixed seed
+    assert voice_real.pooled_difference(worse) == (diff, low, high)  # 고정 seed
 
 
 # 보고 표에 발화 수, 이름·주문 번호 생존, 재현 확인(기록과 같은 인식 2/3), 효과별 발화 수, 음량을 줄인 발화
@@ -651,7 +651,7 @@ def test_the_experiments_rules_name_this_source_and_these_values():
 
 
 # 인식기: 녹음 바이트 대신 디코딩한 표본을 받아도 같게 받아 적어야 한다.
-# ==================================================================== the listener takes decoded samples
+# ==================================================================== 인식기는 디코딩한 표본도 받는다
 
 
 # WhisperListener.transcribe(녹음)와 transcribe_samples(decode_audio로 디코딩한 표본)가 모델에 같은 표본과

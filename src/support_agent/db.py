@@ -1,8 +1,8 @@
-"""Domain tables and the database helpers used by evaluation.
+"""도메인 테이블과 평가가 쓰는 데이터베이스 도우미.
 
-The same models run on in-memory SQLite (one private copy per episode) and later on PostgreSQL. To keep the
-two alike: string business keys (no autoincrement), money as integer won, UTC datetimes through UTCDateTime,
-enums as VARCHAR + CHECK, no JSON columns, no server defaults.
+같은 모델이 메모리 SQLite(에피소드마다 개인 복사본 하나)와, 나중에 붙인 서비스의 PostgreSQL에서 돈다. 두
+DB를 같게 유지하려고 다음을 지킨다: 문자열 업무 키(자동 증가 없음), 원 단위 정수 금액, UTCDateTime을 거친
+UTC 시각, VARCHAR + CHECK로 저장하는 enum, JSON 컬럼 없음, 서버 기본값 없음.
 """
 
 # [파일 역할] 가상 쇼핑몰의 도메인 테이블 13개(고객·주소·상품·옵션·주문·주문 줄·결제·배송·반품/교환 요청과 그
@@ -56,7 +56,8 @@ from sqlalchemy.pool import StaticPool
 # 돌려준다. 이 차이를 여기서 맞춰 도구 코드가 어느 DB에서든 같은 비교·계산을 하게 한다. 시간대 없는 입력은
 # UTC인지 KST인지 알 수 없으니 저장 전에 막는다.
 class UTCDateTime(TypeDecorator):
-    """Stores UTC, returns aware UTC. Naive datetimes are rejected so SQLite and PostgreSQL behave alike."""
+    """UTC로 저장하고 시간대가 붙은 UTC로 돌려준다. SQLite와 PostgreSQL이 같게 동작하도록 시간대 없는
+    datetime은 거절한다."""
 
     impl = DateTime(timezone=True)
     # 인자 없는 타입이라 SQLAlchemy의 구문 캐시에 넣어도 안전하다는 표시다(없으면 경고가 난다).
@@ -170,7 +171,7 @@ class HandoffReason(enum.StrEnum):
 # values_callable은 멤버 이름(CHANGED_MIND)이 아니라 값(changed_mind)을 저장하게 하고, validate_strings는
 # 목록에 없는 문자열을 넣으려 하면 바로 오류를 낸다. name은 CHECK 제약 이름의 재료다.
 def enum_type(enum_cls: type[enum.Enum], name: str) -> Enum:
-    """VARCHAR + CHECK on both databases, storing the value (not the member name)."""
+    """두 DB 모두에서 VARCHAR + CHECK이고, 멤버 이름이 아니라 값을 저장한다."""
     return Enum(
         enum_cls,
         native_enum=False,
@@ -183,8 +184,8 @@ def enum_type(enum_cls: type[enum.Enum], name: str) -> Enum:
 
 
 # 제약 이름 규칙. 이름을 고정해 두면 Alembic 마이그레이션이 모델과 같은 이름을 쓴다(서비스 마이그레이션 0001의
-# op.f("pk_...") 등이 이 규칙으로 정해진 이름이다).
-# Constraint names are fixed so that Alembic migrations can be added later without touching the models.
+# op.f("pk_...") 등이 이 규칙으로 정해진 이름이다). 제약 이름을 고정해 두었기 때문에 모델을 건드리지 않고도
+# 나중에 Alembic 마이그레이션을 더할 수 있다.
 NAMING_CONVENTION = {
     "ix": "ix_%(column_0_label)s",
     "uq": "uq_%(table_name)s_%(column_0_name)s",
@@ -197,7 +198,7 @@ NAMING_CONVENTION = {
 # 도메인 테이블만의 선언 기반 클래스. 서비스 테이블(세션, 감사 로그 등)은 service/store.py에서 다른 MetaData를
 # 쓰므로, dump_db가 Base.metadata만 돌면 판정 대상 상태에 서비스 기록이 섞이지 않는다.
 class Base(DeclarativeBase):
-    """Domain tables only. Service tables (chat sessions, audit log) will use their own MetaData."""
+    """도메인 테이블 전용. 서비스 테이블(채팅 세션, 감사 로그)은 자기 MetaData를 쓴다."""
 
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
@@ -208,8 +209,8 @@ class Customer(Base):
     __tablename__ = "customers"
     id: Mapped[str] = mapped_column(String(20), primary_key=True)  # C-0001
     name: Mapped[str] = mapped_column(String(40))
-    phone: Mapped[str] = mapped_column(String(20))  # digits only: 01000001234
-    email: Mapped[str] = mapped_column(String(80))  # lower case
+    phone: Mapped[str] = mapped_column(String(20))  # 숫자만: 01000001234
+    email: Mapped[str] = mapped_column(String(80))  # 소문자
     grade: Mapped[CustomerGrade] = mapped_column(enum_type(CustomerGrade, "customer_grade"))
     joined_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
@@ -263,9 +264,9 @@ class Order(Base):
     items_won: Mapped[int] = mapped_column(Integer)
     shipping_fee_won: Mapped[int] = mapped_column(Integer)
     discount_won: Mapped[int] = mapped_column(Integer)
-    total_won: Mapped[int] = mapped_column(Integer)  # items + shipping fee - discount
+    total_won: Mapped[int] = mapped_column(Integer)  # 상품 합계 + 배송비 - 할인
     ship_address_id: Mapped[str] = mapped_column(ForeignKey("customer_addresses.id"))
-    ship_recipient: Mapped[str] = mapped_column(String(40))  # snapshot of the address at order time
+    ship_recipient: Mapped[str] = mapped_column(String(40))  # 주문 시점 주소를 복사해 둔 값
     ship_postal_code: Mapped[str] = mapped_column(String(10))
     ship_address: Mapped[str] = mapped_column(String(200))
     cancelled_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
@@ -284,8 +285,8 @@ class OrderItem(Base):
     order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), primary_key=True)
     line_no: Mapped[int] = mapped_column(Integer, primary_key=True)
     variant_id: Mapped[str] = mapped_column(ForeignKey("product_variants.id"))
-    product_name: Mapped[str] = mapped_column(String(80))  # snapshot
-    option_label: Mapped[str] = mapped_column(String(60))  # snapshot
+    product_name: Mapped[str] = mapped_column(String(80))  # 주문 시점 값 복사
+    option_label: Mapped[str] = mapped_column(String(60))  # 주문 시점 값 복사
     quantity: Mapped[int] = mapped_column(Integer)
     unit_price_won: Mapped[int] = mapped_column(Integer)
     status: Mapped[ItemStatus] = mapped_column(enum_type(ItemStatus, "item_status"))
@@ -298,7 +299,7 @@ class Payment(Base):
     method: Mapped[PaymentMethod] = mapped_column(enum_type(PaymentMethod, "payment_method"))
     amount_won: Mapped[int] = mapped_column(Integer)
     status: Mapped[PaymentStatus] = mapped_column(enum_type(PaymentStatus, "payment_status"))
-    refund_won: Mapped[int] = mapped_column(Integer)  # 0 until a refund is decided
+    refund_won: Mapped[int] = mapped_column(Integer)  # 환불이 정해지기 전에는 0
     paid_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
 
@@ -312,19 +313,19 @@ class Shipment(Base):
     status: Mapped[ShipmentStatus] = mapped_column(enum_type(ShipmentStatus, "shipment_status"))
     shipped_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     delivered_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
-    promised_by: Mapped[date] = mapped_column(Date)  # promised arrival date (KST calendar date)
+    promised_by: Mapped[date] = mapped_column(Date)  # 도착 예정일(KST 달력 날짜)
 
 
 class ServiceRequest(Base):
-    """A return or an exchange. The id is built from its content, so it does not depend on call order:
-    RT-{order_id}-{lowest line_no} for a return, EX-{order_id}-{line_no} for an exchange."""
+    """반품 또는 교환 요청. id를 내용에서 만들어 호출 순서에 기대지 않는다: 반품은
+    RT-{order_id}-{가장 작은 line_no}, 교환은 EX-{order_id}-{line_no}."""
 
     __tablename__ = "service_requests"
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
     order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"))
     kind: Mapped[RequestKind] = mapped_column(enum_type(RequestKind, "request_kind"))
     reason: Mapped[RequestReason] = mapped_column(enum_type(RequestReason, "request_reason"))
-    refund_won: Mapped[int] = mapped_column(Integer)  # 0 for an exchange
+    refund_won: Mapped[int] = mapped_column(Integer)  # 교환이면 0
     return_fee_won: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
@@ -347,7 +348,7 @@ class Coupon(Base):
     __tablename__ = "coupons"
     id: Mapped[str] = mapped_column(
         String(40), primary_key=True
-    )  # CP-{order_id}-{n} or CP-{customer_id}-P{n}
+    )  # CP-{order_id}-{n} 또는 CP-{customer_id}-P{n}
     customer_id: Mapped[str] = mapped_column(ForeignKey("customers.id"))
     kind: Mapped[CouponKind] = mapped_column(enum_type(CouponKind, "coupon_kind"))
     amount_won: Mapped[int] = mapped_column(Integer)
@@ -367,16 +368,16 @@ class Ticket(Base):
     customer_id: Mapped[str] = mapped_column(ForeignKey("customers.id"))
     order_id: Mapped[str | None] = mapped_column(ForeignKey("orders.id"))
     category: Mapped[TicketCategory] = mapped_column(enum_type(TicketCategory, "ticket_category"))
-    body: Mapped[str] = mapped_column(Text)  # free text written by the model: not compared
+    body: Mapped[str] = mapped_column(Text)  # 모델이 쓴 자유 글이라 비교하지 않는다
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
 
 class Handoff(Base):
-    """A hand-off to a human agent. It is a row so that a needless hand-off shows up as a DB difference."""
+    """사람 상담원에게 넘기기(이관). 행으로 남겨, 필요 없는 이관이 DB 차이로 드러나게 한다."""
 
     __tablename__ = "handoffs"
     id: Mapped[str] = mapped_column(String(20), primary_key=True)  # HO-{n}
-    customer_id: Mapped[str | None] = mapped_column(ForeignKey("customers.id"))  # None before verification
+    customer_id: Mapped[str | None] = mapped_column(ForeignKey("customers.id"))  # 본인 확인 전이면 None
     reason: Mapped[HandoffReason] = mapped_column(enum_type(HandoffReason, "handoff_reason"))
     summary: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
@@ -384,9 +385,8 @@ class Handoff(Base):
 
 # DB 비교에서 빼는 컬럼(docs/experiments.md 공통 규칙 판정): 티켓 본문, 이관 요약, 이관 사유, 이관 행의 고객
 # 번호. 이관 행은 '이관이 있었다'만 비교된다. dump_db의 기본 ignore 값이라, 덤프·해시·차이 모두 이 컬럼 없이
-# 계산된다.
-# Columns left out of the DB comparison: free text, and what a hand-off row says beyond "it happened"
-# (two reasons can both be fair, and the policy allows a hand-off before or after verification).
+# 계산된다. 자유 글을 빼는 것은 정답과 같을 수 없기 때문이고, 이관 행에서 '이관이 있었다' 말고 나머지를 빼는
+# 것은 두 사유가 모두 타당할 수 있고 규정이 본인 확인 전후 어느 쪽의 이관도 허용하기 때문이다.
 IGNORED_COLUMNS: frozenset[tuple[str, str]] = frozenset(
     {("tickets", "body"), ("handoffs", "summary"), ("handoffs", "reason"), ("handoffs", "customer_id")}
 )
@@ -394,7 +394,7 @@ IGNORED_COLUMNS: frozenset[tuple[str, str]] = frozenset(
 
 # SQLite는 기본적으로 외래 키를 검사하지 않는다. 연결마다 foreign_keys=ON 설정 명령을 보내 PostgreSQL처럼 없는
 # 고객·주문을 가리키는 행이 들어가면 오류가 나게 한다.
-def _fk_on(dbapi_connection, _record) -> None:  # Python 3.11: sqlite3 connections have no .autocommit
+def _fk_on(dbapi_connection, _record) -> None:  # Python 3.11의 sqlite3 연결에는 .autocommit이 없다
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.close()
@@ -405,7 +405,7 @@ def _fk_on(dbapi_connection, _record) -> None:  # Python 3.11: sqlite3 connectio
 # 쓴다(빠르고, 에피소드끼리 서로의 쓰기를 보지 않음). 정답 재실행(judge.py), 과제 검증, 에피소드(episode.py),
 # seed 생성(seed.py)이 모두 이것을 쓴다.
 def memory_engine(source: Engine | None = None) -> Engine:
-    """A private in-memory SQLite engine; with `source`, a byte copy of that database (under 1 ms)."""
+    """개인용 메모리 SQLite 엔진. `source`를 주면 그 데이터베이스의 바이트 복사본이다(1 ms 미만)."""
     # 연결 하나를 만들어 엔진이 계속 그 연결만 쓰게 한다(creator + StaticPool). 메모리 DB는 연결이 끊기면
     # 사라지기 때문이다. check_same_thread=False는 만든 스레드가 아닌 곳에서 연결을 써도 sqlite3가 막지 않게
     # 한다.
@@ -416,7 +416,7 @@ def memory_engine(source: Engine | None = None) -> Engine:
     engine = create_engine("sqlite://", creator=lambda: raw, poolclass=StaticPool)
     # 외래 키 설정 리스너는 이 SQLite 엔진에만 건다. 전역 리스너로 걸면 PostgreSQL 엔진에도 SQLite 전용 명령을
     # 보내게 된다.
-    event.listen(engine, "connect", _fk_on)  # this engine only, never a PostgreSQL one
+    event.listen(engine, "connect", _fk_on)  # 이 엔진에만 건다. PostgreSQL 엔진에는 절대 걸지 않는다
     return engine
 
 
@@ -425,7 +425,7 @@ def memory_engine(source: Engine | None = None) -> Engine:
 # enum 검사를 str 검사보다 먼저 하는 이유: 모든 enum이 StrEnum이라 str로도 통과하기 때문이다. 실수 값이 나오면
 # TypeError를 내, 금액이 정수 원이라는 규칙이 깨진 것을 바로 드러낸다.
 def _plain(value: Any) -> Any:
-    if isinstance(value, enum.Enum):  # before str: every enum here is a StrEnum
+    if isinstance(value, enum.Enum):  # str보다 먼저: 여기 enum은 모두 StrEnum이다
         return value.value
     if value is None or isinstance(value, bool | int | str):
         return value
@@ -445,7 +445,7 @@ Dump = dict[str, list[dict[str, Any]]]
 # SQLite와 PostgreSQL에서 같은 순서를 보장하려는 것이다. sorted_tables는 부모 테이블부터 나오므로 테이블
 # 순서도 항상 같다.
 def dump_db(engine: Engine, ignore: frozenset[tuple[str, str]] = IGNORED_COLUMNS) -> Dump:
-    """Every domain table as plain rows, sorted by primary key in Python (database collations differ)."""
+    """모든 도메인 테이블을 단순한 행으로 꺼내, 파이썬에서 기본 키로 정렬한다(DB마다 정렬 규칙이 다르다)."""
     out: Dump = {}
     with engine.connect() as conn:
         for table in Base.metadata.sorted_tables:
@@ -470,7 +470,7 @@ def state_hash(dump: Dump) -> str:
 # 쓰임: 에피소드 기록의 db_changes(seed → 최종), 판정의 db_diff(정답 → 최종). 실패 분석에서 무엇이 달랐는지
 # 바로 보이게 한다.
 def diff_dumps(expected: Dump, actual: Dump) -> dict[str, dict[str, list[dict[str, Any]]]]:
-    """Rows that are only in one of the two dumps, per table. Empty when the dumps are equal."""
+    """두 덤프 가운데 한쪽에만 있는 행들을 테이블별로 돌려준다. 두 덤프가 같으면 비어 있다."""
     result: dict[str, dict[str, list[dict[str, Any]]]] = {}
     # expected의 테이블만 돈다. 두 덤프 모두 같은 Base.metadata에서 나오므로 테이블 목록은 같다.
     for name in expected:

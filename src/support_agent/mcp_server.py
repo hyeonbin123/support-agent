@@ -1,17 +1,17 @@
-"""The shop tools as an MCP server, built from the same registry as the agent.
+"""쇼핑몰 도구를 MCP 서버로 내놓는다. 에이전트와 같은 도구 등록부로 만든다.
 
-    uv run python -m support_agent.mcp_server                      # stdio, read-only tools
-    uv run python -m support_agent.mcp_server --scope write        # also the tools that change the database
+    uv run python -m support_agent.mcp_server                      # stdio, 읽기 전용 도구
+    uv run python -m support_agent.mcp_server --scope write        # DB를 바꾸는 도구까지
     uv run python -m support_agent.mcp_server --http --port 8063   # Streamable HTTP (SUPPORT_AGENT_MCP_TOKEN)
 
-A call takes the service's path (`ChatService.call_tool`): the tools enforce the policy, a large refund waits
-in the approval queue, and every call leaves an audit row.
+호출은 서비스의 경로(`ChatService.call_tool`)를 지난다: 도구가 규정을 강제하고, 큰 환불은 승인 대기열에서
+기다리며, 모든 호출이 감사 행을 남긴다.
 
-The server holds one service session at a time: a customer verified with `find_customer` stays verified
-until `new_conversation` is called (a session belongs to one customer, as in the chat). The state is not
-tied to the MCP connection because the current protocol revision is stateless (the SDK builds a new server
-session for every request). Over stdio the client starts its own process, so this is "per client"; the HTTP
-server is for one operator per token.
+서버는 한 번에 서비스 세션 하나를 들고 있다: `find_customer`로 본인 확인한 고객은 `new_conversation`을
+부를 때까지 확인된 상태로 남는다(채팅처럼 세션 하나는 고객 한 명의 것이다). 이 상태를 MCP 연결에 묶지 않는
+것은 지금 프로토콜 개정판이 상태가 없는 방식이기 때문이다(SDK가 요청마다 서버 세션을 새로 만든다).
+stdio에서는 클라이언트가 자기 프로세스를 띄우므로 이것이 "클라이언트마다"가 되고, HTTP 서버는 토큰 하나에
+운영자 한 명용이다.
 """
 
 # [파일 역할] 4단계 MCP 서버. 에이전트가 쓰는 도구 등록부를 그대로 MCP 도구로 내놓아, MCP 클라이언트(Claude
@@ -65,7 +65,7 @@ from support_agent.toolkit import ToolSpec
 # 크기 제한: 한 호출의 인자는 JSON으로 20,000바이트, HTTP 요청 본문은 256 KB까지. 도구의 자유 서술 인자(티켓
 # 본문, 이관 요약)에는 길이 제한이 없어서 MCP 경계에서 막는다(docs/mcp.md).
 Scope = Literal["read", "write"]
-MAX_ARGUMENT_BYTES = 20_000  # of one call's arguments as JSON; the tools' free-text fields have no limit
+MAX_ARGUMENT_BYTES = 20_000  # 한 호출의 인자를 JSON으로 잰 크기. 도구의 자유 글 칸에는 제한이 없다
 MAX_HTTP_BODY_BYTES = 262_144
 # MCP 전용 도구. 본인 확인 상태는 서버가 들고 있으므로, 다른 고객을 응대하려면 이 도구로 상담(서비스 세션)을
 # 새로 시작한다. 상담 하나는 고객 한 명의 것이라는 채팅과 같은 규칙이다.
@@ -90,7 +90,7 @@ INSTRUCTIONS = (
 # 범위(scope)에 따라 내놓을 도구. think는 평가에서 프롬프트 장치로 쓰는 도구라 쇼핑몰 도구가 아니므로 빼고,
 # 쓰기 도구는 write 범위에서만 넣는다.
 def exposed(service: ChatService, scope: Scope) -> list[ToolSpec]:
-    """`think` is a prompt device of the evaluation, not a shop tool. Writes need the write scope."""
+    """`think`는 평가의 프롬프트 장치이지 쇼핑몰 도구가 아니다. 쓰기 도구는 write 범위가 있어야 한다."""
     return [
         spec
         for spec in service.registry.values()
@@ -129,7 +129,7 @@ def build_server(service: ChatService, scope: Scope = "read") -> Server:
     allowed = {spec.name: spec for spec in exposed(service, scope)}
     # 변경 가능한 칸으로 쓰려고 list에 담는다. 첫 도구 호출 때 만들어, 도구 목록만 조회한 클라이언트가 빈
     # 세션을 남기지 않게 한다.
-    session_id: list[str] = []  # made on the first call, so that listing tools leaves no empty session
+    session_id: list[str] = []  # 첫 호출 때 만든다. 도구 목록만 본 클라이언트가 빈 세션을 남기지 않게
     guard = threading.Lock()
 
     # 도구 목록 요청: 허용된 도구 + new_conversation.
@@ -161,7 +161,7 @@ def build_server(service: ChatService, scope: Scope = "read") -> Server:
         with guard:
             if not session_id:
                 session_id.append(service.new_session("mcp")["session_id"])
-            current = session_id[0]  # new_conversation may clear the list right after the lock
+            current = session_id[0]  # 잠금이 풀리자마자 new_conversation이 목록을 비울 수 있다
         # 서비스의 단일 실행 경로로 호출한다. 같은 세션의 잠금을 30초 안에 얻지 못하면(앞선 호출이나 그 세션의
         # 승인 처리가 진행 중) 서비스가 BusyError를 내고, busy 오류로 돌려준다.
         try:
@@ -172,7 +172,6 @@ def build_server(service: ChatService, scope: Scope = "read") -> Server:
 
     # 도구는 SQLAlchemy를 쓰는 동기 코드라, 실행하는 동안 이벤트 루프가 막히지 않게 작업 스레드로 넘긴다.
     async def call_tool(_ctx: ServerRequestContext, params: CallToolRequestParams) -> CallToolResult:
-        # The tools are synchronous (SQLAlchemy); keep the event loop free while one runs.
         return await anyio.to_thread.run_sync(call, params.name, params.arguments or {})
 
     return Server(
@@ -188,7 +187,7 @@ def build_server(service: ChatService, scope: Scope = "read") -> Server:
 # secrets.compare_digest로 비교해 비교 시간으로 토큰이 새지 않게 한다. HTTP가 아닌 ASGI 이벤트(lifespan 등)는
 # 그대로 통과시킨다.
 class BearerToken:
-    """ASGI wrapper: every HTTP request must carry `Authorization: Bearer <token>`."""
+    """ASGI 감싸개: 모든 HTTP 요청에 `Authorization: Bearer <토큰>`이 있어야 한다."""
 
     def __init__(self, app, token: str):
         self.app, self.expected = app, f"Bearer {token}".encode()
@@ -207,7 +206,7 @@ class BearerToken:
 # PostgreSQL을 가리키면 채팅 서비스와 같은 DB, 같은 승인 대기열, 같은 감사 로그를 쓴다(docs/mcp.md).
 def make_service(settings: Settings) -> ChatService:
     engine = prepare_database(settings.database_url, load_seed=settings.load_seed)
-    return ChatService(settings, engine, ScriptedProvider([]))  # no model here: the client is the model
+    return ChatService(settings, engine, ScriptedProvider([]))  # 여기에는 모델이 없다: 클라이언트가 모델이다
 
 
 # 명령줄 진입점. 기본은 stdio(클라이언트가 이 프로세스를 직접 띄우므로 프로세스 하나 = 클라이언트 하나)이고,
@@ -215,9 +214,14 @@ def make_service(settings: Settings) -> ChatService:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "--scope", choices=["read", "write"], default="read", help="write also exposes writes"
+        "--scope",
+        choices=["read", "write"],
+        default="read",
+        help="read면 읽기 도구만, write면 DB를 바꾸는 쓰기 도구까지 내놓는다 (기본 read)",
     )
-    parser.add_argument("--http", action="store_true", help="Streamable HTTP instead of stdio")
+    parser.add_argument(
+        "--http", action="store_true", help="stdio 대신 Streamable HTTP로 연다 (SUPPORT_AGENT_MCP_TOKEN 필요)"
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8063)
     args = parser.parse_args()

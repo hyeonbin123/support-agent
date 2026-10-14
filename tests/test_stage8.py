@@ -1,6 +1,5 @@
-"""Stage 8 (a new-generation agent model): runner options, smoke gates, the selection rule, the test
-verdict and the blind simulator check. No model, no GPU: the runner gets a fake provider and analyze
-reads synthetic records.
+"""8단계(새 세대 에이전트 모델): 실행기 옵션, 스모크 관문, 선택 규칙, 시험용 판정, 가린 시뮬레이터 점검.
+모델도 GPU도 쓰지 않는다: 실행기는 가짜 제공자를 받고, analyze는 합성한 기록을 읽는다.
 """
 
 # [파일 역할] 8단계(새 세대 4B 에이전트 모델) 측정에 새로 넣은 코드를 모델·GPU 없이 검증하는 테스트 묶음이다.
@@ -33,7 +32,7 @@ NEW = "qwen3:4b-instruct-2507-q4_K_M"
 
 
 # 실행기: 시뮬레이터 컨텍스트·GPU 층·think 옵션과 모델 미리 올리기.
-# ---------------------------------------------------------------- the runner
+# ---------------------------------------------------------------- 실행기
 
 
 # 가짜 OllamaProvider. 만들어질 때의 모델과 옵션을 클래스 목록(made)에 남겨, 실행기가 에이전트·시뮬레이터
@@ -41,7 +40,7 @@ NEW = "qwen3:4b-instruct-2507-q4_K_M"
 # 답을, 아니면(시뮬레이터 요청) 고객 대본을 차례로 돌려준다. loaded_models는 /api/ps 대신 자기 모델 하나가
 # GPU에 다 올라간 것으로 답한다.
 class RecordingOllama(ChatProvider):
-    """Remembers how it was built. The customer asks once and stops; the agent only acknowledges."""
+    """어떻게 만들어졌는지 기억한다. 고객은 한 번 묻고 끝내며, 상담원은 확인하겠다고만 답한다."""
 
     made: list[RecordingOllama] = []
 
@@ -100,7 +99,7 @@ def test_the_simulator_gets_its_own_context_size(tmp_path, monkeypatch):
 # 같은지 본다. 이전 명령이 그대로 돌아야 0.34.x 기록과 같은 설정을 다시 낼 수 있다.
 def test_without_the_flag_the_simulator_shares_the_agent_context_and_the_provider(tmp_path, monkeypatch):
     made, manifest, _ = start(tmp_path, monkeypatch)
-    assert len(made) == 1  # one model, one set of runner options: Ollama never reloads between the roles
+    assert len(made) == 1  # 모델 하나, 실행 옵션 한 벌: 역할이 바뀌어도 Ollama가 모델을 다시 읽지 않는다
     assert manifest["config"]["user_num_ctx"] == manifest["config"]["num_ctx"] == RunConfig.num_ctx
     assert manifest["user_provider"] == manifest["agent_provider"]
 
@@ -110,7 +109,6 @@ def test_without_the_flag_the_simulator_shares_the_agent_context_and_the_provide
 # 매 턴 다시 읽게 된다(docs/experiments.md 8단계 "재기 전에 고친 것" 1).
 @pytest.mark.parametrize("extra", [["--user-num-ctx", "8192"], ["--user-on-cpu"]])
 def test_one_model_in_both_roles_cannot_have_two_sets_of_runner_options(tmp_path, monkeypatch, extra):
-    # Ollama keeps one runner per model: different num_ctx or num_gpu would reload the model every turn.
     with pytest.raises(SystemExit):
         start(tmp_path, monkeypatch, *extra)
 
@@ -131,7 +129,7 @@ def test_on_cpu_and_a_layer_count_contradict_each_other(tmp_path, monkeypatch):
 # 2단계 M1 명령(14B 에이전트, CPU 시뮬레이터, 8192)이 새 옵션을 넣은 뒤에도 같은 제공자 옵션을 만드는지 본다.
 # README '다시 재는 방법'의 명령이 바뀌지 않게 지킨다.
 def test_the_stage_2_m1_command_still_builds_the_same_simulator(tmp_path, monkeypatch):
-    # README: --model qwen2.5:14b-instruct --user-on-cpu --num-ctx 8192 (both roles at 8192, simulator on CPU)
+    # README: --model qwen2.5:14b-instruct --user-on-cpu --num-ctx 8192 (두 역할 모두 8192, 시뮬레이터는 CPU)
     made, manifest, _ = start(
         tmp_path, monkeypatch, "--model", "qwen2.5:14b-instruct", "--user-on-cpu", "--num-ctx", "8192"
     )
@@ -155,7 +153,7 @@ def test_think_goes_to_the_agent_and_never_to_the_simulator(tmp_path, monkeypatc
 # 옵션(num_ctx, num_gpu)은 같아 모델을 다시 읽지 않는지 본다.
 def test_think_with_one_model_in_both_roles_keeps_the_runner_options_equal(tmp_path, monkeypatch):
     made, _, _ = start(tmp_path, monkeypatch, "--think", "on")
-    agent, user = made  # two objects (think is per request), equal runner options (no reload)
+    agent, user = made  # 객체는 둘(think는 요청마다), 실행 옵션은 같음(다시 읽기 없음)
     assert agent.options["think"] is True and user.options.get("think") is None
     assert agent.options["num_ctx"] == user.options["num_ctx"]
     assert agent.options.get("num_gpu") == user.options.get("num_gpu")
@@ -165,14 +163,15 @@ def test_think_with_one_model_in_both_roles_keeps_the_runner_options_equal(tmp_p
 # 값이 오면 HTTP 400으로 답하기 때문이다.
 def test_without_think_nothing_is_sent(tmp_path, monkeypatch):
     made, _, _ = start(tmp_path, monkeypatch, "--model", NEW)
-    assert made[0].options.get("think") is None  # a model without thinking answers 400 to any think value
+    assert made[0].options.get("think") is None  # 사고 기능 없는 모델은 어떤 think 값에도 400
 
 
 # 서버 하나를 흉내 내는 가짜 제공자: 시뮬레이터를 처음 올릴 때 이미 올라간 에이전트 모델을 내린다(held를
 # 비움). 2026-10-04 스모크에서 실제로 qwen2.5 7B를 올리면서 qwen3 4B가 내려가 첫 에이전트 호출이 다시 읽기로
 # S1을 어긴 일을 재현한다(docs/experiments.md 8단계 "측정 중 메모").
 class EvictingOllama(RecordingOllama):
-    """One server for all providers: the first simulator load evicts the agent, which then fits beside it."""
+    """모든 제공자가 서버 하나를 쓴다: 시뮬레이터를 처음 올리면 에이전트가 내려가고, 그 뒤에는 둘이 함께
+    들어간다."""
 
     held: list[str] = []
     loads: list[str] = []
@@ -208,7 +207,7 @@ def test_an_agent_model_evicted_by_the_simulator_load_is_loaded_again(tmp_path, 
 
 # 에이전트 모델이 아직 올라가 있으면 다시 올리지 않는지 본다(제공자는 에이전트·시뮬레이터 두 개만 만들어짐).
 def test_a_model_still_held_is_not_loaded_again(tmp_path, monkeypatch):
-    start(tmp_path, monkeypatch, "--model", NEW)  # the plain fake always lists the agent model
+    start(tmp_path, monkeypatch, "--model", NEW)  # 기본 가짜는 언제나 에이전트 모델을 올라간 것으로 보여 준다
     assert [m.model for m in RecordingOllama.made] == [NEW, SIM]
 
 
@@ -221,7 +220,7 @@ def test_the_records_say_where_the_models_sat(tmp_path, monkeypatch):
 
 
 # 합성 기록: analyze가 읽는 episodes.jsonl·manifest.json·summary.json을 최소 필드로 만든다.
-# ---------------------------------------------------------------- synthetic records
+# ---------------------------------------------------------------- 합성 기록
 
 
 # LLM 호출 기록 하나. 시간(wall_ms), 프롬프트 처리 시간(prompt_eval_ms), 모델 적재 시간(load_ms), 형식 오류,
@@ -331,7 +330,7 @@ def gates(run_dir):
 
 # 스모크 관문(측정 아님): S0 infra 오류 0, S1 GPU 자리·다시 읽기 0, S2 호출당 시간, S3 프롬프트 캐시 재사용,
 # S4 형식 오류, S5 다른 문자 섞인 답(docs/experiments.md 8단계 "스모크" 표).
-# ---------------------------------------------------------------- smoke gates
+# ---------------------------------------------------------------- 스모크 관문
 
 
 # 깨끗한 스모크 실행이 S0~S5를 모두 통과하고, 보고문에 GPU 자리가 적히는지 본다.
@@ -401,10 +400,10 @@ def test_format_errors_and_leaked_thinking_count_against_the_format_gate(tmp_pat
         call(index=2),
     ]
     run_dir = write_run(tmp_path, "smoke", smoke_episodes(calls=calls), model=NEW, ps=ON_GPU)
-    assert gates(run_dir)["S4"] is False  # 2 per episode
+    assert gates(run_dir)["S4"] is False  # 에피소드당 2개
     held = [call(index=0, error="stall"), call(index=1, error="unbacked_claim"), call(index=2)]
     run_dir = write_run(tmp_path, "held", smoke_episodes(calls=held), model=NEW, ps=ON_GPU)
-    assert gates(run_dir)["S4"] is True  # replies held back by a guard are well formed
+    assert gates(run_dir)["S4"] is True  # 가드가 붙잡은 답은 형식이 올바르다
 
 
 # 한 에피소드의 답이 모두 중국어면 한자·가나 2자 이상 섞인 답 비율이 상한 10%를 넘어 S5를 어기는지 본다.
@@ -435,14 +434,14 @@ def test_an_infra_error_fails_the_first_gate(tmp_path):
 
 # 개발용 선택 규칙: +5%p 이상, 통과된 위반 0이고 정답에 없는 쓰기가 P0·7B 참조 이하, 호출당 시간 3배
 # 이하(docs/experiments.md 8단계 "선택 규칙").
-# ---------------------------------------------------------------- the selection rule
+# ---------------------------------------------------------------- 선택 규칙
 
 
 # 개발용 24과제 × 4회 실행을 만든다. successes개의 성공을 앞 과제부터 채우고, 정답에 없는 쓰기와 위반은 첫
 # 에피소드에 몰아 넣는다(실행 전체 합만 보므로).
 def dev_run(tmp_path, name, successes, *, model=SIM, policy="P1", unexpected=0, violations=(), ms=500.0,
             **kwargs):  # fmt: skip
-    """24 tasks x 4 trials; `successes` successful trials spread over the first tasks."""
+    """24과제 x 4회. 성공한 시도 `successes`개를 앞 과제부터 채운다."""
     episodes = []
     left = successes
     for t in range(24):
@@ -474,7 +473,7 @@ def test_a_candidate_that_meets_all_three_conditions_is_selected(tmp_path):
 def test_a_gain_below_five_points_is_not_selected(tmp_path):
     base = dev_run(tmp_path, "base", 15)
     p0 = dev_run(tmp_path, "p0", 19, policy="P0", num_ctx=16384, unexpected=11)
-    cand = dev_run(tmp_path, "m2a", 19, model=NEW)  # +4 successes of 96 = +4.2%p
+    cand = dev_run(tmp_path, "m2a", 19, model=NEW)  # 96회 중 성공 +4 = +4.2%p
     assert "선택: 없음" in analyze.select(base, p0, [cand])
 
 
@@ -563,7 +562,7 @@ def test_the_selection_table_shows_the_report_only_numbers(tmp_path):
 
 
 # 시험용 판정: 2단계 판정표와 같고, 쓰기 조건의 기준만 P0·7B 시험용 참조다.
-# ---------------------------------------------------------------- the test verdict
+# ---------------------------------------------------------------- 시험용 판정
 
 
 # 시험용 실행을 만든다. successes_per_task[t]는 과제 t의 4회 중 성공 횟수이고, 정답에 없는 쓰기는 첫
@@ -604,7 +603,7 @@ def test_the_verdict_reads_only_test_runs(tmp_path):
 
 # 가린 시뮬레이터 점검(관찰만): 두 개발용 기록에서 같은 (과제, 시도)를 뽑아 구성 이름과 판정을 가리고 섞어
 # 읽게 하고, 읽은 표시를 실행별로 센다.
-# ---------------------------------------------------------------- the blind simulator check (P5(a))
+# ---------------------------------------------------------------- 가린 시뮬레이터 점검 (P5(a))
 
 
 # 점검표가 시나리오를 보여 줄 수 있도록 실제 개발용 과제 id 앞의 6개를 쓴다.
@@ -648,9 +647,9 @@ def test_the_blind_sheet_hides_which_run_and_how_it_ended(tmp_path):
     assert len(key) == 10 and sheet.count("\n## B") == 10
     for hidden in ("run-a", "run-b", "PASS", "fail", "user_stop", NEW, SIM):
         assert hidden not in sheet
-    assert "알고 있는 것" in sheet  # the scenario is shown to the reader
+    assert "알고 있는 것" in sheet  # 읽는 사람에게 시나리오는 보여 준다
     assert {entry["run"] for entry in key.values()} == {"run-a", "run-b"}
-    # the same draw every time, and the same (task, trial) pairs from both runs
+    # 언제나 같은 뽑기이고, 두 실행에서 같은 (과제, 시도) 쌍을 뽑는다
     analyze.blind(a, b, n=5, out_dir=tmp_path / "again")
     assert (tmp_path / "again" / "sheet.md").read_text(encoding="utf-8") == sheet
     pairs = {}
@@ -663,7 +662,7 @@ def test_the_blind_sheet_hides_which_run_and_how_it_ended(tmp_path):
 # 배치와 같은지 본다. 셋 이상을 받게 고친 뒤에도 8단계에 실제로 만든 두 장이 같은 명령으로 다시 만들어져야
 # 한다(docs/experiments.md 8단계 날짜 메모).
 def test_two_runs_keep_the_layout_of_the_recorded_sheets(tmp_path):
-    # the stage 8 sheets were made from two runs each; the same command must give the same sheet again
+    # 8단계의 점검지는 각각 실행 두 개로 만들었다. 같은 명령은 같은 점검지를 다시 내야 한다
     a, b = two_dev_runs(tmp_path)
     out = tmp_path / "blind"
     analyze.blind(a, b, n=5, out_dir=out)
@@ -679,8 +678,8 @@ def test_two_runs_keep_the_layout_of_the_recorded_sheets(tmp_path):
 # 8단계에서 기준을 공유한 두 장을 따로 만들었더니 배치가 같아 둘째 장이 사실상 가려지지 않았고, 그 뒤 한
 # 점검의 모든 실행을 한 장에 넣기로 했다(같은 날짜 메모, 커밋 ccfa603).
 def test_every_run_of_one_check_goes_into_one_sheet(tmp_path):
-    # two sheets that share a run have the same layout (fixed seeds), so its episodes give the other run
-    # away; with every run in one sheet nothing is left to eliminate
+    # 실행 하나를 함께 쓰는 두 점검지는 배치가 같아(고정 seed) 그 실행의 에피소드가 다른 실행을 드러낸다.
+    # 모든 실행을 한 장에 넣으면 소거법으로 알아낼 것이 남지 않는다
     a, b = two_dev_runs(tmp_path)
     c = write_run(tmp_path, "run-c", talk_episodes("셋째 상담원의 말"), model="qwen3.5:4b")
     out = tmp_path / "three"

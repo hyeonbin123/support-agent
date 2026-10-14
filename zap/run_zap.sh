@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Run zap/automation.yaml with a ZAP release (cross-platform package, Java 17 or later) against the offline
-# service (docs/service.md, "모델 없이 띄우기, 보안 스캔").
+# ZAP 배포판(크로스 플랫폼 패키지, Java 17 이상)으로 zap/automation.yaml을 오프라인 서비스에 돌린다
+# (docs/service.md "모델 없이 띄우기, 보안 스캔").
 #
-#   ZAP_DIR=<folder with zap-2.17.0.jar> ADMIN_TOKEN=<token> SCAN_SESSION_ID=<id> SCAN_APPROVAL_ID=<n> \
+#   ZAP_DIR=<zap-2.17.0.jar가 있는 폴더> ADMIN_TOKEN=<토큰> SCAN_SESSION_ID=<id> SCAN_APPROVAL_ID=<n> \
 #     zap/run_zap.sh <name>
 #
-# The service must already be running on TARGET (default http://127.0.0.1:8062) with that admin token, and the
-# session must have a pending approval. The reports <name>.json and <name>.md, the ZAP log and a fresh ZAP
-# home folder go to work/zap/<name>/. Output goes to files only, never to a pipe.
+# 서비스는 그 관리자 토큰으로 TARGET(기본 http://127.0.0.1:8062)에서 이미 돌고 있어야 하고, 그 세션에는 승인
+# 대기 중인 건이 있어야 한다. 보고서 <name>.json과 <name>.md, ZAP 로그, 새 ZAP 홈 폴더는 work/zap/<name>/에
+# 생긴다. 출력은 파일로만 보내고 파이프로는 절대 보내지 않는다.
 # [파일 역할] OWASP ZAP 2.17.0의 자동화 계획(zap/automation.yaml)을 오프라인 서비스(모델 자리에 규칙 대역을
 # 넣은 service/offline.py)에 돌리는 실행 도우미다. 결과 보고서와 로그를 work/zap/<이름>/에 남긴다.
 # [왜 필요한가] 2026-10-05 HawkScan(StackHawk) 체험이 끝나 무료 ZAP으로 같은 스캔(API 설명, 스파이더, 패시브
@@ -33,8 +33,7 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # 경로를 Java가 읽는 절대 경로로 바꾼다. Git Bash에서는 cygpath -m으로 C:/... 형태(Windows 경로, 슬래시)로
 # 바꾸고, 다른 환경에서는 절대 경로 그대로 쓴다. ZAP은 상대 경로를 작업 폴더가 아니라 계획 파일 폴더(zap/)
 # 기준으로 풀기 때문에 절대 경로로 넘긴다.
-native() { # the absolute path in a form Java understands (the Windows form under Git Bash). ZAP resolves a
-  # relative path against the plan's folder (zap/), not the working directory.
+native() {
   local abs
   abs=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
   if command -v cygpath > /dev/null; then cygpath -m "$abs"; else printf '%s\n' "$abs"; fi
@@ -55,10 +54,9 @@ mkdir -p "$out"
 # 경로까지 떼어 호스트 이름만 쓴다.
 export TARGET=${TARGET:-http://127.0.0.1:8062}
 host=${TARGET#*://}
-# ZAP adds this header to every request for the target host (see zap/automation.yaml).
-# ZAP_AUTH_HEADER* 환경 변수를 주면 ZAP이 대상 호스트로 가는 모든 요청에 X-Admin-Token 헤더를 붙인다. 관리자
-# API까지 인증된 상태로 스캔하려는 것이고, HawkScan의 토큰 인증 자리다. 다음 줄은 계획 파일이 ${…}로 읽는
-# 변수(세션·승인 번호, 보고서 폴더와 이름)를 내보낸다.
+# ZAP_AUTH_HEADER* 환경 변수를 주면 ZAP이 대상 호스트로 가는 모든 요청에 X-Admin-Token 헤더를 붙인다
+# (zap/automation.yaml 참고). 관리자 API까지 인증된 상태로 스캔하려는 것이고, HawkScan의 토큰 인증 자리다.
+# 다음 줄은 계획 파일이 ${…}로 읽는 변수(세션·승인 번호, 보고서 폴더와 이름)를 내보낸다.
 export ZAP_AUTH_HEADER=X-Admin-Token ZAP_AUTH_HEADER_VALUE=$ADMIN_TOKEN ZAP_AUTH_HEADER_SITE=${host%%[:/]*}
 export SCAN_SESSION_ID SCAN_APPROVAL_ID REPORT_DIR REPORT_NAME=$name
 REPORT_DIR=$(native "$out")

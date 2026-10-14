@@ -1,10 +1,9 @@
-"""Numbers a person read aloud, back in writing. For a real microphone; the service uses it.
+"""사람이 소리 내어 읽은 번호를 다시 글 표기로 되돌린다. 실제 마이크용이고, 서비스가 쓴다.
 
-Synthesised speech comes back from the recogniser with its digits written as digits ("010-0000-9103"). A
-person reading a phone number aloud came back as words: "공일공 공공공공 육일팔구입니다". This is the
-inverse of `verbalize` for the two things a customer has to get across exactly, a mobile number and an
-order number. It is not part of the measured V2 normaliser (voice/normalize.py): that one was built from
-the development records, this one from a live microphone test of the service.
+합성 음성은 인식기를 거쳐도 숫자가 숫자로 적혀 돌아온다("010-0000-9103"). 사람이 전화번호를 소리 내어 읽으면
+낱말로 돌아왔다: "공일공 공공공공 육일팔구입니다". 이 모듈은 고객이 정확히 전해야 하는 두 가지, 휴대전화
+번호와 주문 번호에 대한 `verbalize`의 역함수다. 측정한 V2 정규화(voice/normalize.py)의 일부가 아니다: V2는
+개발용 기록에서 만들었고, 이것은 서비스를 실제 마이크로 시험한 데서 나왔다.
 """
 
 # [파일 역할] 사람이 소리 내어 읽은 휴대전화 번호와 주문 번호를 숫자 표기로 되돌린다. 서비스의 음성 입력에서만
@@ -29,13 +28,13 @@ _VALUE = {"공": "0", "영": "0", "일": "1", "이": "2", "삼": "3", "사": "4"
 # _D: 숫자 한 자리(아라비아 숫자나 숫자 낱말). _GAP: 자리 사이에 끼어도 되는 공백·쉼표·점·하이픈.
 _D = "[0-9공영일이삼사오육륙칠팔구]"
 _GAP = r"[\s,.\-]*"
-# 010 and exactly eight more digits. Exactly, because what follows is often a particle that is itself a digit
-# word: "...육일팔구이고" ends with the particle "이고", not with a 2.
+# "정확히" 여덟 자리인 이유: 뒤따르는 말이 그 자체로 숫자 낱말인 조사일 때가 많기 때문이다.
+# "...육일팔구이고"는 2가 아니라 조사 "이고"로 끝난다.
 # 010(공일공/영일영 등) 뒤에 정확히 여덟 자리. 앞에 한글이나 숫자가 붙어 있으면 다른 낱말이나 더 긴 숫자의
 # 일부로 보고 바꾸지 않는다. 한 자리 모자란 번호('공일공 공공공공 육일팔')는 적을 수 있는 번호가 아니라 그대로
 # 둔다 (tests/test_voice.py).
 _MOBILE = re.compile(rf"(?<![가-힣0-9])([0공영]{_GAP}[1일]{_GAP}[0공영])((?:{_GAP}{_D}){{8}})")
-# "오 다시 구일공일공": the letter O, the hyphen said as "다시", five digits
+# "오 다시 구일공일공": 글자 O, "다시"로 읽은 하이픈, 다섯 자리.
 # '오'·'5'·'O' 다음에 하이픈을 읽은 말('다시', '대시', '하이픈' 또는 -)과 다섯 자리. 주문 번호 O-XXXXX의
 # 형태다. 앞에 한글·숫자·영문이 붙어 있으면 바꾸지 않는다.
 _ORDER = re.compile(rf"(?<![가-힣0-9A-Za-z])[오5Oo]\s*(?:다시|대시|하이픈|-)\s*((?:{_D}\s*){{5}})")

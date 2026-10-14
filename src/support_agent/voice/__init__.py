@@ -1,1 +1,1 @@
-"""Stage 5: a speech channel between the customer and the agent (docs/voice.md)."""
+"""5단계: 고객과 에이전트 사이의 음성 채널(docs/voice.md)."""

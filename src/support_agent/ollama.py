@@ -1,4 +1,4 @@
-"""ChatProvider for Ollama's native /api/chat, called with httpx directly."""
+"""Ollama 고유 API(/api/chat)용 ChatProvider. httpx로 직접 부른다."""
 
 # [파일 역할] Ollama의 고유 API(/api/chat)를 httpx로 직접 부르는 ChatProvider 구현. 프로젝트의 중립 메시지
 # 타입을 Ollama의 요청 JSON으로 바꾸고, 응답을 ChatResponse로 되돌린다. 모델 적재(preload), 적재된 모델
@@ -29,14 +29,14 @@ from support_agent.chat import ChatProvider, ChatResponse, Message, ProviderErro
 # 답하거나 아예 답하지 않으므로 짧은 10초 제한을 쓴다. _UNSET은 '아직 조회 안 함'과 '조회 결과 None'을
 # 구분하는 표시다.
 DEFAULT_BASE_URL = "http://127.0.0.1:11434"
-_META_TIMEOUT_S = 10.0  # /api/tags, /api/version, /api/ps answer at once or not at all
+_META_TIMEOUT_S = 10.0  # /api/tags, /api/version, /api/ps는 바로 답하거나 아예 답하지 않는다
 _UNSET: Any = object()
 
 
 # 문자열 안의 짝 없는 서로게이트 문자를 대체 문자로 바꾼다. 그대로 두면 나중에 기록(episodes.jsonl)을 UTF-8로
 # 쓸 때 오류가 난다. dict·list는 재귀로 처리한다.
 def _clean(value: Any) -> Any:
-    """Replace lone surrogates in every string; they cannot be written as UTF-8 later."""
+    """모든 문자열의 짝 없는 서로게이트를 바꾼다. 그대로 두면 나중에 UTF-8로 쓸 수 없다."""
     if isinstance(value, str):
         return value.encode("utf-8", "replace").decode("utf-8")
     if isinstance(value, dict):
@@ -48,7 +48,7 @@ def _clean(value: Any) -> Any:
 
 # Ollama가 나노초로 보고하는 시간 값을 밀리초로 바꾼다.
 def _ms(raw: dict[str, Any], key: str) -> float:
-    return (raw.get(key, 0) or 0) / 1e6  # the server reports nanoseconds
+    return (raw.get(key, 0) or 0) / 1e6  # 서버는 나노초로 보고한다
 
 
 # 중립 Message → Ollama 메시지 JSON. 도구 결과는 Ollama 고유 API의 방식대로 호출 id가 아니라 도구
@@ -59,7 +59,7 @@ def _wire_message(m: Message) -> dict[str, Any]:
         return {"role": "tool", "tool_name": m.tool_name or "", "content": m.content}
     out: dict[str, Any] = {"role": m.role, "content": m.content}
     if m.role == "assistant" and m.tool_calls:
-        # arguments must be a JSON object: the server rejects a string here
+        # arguments는 JSON 객체여야 한다. 서버는 여기에 문자열이 오면 거절한다
         out["tool_calls"] = [
             {"function": {"name": c.name, "arguments": dict(c.arguments)}} for c in m.tool_calls
         ]
@@ -143,13 +143,14 @@ class OllamaProvider(ChatProvider):
         transport: httpx.BaseTransport | None = None,
     ):
         self.model = model
-        # Fixed per instance: different runner options between requests make the server reload the model.
+        # 인스턴스마다 고정한다. 요청 사이에 실행기 옵션이 달라지면 서버가 모델을 다시 읽는다.
         self.num_ctx = num_ctx
         self.keep_alive = keep_alive
         self.think = think
-        self.num_gpu = num_gpu  # 0 keeps every layer on the CPU; None lets the server decide
+        self.num_gpu = num_gpu  # 0이면 모든 층을 CPU에 둔다. None이면 서버가 정한다
         self.base_url = (base_url or os.environ.get("OLLAMA_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
-        # The first request may have to load the model from a slow disk, hence the long read timeout.
+        # 첫 요청은 느린 디스크에서 모델을 읽어야 할 수 있어 읽기 시간 제한을 길게(기본 600초) 둔다. 연결
+        # 제한은 10초 이하로 짧게 둔다.
         self._http = httpx.Client(
             base_url=self.base_url,
             timeout=httpx.Timeout(timeout_s, connect=min(10.0, timeout_s)),
@@ -158,9 +159,9 @@ class OllamaProvider(ChatProvider):
         self._digest: Any = _UNSET
         self._version: Any = _UNSET
 
-    # 모델 실행기 옵션(num_gpu). preload와 chat에서 같아야 적재한 모델을 다시 읽지 않는다.
+    # 모델 실행기 옵션(num_gpu). preload()와 chat()에서 같아야 한다. 실행기 옵션이 하나라도 다르면 적재한
+    # 모델을 다시 읽는다.
     def _runner_options(self) -> dict[str, Any]:
-        # Must be equal in preload() and chat(): a different runner option reloads the model.
         return {} if self.num_gpu is None else {"num_gpu": self.num_gpu}
 
     # HTTP 연결을 닫는다. with 문으로 쓰면 자동으로 닫힌다.
@@ -227,7 +228,7 @@ class OllamaProvider(ChatProvider):
             body["tools"] = [_wire_tool(t) for t in tools]
         # think 필드는 값을 줬을 때만 보낸다. 사고 모드가 없는 모델은 think 값이 오면 어떤 값이든 400으로
         # 거절한다. 8단계 qwen3.5:4b는 think=False(비사고 모드)로 쟀다.
-        if self.think is not None:  # models without thinking answer 400 to any think value
+        if self.think is not None:  # 사고 모드가 없는 모델은 think 값이 무엇이든 400으로 답한다
             body["think"] = self.think
 
         # wall_ms는 클라이언트가 HTTP 호출 앞뒤로 잰 시간이다(서버의 시간 값과 따로 남김).
@@ -237,10 +238,9 @@ class OllamaProvider(ChatProvider):
         except ProviderError as error:
             if REPEAT_LIMIT_ERROR not in str(error):
                 raise
-            # The model fell into repeating one token and the server cut it off. That is the model's
-            # output going wrong, not the server failing: report an empty, cut-off reply.
-            # 빈 본문 + finish_reason repeat_limit으로 돌려준다. agent.py에서는 빈 응답(형식 오류)이 되어 다시
-            # 시킨다.
+            # 모델이 한 토큰을 되풀이하는 데 빠져 서버가 끊었다. 서버 장애가 아니라 모델 출력이 잘못된
+            # 것이므로 비어 있고 잘린 답으로 보고한다: 빈 본문 + finish_reason repeat_limit. agent.py에서는
+            # 빈 응답(형식 오류)이 되어 다시 시킨다.
             wall_ms = (time.perf_counter() - start) * 1000.0
             return ChatResponse(text="", usage=Usage(wall_ms=wall_ms), finish_reason="repeat_limit")
         wall_ms = (time.perf_counter() - start) * 1000.0
@@ -273,7 +273,7 @@ class OllamaProvider(ChatProvider):
     # 빈 메시지로 /api/chat을 불러 모델만 올려 둔다. 실행기가 측정 전에 부르고 걸린 시간(ms)을 출력한다.
     # chat()과 같은 num_ctx·실행기 옵션을 써야 첫 에피소드에서 다시 읽지 않는다.
     def preload(self) -> float:
-        """Load the model with this provider's runner options. Returns the load time in ms."""
+        """이 제공자의 실행기 옵션으로 모델을 올린다. 적재에 걸린 시간을 ms로 돌려준다."""
         body = {
             "model": self.model,
             "messages": [],
@@ -289,13 +289,13 @@ class OllamaProvider(ChatProvider):
     # 사용량에서 Ollama 몫을 빼, 다른 작업이 GPU를 쓰고 있는지 판단할 때 쓴다. 서버에 물을 수 없으면 실행을
     # 막지 않도록 빈 목록을 돌려준다.
     def loaded_models(self) -> list[dict[str, Any]]:
-        """Models the server holds in memory right now; [] when the server cannot be asked."""
+        """서버가 지금 메모리에 들고 있는 모델들. 서버에 물을 수 없으면 []."""
         try:
             models = self._request("GET", "/api/ps", timeout=_META_TIMEOUT_S).get("models") or []
             return [
                 {
                     "name": m.get("name") or m.get("model") or "",
-                    "size": m.get("size", 0) or 0,  # with size_vram: how much of the model is on the GPU
+                    "size": m.get("size", 0) or 0,  # size_vram과 함께 보면 GPU에 올라간 비율을 안다
                     "size_vram": m.get("size_vram", 0) or 0,
                 }
                 for m in models
@@ -322,7 +322,6 @@ class OllamaProvider(ChatProvider):
     # manifest의 agent_provider·user_provider 값. analyze same-setup이 이 값을 비교한다. digest와 버전은 한
     # 번만 조회해 두되, 조회에 실패하면 저장하지 않아 다음 호출에서 다시 시도한다.
     def describe(self) -> dict[str, Any]:
-        # A failed lookup is not cached, so a later describe() can still fill it in.
         if self._digest is _UNSET:
             try:
                 self._digest = self._fetch_digest()

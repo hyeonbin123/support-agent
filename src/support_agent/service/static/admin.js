@@ -54,13 +54,13 @@
   // 겹친 요청을 막는 표시, 결정을 보내는 중인 승인, 고른 세션, 승인별로 입력 중인 메모.
   let token = read(TOKEN_KEY);
   let approvals = [];
-  let snapshot = ''; // what the approval list was drawn from; an unchanged answer keeps the DOM (and typing)
+  let snapshot = ''; // 승인 목록을 그린 근거. 응답이 같으면 DOM(과 입력 중인 글)을 그대로 둔다
   let loadingApprovals = false;
-  let deciding = null; // id of the approval whose decision is on its way
+  let deciding = null; // 결정을 보내는 중인 승인의 id
   let selectedSession = null;
-  const notes = new Map(); // approval id -> note being typed
+  const notes = new Map(); // 승인 id -> 입력 중인 메모
 
-  // ------------------------------------------------------------ helpers
+  // ------------------------------------------------------------ 도우미 (helpers)
 
   // sessionStorage 읽기·쓰기. 브라우저 설정으로 저장소가 막혀 있으면 예외가 나므로 잡고, 그때는 이 페이지를
   // 보는 동안만 값을 쓴다.
@@ -77,7 +77,7 @@
       if (value) sessionStorage.setItem(key, value);
       else sessionStorage.removeItem(key);
     } catch {
-      // storage can be blocked; the value then lives for this page view only
+      // 저장소가 막혀 있을 수 있다. 그때 값은 이 페이지를 보는 동안만 산다
     }
   }
 
@@ -109,7 +109,7 @@
     hour12: false,
   });
 
-  // Times are shown in KST. A value without an offset is taken as UTC (the database stores UTC).
+  // 시각은 KST로 보인다. 오프셋이 없는 값은 UTC로 본다(DB는 UTC로 저장한다).
   function time(iso) {
     if (!iso) return '-';
     const date = new Date(/(Z|[+-]\d\d:?\d\d)$/i.test(iso) ? iso : `${iso}Z`);
@@ -145,7 +145,7 @@
     return response.json();
   }
 
-  // ------------------------------------------------------------ login
+  // ------------------------------------------------------------ 로그인 (login)
 
   function setToken(value) {
     token = value;
@@ -177,7 +177,7 @@
     loadApprovals();
   }
 
-  // ------------------------------------------------------------ approval queue
+  // ------------------------------------------------------------ 승인 대기열 (approval queue)
 
   // 승인 한 건의 카드를 만든다. 공통으로 번호·상태·도구 이름과 주문·고객·환불 예정액·요청 시각을 보이고,
   // 결정된 건은 결정 시각·담당자·메모를, 실패한 건은 도구의 응답을 보인다.
@@ -291,7 +291,7 @@
   async function decide(a, approve) {
     if (deciding !== null) return;
     deciding = a.id;
-    renderApprovals(); // disables the buttons
+    renderApprovals(); // 버튼을 막는다
     const by = els.by.value.trim() || 'admin';
     const note = (notes.get(a.id) || '').trim();
     try {
@@ -319,7 +319,7 @@
     }
   }
 
-  // ------------------------------------------------------------ sessions
+  // ------------------------------------------------------------ 상담 기록 (sessions)
 
   // --- 상담 기록 탭 ---
   // 대화 말풍선 하나. 화면 낭독기를 위해 "고객: ", "상담원: "을 보이지 않는 글로 앞에 둔다.
@@ -375,7 +375,7 @@
       if (!handled(error)) say(els.sessionsError, '상담 내용을 불러오지 못했습니다.');
       return;
     }
-    if (selectedSession !== id) return; // another one was picked meanwhile
+    if (selectedSession !== id) return; // 그 사이 다른 세션을 골랐다
     say(els.sessionsError, '');
     const transcript = data.transcript;
     $('detail-title').textContent = `상담 ${id.slice(0, 10)}…`;
@@ -398,7 +398,7 @@
     els.detail.scrollIntoView({ block: 'nearest' });
   }
 
-  // ------------------------------------------------------------ tabs and wiring
+  // ------------------------------------------------------------ 탭과 이벤트 연결 (tabs and wiring)
 
   // 탭 전환. 선택된 탭만 tabIndex 0으로 두어 Tab 키로는 선택된 탭에만 닿고, 상담 기록 탭을 열 때마다 목록을
   // 새로 읽는다.
@@ -428,7 +428,7 @@
     event.preventDefault();
     const value = els.tokenInput.value.trim();
     els.tokenInput.value = '';
-    // A header value outside printable ASCII cannot be sent, so it cannot be the token either.
+    // 출력 가능한 ASCII 밖의 값은 헤더로 보낼 수 없으므로 토큰일 수도 없다.
     if (!value || /[^\x20-\x7e]/.test(value)) {
       showLogin('토큰이 올바르지 않습니다. 다시 입력해 주세요.');
       return;

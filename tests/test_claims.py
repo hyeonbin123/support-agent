@@ -1,4 +1,4 @@
-"""The claim guard (C1): a reply that says work is done which no tool result of the conversation shows."""
+"""완료 주장 가드(C1): 대화의 어떤 도구 결과도 보여 주지 않는 일을 했다고 말하는 답."""
 
 # [테스트 묶음] 7단계 완료 주장 가드(claims.py, C1·C2)를 세 층에서 확인한다: (1) 검출기 unbacked_claim이 어떤
 # 문장을 '근거 없는 완료 안내'로 보는지, (2) 실제 쓰기 도구의 결과가 그 도구의 완료 문장을 뒷받침하는지, (3)
@@ -41,7 +41,7 @@ def refused(tool: str) -> Message:
     return Message("tool", "Error: [identity_not_verified] 본인 확인이 되지 않았습니다.", tool_name=tool)
 
 
-# ------------------------------------------------------------------------------------------ the detector
+# ------------------------------------------------------------------------------------------ 탐지기
 
 
 # 끝났다는 말 + 무엇에 대한 말(취소, 반품, 교환, 배송지, 쿠폰, 티켓, 상담원, 환불)이 있고 대화에 도구 결과가
@@ -152,9 +152,9 @@ def test_a_request_queued_for_approval_counts_as_received():
     )
     assert unbacked_claim("취소 요청이 접수되었으며 담당자 확인 후 처리됩니다.", [queued]) is None
     assert unbacked_claim("취소 요청을 접수했습니다. 확인 후 안내드리겠습니다.", [queued]) is None
-    assert unbacked_claim("취소가 완료되었습니다.", [queued]) is not None  # not done, only queued
+    assert unbacked_claim("취소가 완료되었습니다.", [queued]) is not None  # 완료가 아니라 대기 중일 뿐
     assert unbacked_claim("108,200원이 환불되었습니다.", [queued]) is not None
-    assert unbacked_claim("쿠폰 요청이 접수되었습니다.", [queued]) is not None  # another kind
+    assert unbacked_claim("쿠폰 요청이 접수되었습니다.", [queued]) is not None  # 다른 종류
     assert unbacked_claim("취소 요청이 접수되었습니다.", [refused("cancel_order")]) is not None
 
 
@@ -179,12 +179,12 @@ def test_one_kind_with_evidence_is_enough_and_the_first_bare_sentence_is_reporte
     assert (claim.label, claim.tools) == ("교환 접수", "request_exchange")
 
 
-# ------------------------------------------------------------------------------------------ real tool answers
+# ------------------------------------------------------------------------------------------ 실제 도구의 답
 
 # 위 테스트들은 근거 JSON을 직접 만들었다. 아래는 실제 도구가 execute()를 거쳐 쓰는 JSON이 근거 패턴에
 # 걸리는지 확인한다. 도구 출력 형식이 바뀌어 가드가 진짜 완료까지 막는 회귀를 잡는다.
-# The patterns of claims.KINDS read the JSON that toolkit.execute writes from the answers of tools.py; the
-# tests above build their own. One completion sentence per write tool: its real answer must back it.
+# claims.KINDS의 패턴은 toolkit.execute가 tools.py 도구의 답으로 쓰는 JSON을 읽는다. 쓰기 도구마다 완료 문장
+# 하나를 두고, 그 도구의 실제 답이 그 문장의 근거가 되어야 한다.
 DONE_BY_TOOL = {
     "cancel_order": "주문이 취소되었습니다.",
     "request_return": "반품 접수를 완료했습니다.",
@@ -200,7 +200,7 @@ DONE_BY_TOOL = {
 # 동작은 모두 성공해야 한다(실패하면 과제 파일이 잘못된 것). 무거우므로 한 번만 계산한다.
 @functools.cache
 def real_answers() -> dict[str, str]:
-    """The first answer of each write tool when the gold actions of the development tasks are replayed."""
+    """개발용 과제의 정답 동작을 다시 실행했을 때 쓰기 도구마다 나온 첫 답."""
     registry, seed, out = build_registry(), build_seed_engine(), {}
     for task in load_tasks("dev"):
         engine = db.memory_engine(seed)
@@ -229,11 +229,11 @@ def test_every_write_tool_has_a_completion_sentence():
     ids=[*DONE_BY_TOOL, "cancel_order-refund", "request_return-refund"],
 )
 def test_the_real_answer_of_a_write_tool_backs_its_completion_sentence(tool, text):
-    assert unbacked_claim(text, []) is not None  # the sentence is a claim
+    assert unbacked_claim(text, []) is not None  # 이 문장은 완료 주장이다
     assert unbacked_claim(text, [Message("tool", real_answers()[tool], tool_name=tool)]) is None
 
 
-# ------------------------------------------------------------------------------------------ in the loop
+# ------------------------------------------------------------------------------------------ 루프 안에서
 
 # 루프 시험에 쓰는 근거 없는 완료 문장.
 CLAIM = "주문 취소가 완료되었습니다."
@@ -264,7 +264,7 @@ def turn(tiny_engine, script, **config):
 def test_c1_holds_the_claim_back_and_the_retry_does_the_work(tiny_engine):
     script = [CLAIM, ToolCall("toy_cancel_order", {"order_id": "O-1"}), CLAIM]
     result, state, engine = turn(tiny_engine, script, claims="C1")
-    assert result.reply == CLAIM and result.stop is None  # now the tool result shows it
+    assert result.reply == CLAIM and result.stop is None  # 이제는 도구 결과가 그것을 보여 준다
     assert (state.held_claims, state.format_errors, state.stalls) == (1, 0, 0)
     held, notice = state.messages[3], state.messages[4]
     assert (held.content, held.delivered) == (CLAIM, False)
@@ -279,7 +279,7 @@ def test_c1_holds_the_claim_back_and_the_retry_does_the_work(tiny_engine):
 def test_c0_delivers_the_same_claim(tiny_engine):
     result, state, engine = turn(tiny_engine, [CLAIM])
     assert result.reply == CLAIM and state.held_claims == 0 and RunConfig().claims == "C0"
-    assert db.dump_db(engine)["orders"][0]["status"] == "paid"  # the customer was told otherwise
+    assert db.dump_db(engine)["orders"][0]["status"] == "paid"  # 고객은 다르게(취소됐다고) 들었다
 
 
 # 세 번째에도 같은 주장이면 전달하지 않고 unbacked_claim으로 끝낸다(판정하는 종료가 아니라 실패로 센다). 멈춤
@@ -305,7 +305,7 @@ def test_c1_lets_an_honest_answer_through_after_the_notice(tiny_engine):
 # 있으므로 C1이 막지 않는다.
 def test_c1_does_not_hold_a_report_of_a_lookup(tiny_engine):
     script = [ToolCall("toy_cancel_order", {"order_id": "O-1"}), "주문 O-1은 취소되었습니다."]
-    _, _, engine = turn(tiny_engine, script)  # cancelled in an earlier conversation, so to speak
+    _, _, engine = turn(tiny_engine, script)  # 말하자면 앞선 대화에서 취소한 것
     state = new_state("system prompt")
     ctx = ToolContext(now=NOW)
     script = [ToolCall("toy_get_order", {"order_id": "O-1"}), "주문 O-1은 이미 취소되었습니다."]
@@ -330,7 +330,7 @@ def test_c2_samples_the_retry_but_not_the_first_attempt(tiny_engine):
     assert [request["temperature"] for request in turn.provider.requests] == [0.0, 0.0, 0.0]
 
 
-# ------------------------------------------------------------------------------------------ in the records
+# ------------------------------------------------------------------------------------------ 기록에서
 
 
 # 기록(episodes.jsonl)의 에이전트 LLM 호출 한 줄을 흉내 낸다.

@@ -1,6 +1,6 @@
-"""The web layer: chat over server-sent events, the admin API and two static pages.
+"""웹 계층: 서버 전송 이벤트(SSE)로 하는 채팅, 관리자 API, 정적 화면 두 개.
 
-Run: uv run uvicorn support_agent.service.app:create_app --factory --port 8062
+실행: uv run uvicorn support_agent.service.app:create_app --factory --port 8062
 """
 
 # [파일 역할] 채팅 서비스의 웹 계층(FastAPI). 고객 채팅(SSE), 음성 끝점, 관리자 API, 정적 화면 두
@@ -114,7 +114,7 @@ def create_app(
     # 수 있게 CSP에 media-src를 더한다(docs/voice.md).
     if settings.voice or voice:
         headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=()"
-        # Replies read aloud are fetched as WAV and played from a blob: URL.
+        # 소리로 읽어 주는 답은 WAV로 받아 blob: 주소로 재생한다.
         headers["Content-Security-Policy"] += "; media-src 'self' blob:"
 
     # 앱 시작 시 DB(마이그레이션·생성 데이터 포함), 모델 제공자, ChatService, 음성 앞단을 만들고 끝날 때
@@ -131,7 +131,7 @@ def create_app(
         )
         app.state.service = ChatService(settings, own_engine, own_provider)
         app.state.voice = voice
-        if settings.voice and voice is None:  # several seconds to minutes: the models load here
+        if settings.voice and voice is None:  # 몇 초에서 몇 분: 여기서 음성 모델을 올린다
             app.state.voice = load_voice_front_end(
                 settings.tts_device, settings.stt_device, settings.max_audio_seconds
             )
@@ -179,7 +179,7 @@ def create_app(
         if not secrets.compare_digest(x_admin_token.encode(), settings.admin_token.encode()):
             raise HTTPException(401, "wrong admin token")
 
-    # ------------------------------------------------------------ pages
+    # ------------------------------------------------------------ 화면 (pages)
 
     # --- 화면: 채팅(index.html)과 관리(admin.html). API 설명에는 넣지 않는다 ---
     @app.get("/", include_in_schema=False)
@@ -202,7 +202,7 @@ def create_app(
             "voice": getattr(app.state, "voice", None) is not None,
         }
 
-    # ------------------------------------------------------------ chat
+    # ------------------------------------------------------------ 채팅 (chat)
 
     # 새 상담 세션. 응답의 session_id(추측할 수 없는 난수)가 이후 모든 고객 요청의 열쇠다. 화면은 이것을
     # sessionStorage에 둔다.
@@ -229,8 +229,8 @@ def create_app(
         if status != "open":
             raise HTTPException(409, f"the session is {status}")
 
-    # Every turn holds a worker thread until the model has answered; a turn over this many is refused at
-    # once with 503 and Retry-After, it does not wait (tests/test_review_t7.py).
+    # 턴마다 모델이 답할 때까지 작업 스레드 하나를 잡고 있다. 동시에 도는 턴이 이 수를 넘으면 기다리지 않고
+    # 바로 503과 Retry-After로 거절한다(tests/test_review_t7.py).
     slots = threading.BoundedSemaphore(settings.max_concurrent_turns)
 
     # 한 턴을 작업 스레드에서 돌리고 그 진행 이벤트를 SSE로 흘리는 공통 함수. 글 메시지와 음성 메시지가 함께
@@ -241,8 +241,8 @@ def create_app(
     def turn_stream(
         svc: ChatService, session_id: str, read_message, first_stage: str = "thinking"
     ) -> StreamingResponse:
-        """Run one turn in a worker thread and stream its events. `read_message(emit)` gives the
-        customer's text and how it arrived, or None when there is nothing to answer."""
+        """작업 스레드에서 한 턴을 돌리고 그 이벤트를 흘려보낸다. `read_message(emit)`는 고객의 글과 그 글이
+        들어온 방식을 주고, 답할 것이 없으면 None을 준다."""
         # 동시에 도는 턴이 한도(기본 4)에 닿았으면 기다리지 않고 바로 503과 Retry-After(5초)로 돌려보낸다.
         # 기다리게 하면 작업 스레드가 계속 쌓이기 때문이다.
         if not slots.acquire(blocking=False):
@@ -256,8 +256,7 @@ def create_app(
         # 작업 스레드에서 도는 본체. 어떤 예외든 고객용 error 이벤트와 end로 바꾸고, finally에서 동시 실행
         # 자리를 반드시 돌려준다.
         def work() -> None:
-            # The turn runs to its end even when the browser goes away: what the tools wrote must be
-            # recorded together with the conversation that led to it.
+            # 브라우저가 떠나도 턴은 끝까지 간다: 도구가 쓴 것은 그것을 낳은 대화와 함께 기록되어야 한다.
             try:
                 message = read_message(emit)
                 if message is None:
@@ -280,7 +279,6 @@ def create_app(
                 slots.release()
                 events.put(None)
 
-        # Started here, not when the response is first read: the slot is given back in any case.
         # 스레드를 응답을 읽기 시작할 때가 아니라 여기서 바로 띄운다. 클라이언트가 응답을 읽지 않고 끊어도
         # work의 finally가 자리를 돌려주고, 턴은 끝까지 가서 대화 기록이 저장된다(도구가 DB를 바꿨는데 기록이
         # 없는 상태를 막음, docs/service.md).
@@ -310,7 +308,7 @@ def create_app(
         open_session(svc, session_id)
         return turn_stream(svc, session_id, lambda _emit: (text, None))
 
-    # ------------------------------------------------------------ voice
+    # ------------------------------------------------------------ 음성 (voice)
 
     # --- 음성(선택 기능, SUPPORT_AGENT_VOICE=1) ---
     # 음성 앞단이 없으면 음성 끝점은 503으로 답한다.
@@ -325,11 +323,11 @@ def create_app(
     # 파일이 메모리에 다 올라온다.
     @app.post("/api/sessions/{session_id}/voice")
     async def post_voice(session_id: str, request: Request, svc: ChatService = Depends(service)):
-        """The body is one recorded utterance (whatever the browser records: webm, ogg, wav, mp4)."""
+        """본문은 녹음한 발화 하나다(브라우저가 녹음하는 형식 무엇이든: webm, ogg, wav, mp4)."""
         front_end = voice_front_end(request)
         open_session(svc, session_id)
         audio = bytearray()
-        async for chunk in request.stream():  # stop reading as soon as the limit is passed
+        async for chunk in request.stream():  # 한도를 넘는 순간 읽기를 멈춘다
             audio += chunk
             if len(audio) > settings.max_audio_bytes:
                 raise HTTPException(413, f"at most {settings.max_audio_bytes} bytes of audio")
@@ -345,12 +343,12 @@ def create_app(
             except AudioTooLongError:
                 emit("error", {"message": "녹음이 너무 깁니다. 짧게 나누어 다시 말씀해 주세요."})
                 return None
-            except Exception:  # noqa: BLE001 - undecodable audio or a model failure
+            except Exception:  # noqa: BLE001 - 디코딩할 수 없는 소리이거나 모델 실패
                 emit("error", {"message": "음성을 처리하지 못했습니다. 다시 말씀해 주세요."})
                 return None
             text = text.strip()
             if len(text) > settings.max_message_chars:
-                # Never cut it: the end of a sentence can turn its meaning around ("... 취소하지 마세요").
+                # 절대 잘라 쓰지 않는다: 문장 끝이 뜻을 뒤집을 수 있다("... 취소하지 마세요").
                 emit("error", {"message": "말씀이 너무 깁니다. 짧게 나누어 다시 말씀해 주세요."})
                 return None
             # 에이전트에게 가는 글(고친 글)을 화면에 먼저 보여 준다. 고객이 잘못 들린 것을 바로 알 수 있다.
@@ -370,8 +368,8 @@ def create_app(
     # 소리로 낼 것이 없으면 204를 돌려준다.
     @app.post("/api/sessions/{session_id}/speech")
     def speak(session_id: str, body: SpeakIn, request: Request, svc: ChatService = Depends(service)):
-        """A reply of this session read aloud (WAV). Only what the agent said here is synthesised, in
-        whole or in part, so the endpoint is not a speech service for arbitrary text."""
+        """이 세션의 답을 소리로 읽어 준다(WAV). 이 세션에서 에이전트가 한 말(전체 또는 일부)만 합성하므로,
+        이 끝점은 아무 글이나 읽어 주는 음성 서비스가 아니다."""
         front_end = voice_front_end(request)
         try:
             said = [m["text"] for m in svc.transcript(session_id)["messages"] if m["role"] == "agent"]
@@ -387,7 +385,7 @@ def create_app(
             return Response(status_code=204)
         return Response(wav, media_type="audio/wav")
 
-    # ------------------------------------------------------------ admin
+    # ------------------------------------------------------------ 관리자 (admin)
 
     # --- 관리자 API: 모두 admin 의존성(X-Admin-Token)을 거친다 ---
     # 승인 대기열 목록. status로 거를 수 있다(관리 화면은 기본으로 pending만 읽고, 전체 보기를 고르면 전부
@@ -403,7 +401,7 @@ def create_app(
     @app.post("/api/admin/approvals/{approval_id}/decision", dependencies=[Depends(admin)])
     def decide(
         body: DecisionIn,
-        # Bounded: an integer beyond the database's range is a client error (422), not a server error.
+        # 범위를 둔다: DB 정수 범위를 넘는 값은 서버 오류가 아니라 클라이언트 오류(422)다.
         approval_id: int = Path(ge=1, le=2_147_483_647),
         svc: ChatService = Depends(service),
     ) -> dict[str, Any]:

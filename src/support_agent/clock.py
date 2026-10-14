@@ -1,4 +1,4 @@
-"""Korean time helpers. Every "now" is passed in by the caller; nothing here reads the wall clock."""
+"""한국 시간 도우미. 모든 "지금"은 호출하는 쪽이 넘겨주고, 이 모듈은 벽시계를 읽지 않는다."""
 
 # [파일 역할] 한국 시간(KST) 변환과 도구 출력용 시각 표기를 맡는 작은 도우미 모듈이다.
 # [설계 이유] 도구·seed·판정 코드는 현재 시각을 읽지 않는다(README 구조 절, docs/design.md 결정성). 시각은
@@ -14,10 +14,10 @@ from __future__ import annotations
 # 날짜 계산은 표준 라이브러리 datetime만으로 한다. 외부 시간대 패키지에 기대지 않으려는 것이다(아래 KST 주석).
 from datetime import date, datetime, timedelta, timezone
 
-# A fixed offset instead of zoneinfo("Asia/Seoul"): Windows has no tz database without the tzdata package,
-# and Korea has had no daylight saving time since 1988.
 # UTC+9 고정 오프셋 시간대. DB에는 UTC로 저장하고 도구 출력과 날짜 경계(반품 기한 등)는 이 KST로
-# 계산한다(docs/design.md 결정성).
+# 계산한다(docs/design.md 결정성). zoneinfo("Asia/Seoul") 대신 고정 오프셋을 쓰는 이유: Windows에는
+# tzdata 패키지 없이는 시간대 데이터베이스가 없고, 한국은 1988년 이후 일광 절약 시간제를 쓰지 않아
+# 고정 오프셋으로도 정확하다.
 KST = timezone(timedelta(hours=9), "KST")
 
 
@@ -40,7 +40,7 @@ def kst_date(value: datetime) -> date:
 # 도구 출력에 넣는 시각 문자열. 초와 시간대 표기를 빼 모델과 고객이 읽기 쉬운 짧은 형태로 통일한다. None(아직
 # 출고 안 됨 등)은 그대로 None을 돌려줘 JSON에서 null이 된다.
 def format_kst(value: datetime | None) -> str | None:
-    """`2026-09-02 14:20`, the form every tool output uses."""
+    """`2026-09-02 14:20` 꼴. 모든 도구 출력이 이 형식을 쓴다."""
     return None if value is None else to_kst(value).strftime("%Y-%m-%d %H:%M")
 
 

@@ -1,4 +1,4 @@
-"""The MCP server, driven by the SDK's in-memory client."""
+"""MCP 서버를 SDK의 메모리 안 클라이언트로 움직여 시험한다."""
 
 # [테스트 묶음] 4단계 MCP 서버(mcp_server.py)를 공식 MCP SDK의 메모리 내 클라이언트로 직접 부려 확인한다:
 # 범위별 도구 목록과 주석(hint), 서버가 들고 있는 본인 확인 상태, 읽기 서버의 쓰기 거절, 쓰기의 실행·감사
@@ -100,11 +100,11 @@ async def test_identity_is_kept_by_the_server_and_checked_by_the_tools(service):
         assert not found.is_error and json.loads(text_of(found))["customer_id"] == "C-9005"
         order = await client.call_tool("get_order", {"order_id": "O-90005"})
         assert json.loads(text_of(order))["total_won"] == 89_100
-        other = await client.call_tool("get_order", {"order_id": "O-10097"})  # somebody else's order
+        other = await client.call_tool("get_order", {"order_id": "O-10097"})  # 다른 고객의 주문
         assert other.is_error
-    async with Client(server) as second:  # the protocol is stateless: the state belongs to the server process
+    async with Client(server) as second:  # 프로토콜은 상태가 없다: 상태는 서버 프로세스의 것이다
         assert not (await second.call_tool("get_order", {"order_id": "O-90005"})).is_error
-    async with Client(build_server(service, "read")) as fresh:  # another server starts unverified
+    async with Client(build_server(service, "read")) as fresh:  # 다른 서버는 본인 확인 전 상태로 시작한다
         assert (await fresh.call_tool("get_order", {"order_id": "O-90005"})).is_error
 
 
@@ -133,13 +133,13 @@ async def test_writes_are_carried_out_audited_and_gated_like_in_the_chat(service
         await client.call_tool("find_customer", {"name": "정예준", "contact": "01000009005"})
         done = await client.call_tool("cancel_order", {"order_id": "O-90005", "reason": "changed_mind"})
         assert not done.is_error and json.loads(text_of(done))["refund_won"] == 89_100
-        # The policy is enforced here too: a cancelled order cannot be cancelled again.
+        # 여기서도 규정을 막는다: 취소된 주문은 다시 취소할 수 없다.
         assert (
             await client.call_tool("cancel_order", {"order_id": "O-90005", "reason": "changed_mind"})
         ).is_error
 
         other = await client.call_tool("find_customer", {"name": "강정우", "contact": "01000006189"})
-        assert other.is_error and "already_verified" in text_of(other)  # one session, one customer
+        assert other.is_error and "already_verified" in text_of(other)  # 세션 하나에 고객 한 명
         assert not (await client.call_tool("new_conversation", {})).is_error
         await client.call_tool("find_customer", {"name": "강정우", "contact": "01000006189"})
         big = await client.call_tool("cancel_order", {"order_id": "O-10097", "reason": "changed_mind"})
@@ -158,7 +158,7 @@ async def test_writes_are_carried_out_audited_and_gated_like_in_the_chat(service
         kinds = [e.kind for e in session.scalars(select(store.AuditEvent).order_by(store.AuditEvent.id))]
     assert kinds.count("tool_call") == 6 and "approval_requested" in kinds
 
-    decided = service.decide(approval.id, approve=True, by="kim")  # the same queue as the chat
+    decided = service.decide(approval.id, approve=True, by="kim")  # 채팅과 같은 대기열
     assert decided["status"] == "approved"
     with Session(service.engine) as session:
         assert session.get(db.Order, "O-10097").status == db.OrderStatus.CANCELLED

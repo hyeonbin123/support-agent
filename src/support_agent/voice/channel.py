@@ -1,5 +1,5 @@
-"""The speech channel: what the customer says goes through synthesis and recognition before the agent
-reads it. The customer's side of the conversation keeps the words as they were meant."""
+"""음성 채널: 고객이 한 말은 음성 합성과 음성 인식을 거친 뒤에 에이전트가 읽는다. 대화의 고객 쪽은 자기가
+뜻한 말을 그대로 간직한다."""
 
 # [파일 역할] 5단계 음성 채널. 시뮬레이터 고객이 쓴 글을 말로 풀어 쓰고(verbalize) → 음성 합성 → 음성 인식 →
 # (V2·V4면 규칙 정규화)를 거친 글만 에이전트에게 준다.
@@ -32,10 +32,10 @@ from support_agent.voice.verbalize import verbalize
 # 파일은 남기지 않음).
 @dataclass(frozen=True)
 class Heard:
-    said: str  # what the customer meant, in writing
-    spoken: str  # the words that were synthesised
-    heard: str  # what the recogniser wrote
-    text: str  # what the agent receives: `heard`, or `heard` after the normaliser
+    said: str  # 고객이 뜻한 말(글)
+    spoken: str  # 합성한 말
+    heard: str  # 인식기가 적은 글
+    text: str  # 에이전트가 받는 글: `heard`, 또는 정규화기를 거친 `heard`
     audio_seconds: float = 0.0
     tts_ms: float = 0.0
     stt_ms: float = 0.0
@@ -60,10 +60,10 @@ class Listener(Protocol):
 
 # 합성기·인식기·정규화기와 왕복 캐시를 묶은 채널.
 class SpeechChannel:
-    """Text -> spoken form -> audio -> recognised text (-> normaliser).
+    """글 -> 말로 풀어 쓴 꼴 -> 소리 -> 인식된 글 (-> 정규화기).
 
-    Same spoken text and seed give the same audio and the same transcript, so results are kept in a JSONL
-    cache: a run can be repeated, or analysed again, without the speech models.
+    같은 말과 seed는 같은 소리와 같은 받아쓰기를 내므로 결과를 JSONL 캐시에 둔다: 실행을 음성 모델 없이
+    다시 돌리거나 다시 분석할 수 있다.
     """
 
     def __init__(
@@ -101,7 +101,7 @@ class SpeechChannel:
         spoken = verbalize(said)
         # 풀어 쓴 글에 한글 음절이 없으면("..."나 이모지만) 합성할 소리가 없으므로 아무것도 들리지 않은 것으로
         # 돌려준다. 에이전트에게는 episode.py가 "들리지 않음" 표기를 대신 준다.
-        if not re.search("[가-힣]", spoken):  # nothing pronounceable ("...", an emoji): nothing is heard
+        if not re.search("[가-힣]", spoken):
             return Heard(said, spoken, "", "")
         # 캐시 키 = sha256(채널 정체 | seed | 합성할 말). 정규화기는 키에 넣지 않고 캐시에는 인식 원문만 둔다.
         # 그래서 정규화 규칙을 바꾸거나 V1과 V2를 바꿔 돌려도 같은 왕복을 다시 쓴다.

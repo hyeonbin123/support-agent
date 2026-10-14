@@ -1,8 +1,8 @@
-"""Speech synthesis (MeloTTS) and recognition (faster-whisper). Needs the `voice` dependency group.
+"""음성 합성(MeloTTS)과 음성 인식(faster-whisper). `voice` 의존성 그룹이 필요하다.
 
-The libraries are imported inside the constructors, so importing this module needs none of them.
-MeloTTS was picked for Korean in the sibling voice-translator project by re-recognition error (CER 5.5%,
-human recordings 5.4%); the three Windows workarounds below come from there.
+라이브러리는 생성자 안에서 불러오므로, 이 모듈을 불러오는 데에는 그중 어느 것도 필요 없다.
+MeloTTS는 옆 프로젝트 voice-translator에서 재인식 오류(CER 5.5%, 사람 녹음 5.4%)를 기준으로 한국어용으로
+골랐고, 아래의 Windows 우회 세 가지도 거기서 가져왔다.
 """
 
 # [파일 역할] 음성 합성(MeloTTS 한국어)과 음성 인식(faster-whisper large-v3-turbo) 래퍼다. 평가의 음성
@@ -37,21 +37,20 @@ from typing import Any
 
 # SAMPLE_WIDTH: 합성 결과를 담는 WAV의 표본 크기(2바이트 = 16비트 PCM). LISTEN_RATE: 인식기에 넣는 표본화율(16
 # kHz). voice_real.py의 디코더와 서비스 쪽도 이 값을 쓴다.
-SAMPLE_WIDTH = 2  # 16-bit PCM
-LISTEN_RATE = 16_000  # what Whisper hears
+SAMPLE_WIDTH = 2  # 16비트 PCM
+LISTEN_RATE = 16_000  # Whisper가 듣는 표본화율
 
 
-# 녹음이 서비스의 길이 한도를 넘을 때 decode_limited가 낸다. service/app.py가 이 예외를 잡아 '녹음이 너무
-# 깁니다' 안내로 바꾼다.
+# decode_limited가 낸다. service/app.py가 이 예외를 잡아 '녹음이 너무 깁니다' 안내로 바꾼다.
 class AudioTooLongError(ValueError):
-    """The recording is longer than the listener accepts."""
+    """녹음이 인식기가 받아들이는 길이(서비스의 길이 한도)보다 길다."""
 
 
 # 패키지 이름 → 설치된 버전. 설치되지 않은 것은 "?"로 적는다(예외를 내지 않는다).
-# 왜 필요한가: describe()가 이 버전을 캐시 키와 실행 기록에 넣어, 패키지 버전이 바뀌면 예전 왕복 결과를 쓰지
-# 않게 한다. run.py와 voice_real.py도 manifest의 versions 항목에 이 함수를 쓴다.
+# describe()가 이 버전을 캐시 키와 실행 기록에 넣어, 패키지 버전이 바뀌면 예전 왕복 결과를 쓰지 않게 한다.
+# run.py와 voice_real.py도 manifest의 versions 항목에 이 함수를 쓴다.
 def versions(*packages: str) -> dict[str, str]:
-    """Installed versions: part of what a cached round trip depends on."""
+    """설치된 버전들: 캐시된 왕복 결과가 기대는 것의 일부다."""
     out = {}
     for package in packages:
         try:
@@ -64,7 +63,7 @@ def versions(*packages: str) -> dict[str, str]:
 # 합성 결과: 16비트 모노 WAV 파일 바이트와 길이(초). 채널은 이 바이트를 녹음 파일처럼 인식기에 넘긴다.
 @dataclass(frozen=True)
 class Audio:
-    wav: bytes  # 16-bit mono PCM WAV file
+    wav: bytes  # 16비트 모노 PCM WAV 파일
     seconds: float
 
 
@@ -90,12 +89,12 @@ def wav_bytes(samples: Any, sample_rate: int) -> Audio:
 
 
 # Windows에서 CTranslate2(faster-whisper의 엔진)가 cuBLAS·cuDNN DLL을 찾게 해 준다. 이 DLL은 pip의 nvidia-* 휠
-# 폴더에 있는데, Windows는 그 폴더를 찾지 않는다.
+# 폴더에 있다.
 # 각 패키지의 bin 폴더를 os.add_dll_directory와 PATH 양쪽에 더한다. functools.cache로 한 프로세스에서 한 번만
 # 한다. 호출 위치: WhisperListener 생성자.
 @functools.cache
 def add_cuda_dll_dirs() -> None:
-    """CTranslate2 loads cuBLAS and cuDNN by name; Windows does not search the pip wheels' folders."""
+    """CTranslate2는 cuBLAS와 cuDNN을 이름으로 불러오는데, Windows는 pip 휠의 폴더를 찾아보지 않는다."""
     if sys.platform != "win32":
         return
     for package in ("nvidia.cublas", "nvidia.cudnn"):
@@ -121,8 +120,8 @@ def add_cuda_dll_dirs() -> None:
 # python-mecab-ko의 MeCab을 돌려주게 바꾼다.
 # 호출 위치: MeloSpeaker 생성자 (melo를 불러오기 전).
 def _prepare_melo_on_windows() -> None:
-    """melo always imports its Japanese front end, whose `MeCab` package is the same folder as
-    python-mecab-ko's `mecab` on a case-insensitive file system; and g2pkk looks for `eunjeon` on Windows."""
+    """melo는 일본어 앞단을 항상 불러오는데, 그 `MeCab` 패키지는 대소문자를 가리지 않는 파일 시스템에서
+    python-mecab-ko의 `mecab`과 같은 폴더가 된다. 또 g2pkk는 Windows에서 `eunjeon`을 찾는다."""
     if sys.platform != "win32":
         return
     if "melo.text.japanese" not in sys.modules:
@@ -147,11 +146,10 @@ def _prepare_melo_on_windows() -> None:
     g2pkk.g2pkk.G2p.get_mecab = lambda self: mecab.MeCab()
 
 
-# 한국어 MeloTTS 합성기. 한국어 합성 모델로 고른 근거는 옆 프로젝트에서 잰 재인식 글자 오류율(5.5%, 사람 녹음
-# 5.4%)이다.
+# 한국어 합성 모델로 고른 근거는 옆 프로젝트에서 잰 재인식 글자 오류율(5.5%, 사람 녹음 5.4%)이다.
 # 호출 위치: run.py(평가 음성 채널), voice_real.py(11단계 재합성), service/voice_frontend.py(답을 소리로).
 class MeloSpeaker:
-    """Korean MeloTTS (MIT). Sampling noise is seeded, so the same text and seed give the same audio."""
+    """한국어 MeloTTS(MIT 라이선스). 표본 추출 잡음에 seed를 주므로 같은 글과 seed는 같은 소리를 낸다."""
 
     def __init__(self, device: str = "cuda", speed: float = 1.0):
         # Windows 우회를 먼저 하고 나서 torch와 melo를 불러온다. 라이브러리는 여기서만 불러오므로 모듈 자체는
@@ -189,20 +187,18 @@ class MeloSpeaker:
         return wav_bytes(samples, self.sample_rate)
 
 
-# 서비스용 길이 제한 디코더. 브라우저가 보낸 녹음을 faster-whisper의 decode_audio와 같은 결과(16 kHz 모노
-# float32)로 풀되, 한도를 넘는 순간 멈춘다 (같은 출력인지는 테스트가 비교한다).
-# 왜 필요한가: 몇 kB짜리 파일에 몇 시간의 무음이 들 수 있고, 샘플레이트가 아주 낮으면 프레임 하나가 몇 시간이
-# 된다. 다 푼 뒤나 16 kHz로 바꾼 뒤에 재면 그 사이 메모리를 수백 MB~GB 쓴다 (docs/service.md "한도"). 서비스의
-# 한도는 풀었을 때 60초다.
+# 서비스용 길이 제한 디코더. 브라우저가 보낸 녹음을 decode_audio와 같은 결과(16 kHz 모노 float32)로 푼다(같은
+# 출력인지는 테스트가 비교한다). 다 푼 뒤나 16 kHz로 바꾼 뒤에 재면 그 사이 메모리를 수백 MB~GB
+# 쓴다 (docs/service.md "한도"). 서비스의 한도는 풀었을 때 60초다.
 # 호출 위치: WhisperListener.transcribe (max_seconds가 있을 때, 즉 서비스).
 def decode_limited(audio: bytes, max_seconds: float) -> Any:
-    """faster-whisper's decode_audio, but it stops as soon as the recording passes `max_seconds`: a few kB of
-    FLAC can hold hours of silence, and decode_audio would first expand all of it in memory.
+    """faster-whisper의 decode_audio와 같지만, 녹음이 `max_seconds`를 넘는 순간 멈춘다: 몇 kB짜리 FLAC에도
+    몇 시간의 무음이 들 수 있는데, decode_audio는 먼저 그 전부를 메모리에 펼친다.
 
-    Each frame's length is counted before the resampler sees it, because one frame can be hours long: 65,535
-    samples at 5 Hz become 13,107 s at 16 kHz, gigabytes inside the resampler. The count of what comes out
-    stays the exact check; a second of slack (far more than the resampler's delay) keeps the early count from
-    refusing a recording that the exact one accepts."""
+    프레임 하나가 몇 시간일 수도 있으므로 각 프레임의 길이를 리샘플러에 넣기 전에 센다: 5 Hz의 65,535표본은
+    16 kHz에서 13,107초가 되어 리샘플러 안에서 GB 단위가 된다. 나온 표본 수를 세는 것이 그대로 정확한 검사로
+    남고, 1초의 여유(리샘플러 지연보다 훨씬 큼)가 정확한 검사가 받아들일 녹음을 이른 검사가 거절하지 않게
+    한다."""
     import gc
 
     import av
@@ -229,7 +225,7 @@ def decode_limited(audio: bytes, max_seconds: float) -> Any:
         # PyAV로 메모리의 녹음을 연다. 메타데이터 오류는 무시하고 첫 오디오 스트림만 푼다.
         with av.open(io.BytesIO(audio), mode="r", metadata_errors="ignore") as container:
             frames = container.decode(audio=0)
-            while True:  # like decode_audio, a frame that fails to decode is skipped
+            while True:  # decode_audio처럼 풀리지 않는 프레임은 건너뛴다
                 try:
                     frame = next(frames)
                 except StopIteration:
@@ -244,12 +240,12 @@ def decode_limited(audio: bytes, max_seconds: float) -> Any:
                     raise AudioTooLongError(f"more than {max_seconds:g} s of audio")
                 take(resampler.resample(frame))
             # 리샘플러 안에 남은 표본을 내보낸다(None을 넣으면 비운다). 이것도 한도에 센다.
-            take(resampler.resample(None))  # flush
+            take(resampler.resample(None))
     finally:
         # 예외로 끝나도 리샘플러를 지우고 가비지 컬렉션을 돌린다. 리샘플러 객체는 컬렉터가 돌아야 풀린다
         # (faster-whisper 이슈 390).
         del resampler
-        gc.collect()  # faster-whisper#390: resampler objects are freed only by the collector
+        gc.collect()
     # int16 표본을 32768로 나눠 -1~1 float32로 바꾼다. decode_audio와 같은 변환이다. 아무것도 없으면 길이 0
     # 배열.
     return np.concatenate(chunks).astype(np.float32) / 32768.0 if chunks else np.zeros(0, np.float32)
@@ -260,7 +256,7 @@ def decode_limited(audio: bytes, max_seconds: float) -> Any:
 # 호출 위치: run.py(평가 채널, 기본값 그대로), voice_real.py(같은 설정, transcribe_samples),
 # service/voice_frontend.py(max_seconds와 vad_filter=True를 준 서비스용).
 class WhisperListener:
-    """faster-whisper, Korean, temperature 0 only (no sampling fallback: the channel must be repeatable)."""
+    """faster-whisper, 한국어, temperature 0만 쓴다(표본 추출로 다시 하지 않음: 채널은 재현되어야 한다)."""
 
     def __init__(
         self,
@@ -276,9 +272,9 @@ class WhisperListener:
         from faster_whisper import WhisperModel
 
         self.model, self.device, self.beam_size = model, device, beam_size
-        self.max_seconds = max_seconds  # None: no limit (the evaluation synthesises its own audio)
-        # Off for the measurements (synthesised speech has no silence). On for a real microphone: given a
-        # recording without speech, Whisper writes stock phrases of video subtitles instead of nothing.
+        self.max_seconds = max_seconds  # None: 한도 없음(평가는 소리를 직접 합성한다)
+        # 측정에서는 끈다(합성 음성에는 무음이 없다). 실제 마이크에서는 켠다: 말이 없는 녹음을 주면 Whisper가
+        # 빈 글 대신 영상 자막의 상투 문구를 적는다.
         self.vad_filter = vad_filter
         # 연산 정밀도를 주지 않으면 GPU는 float16, CPU는 int8을 쓴다. 측정은 GPU float16이고, voice_real.py는
         # compute_type이 기록과 다르면 공식 실행을 거절한다.
@@ -300,7 +296,7 @@ class WhisperListener:
     # 녹음 바이트를 글로 받아 적는다. 길이 한도가 없으면(평가 채널) faster-whisper의 decode_audio를 그대로
     # 써서 잰 채널을 바꾸지 않고, 한도가 있으면(서비스) decode_limited로 푼다.
     def transcribe(self, audio: bytes) -> str:
-        if self.max_seconds is None:  # the measured channel: unchanged
+        if self.max_seconds is None:  # 측정한 채널: 그대로 둔다
             from faster_whisper.audio import decode_audio
 
             samples = decode_audio(io.BytesIO(audio), sampling_rate=LISTEN_RATE)
@@ -308,10 +304,9 @@ class WhisperListener:
             samples = decode_limited(audio, self.max_seconds)
         return self.transcribe_samples(samples)
 
-    # 이미 16 kHz로 푼 표본을 받아 적는다. 11단계는 디코딩과 인식 사이에 열화를 넣어야 해서 voice_real.py가 이
-    # 메서드를 직접 부른다.
+    # 11단계는 디코딩과 인식 사이에 열화를 넣어야 해서 voice_real.py가 이 메서드를 직접 부른다.
     def transcribe_samples(self, samples: Any) -> str:
-        """Decoded 16 kHz mono float32 samples to text (stage 11 degrades the samples in between)."""
+        """이미 풀어 둔 16 kHz 모노 float32 표본을 글로 받아 적는다(11단계는 그 사이에 표본을 열화한다)."""
         # temperature=0.0 하나만 주어 실패 시 온도를 올려 다시 하는 기능을 끈다(표본 추출이 섞이면 같은 소리가
         # 다른 글이 될 수 있다). condition_on_previous_text=False로 발화 안의 앞 구간 글이 뒤 구간 인식에
         # 끼어들지 않게 한다. vad_filter는 말 없는 구간을 거른다: 서비스에서 말없이 버튼만 눌렀다 뗀 녹음을

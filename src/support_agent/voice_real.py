@@ -1,18 +1,19 @@
-"""Stage 11 (V4-R, stage A): what telephone-call conditions do to the recogniser's transcripts of the customer
-utterances of the stage 9 V4 development run. No LLM, no verdict (docs/experiments.md, stage 11).
+"""11단계(V4-R, A단계): 전화 통화 조건이 9단계 V4 고객 발화의 받아쓰기에 무엇을 하는지 잰다.
 
-Each utterance is synthesised again with the seed the channel used (same spoken text, same MeloTTS seed),
-decoded to 16 kHz the way the listener decodes a recording, and recognised twice by the same model: as it is
-(clean), and after voice/degrade.py with a seed of its own. Both transcripts go through the run's normaliser.
+대상은 9단계 V4 개발용 실행의 고객 발화다. LLM도 판정도 없다(docs/experiments.md 11단계).
 
-    uv run --no-sync python -m support_agent.voice_real plan reports/<V4 dev run>     (CPU: drawn conditions)
+발화마다 채널이 쓴 seed(같은 말로 푼 글, 같은 MeloTTS seed)로 다시 합성하고, 인식기가 녹음을 푸는 방식대로
+16 kHz로 푼 뒤, 같은 모델로 두 번 받아 적는다: 그대로(깨끗한 쪽), 그리고 자기 seed로 voice/degrade.py를 거친
+뒤. 두 받아쓰기 모두 그 실행의 정규화기를 거친다.
+
+    uv run --no-sync python -m support_agent.voice_real plan reports/<V4 dev run>     (CPU: 뽑힌 조건)
     uv run --no-sync python -m support_agent.voice_real run reports/<V4 dev run> --official --label v4r-a
     uv run --no-sync python -m support_agent.voice_real report reports/<stage A run>
 
-`run` needs the `voice` dependency group. It writes to outputs/v4r/<run_id>/, or to reports/ with --official
-(clean working tree, every utterance, the source run's speech models). Round trips are cached in
-outputs/voice-cache/v4r-roundtrips.jsonl under a key holding the speech models, the degradation's version and
-values, both seeds and the text, so a run that stopped can be started again.
+`run`에는 `voice` 의존성 그룹이 필요하다. 결과는 outputs/v4r/<run_id>/에 쓰고, --official이면 reports/에
+쓴다(깨끗한 작업 트리, 모든 발화, 원본 실행과 같은 음성 모델). 왕복 결과는
+outputs/voice-cache/v4r-roundtrips.jsonl에 음성 모델, 열화의 버전과 값, 두 seed, 글을 담은 키로 캐시하므로
+멈춘 실행을 다시 시작할 수 있다.
 """
 
 # [파일 역할] 11단계 A단계(V4-R)의 실행기다. 9단계 V4 개발용 실행의 고객 발화를 그대로 다시 합성해, 깨끗한
@@ -63,20 +64,19 @@ from support_agent.voice.speech import timed
 # STAGE: 실행 id에 붙는 단계 이름. SOURCE_RUN: 다시 합성할 원본(9단계 V4 개발용 24과제 × 4회). CACHE: 왕복
 # 결과 캐시 파일 (outputs/는 커밋하지 않는다).
 STAGE = "v4r-a"
-SOURCE_RUN = "20261004-154016-qwen3.5-4b-P0-R0-G0-F0-V4-v4-k0"  # stage 9, V4, development tasks
+SOURCE_RUN = "20261004-154016-qwen3.5-4b-P0-R0-G0-F0-V4-v4-k0"  # 9단계, V4, 개발용 과제
 CACHE = OUTPUTS / "voice-cache" / "v4r-roundtrips.jsonl"
-# Registered before measuring (docs/experiments.md, stage 11).
 # 재기 전에 등록한 값들 (docs/experiments.md 11단계 "재현 확인", "관문").
 # - REPRODUCE_MIN: 다시 합성한 깨끗한 음성의 받아쓰기가 9단계 기록과 글자까지 같은 발화가 90% 이상이면 깨끗한
 #   쪽 수치를 9단계 채널과 같은 것으로 적는다.
 # - GATE_MUFFLED, GATE_LOSS: CPU 관문에서 뽑힌 조건의 먹먹한 발화 15~25%, 잃은 프레임 1~3%.
 # - GATE_BURST_SIGMAS: 돌발 소음 수가 포아송 기댓값 ±3 표준편차 안.
-REPRODUCE_MIN = 0.90  # share of clean transcripts equal to the recorded ones, to tie the numbers to stage 9
-GATE_MUFFLED = (0.15, 0.25)  # CPU gate on the drawn conditions: share of muffled utterances
-GATE_LOSS = (0.01, 0.03)  # share of lost frames
-GATE_BURST_SIGMAS = 3.0  # bursts within the Poisson mean +- 3 standard deviations
-# The two speech models took about 3.1 GB in stage 9; above this much memory in use by anything else, the
-# 11 GB card would have under 2 GB to spare and could spill into shared memory.
+REPRODUCE_MIN = 0.90
+GATE_MUFFLED = (0.15, 0.25)
+GATE_LOSS = (0.01, 0.03)
+GATE_BURST_SIGMAS = 3.0
+# 두 음성 모델은 9단계에서 약 3.1 GB를 썼다. 다른 무언가가 이보다 많은 메모리를 쓰고 있으면 11 GB 카드에 남는
+# 여유가 2 GB 아래가 되어 공유 메모리로 넘칠 수 있다.
 # 시작할 때 GPU 전체 사용량이 6,000 MiB를 넘으면 시작하지 않는다 (docs/experiments.md 11단계 "예상 GPU 시간").
 # 넘으면 Ollama를 내리거나 기다리라는 메시지로 끝난다.
 GPU_LIMIT_MIB = 6000
@@ -97,7 +97,7 @@ _SAME_CHANNEL_KEYS = (
 )
 # measure()의 normalizer 기본값 표시용 객체. 인자를 주지 않으면 normalize_heard를 쓰고, None을 주면 정규화하지
 # 않는다(원본이 V1인 경우). None과 '안 줌'을 구분하려고 따로 둔다.
-_KEEP = object()  # the default normaliser: normalize_heard (None means none)
+_KEEP = object()
 
 
 # 다시 합성할 고객 발화 하나. 원본 기록에서 읽은 값(말한 글, 말로 푼 글, 기록된 받아쓰기, 음성 길이)과 이번에
@@ -106,12 +106,12 @@ _KEEP = object()  # the default normaliser: normalize_heard (None means none)
 class Utterance:
     task_id: str
     trial: int
-    index: int  # position in the episode's voice log: the channel's seed index
-    seed: int  # the channel's synthesis seed
+    index: int  # 에피소드 음성 기록 안의 위치: 채널이 seed를 만들 때 쓴 순번
+    seed: int  # 채널의 합성 seed
     # 열화 조건의 seed: derive_seed(기본 seed, 과제, 시도, "degrade", 순번). 합성 seed와 역할 이름만 달라 서로
     # 독립이다.
     degrade_seed: int
-    name: str  # the registered name of the task's customer
+    name: str  # 과제 고객의 등록 이름
     said: str
     spoken: str
     # 원본 실행에 기록된 받아쓰기·정규화 뒤 글·음성 길이. 재현 확인(깨끗한 받아쓰기가 같은가)과 CPU 관문(이
@@ -121,20 +121,19 @@ class Utterance:
     recorded_audio_seconds: float
 
 
-# 글 안에 등록 이름이 글자까지 같게(공백만 무시) 들어 있는지. 9단계 V4의 verify_caller가 받아들이는 기준(허용
-# 오차 k = 0)과 같게 맞춘 '이름 정확 생존' 지표의 판정이다.
+# '이름 정확 생존' 지표의 판정이다.
 def name_in(name: str, text: str) -> bool:
-    """The registered name, letter for letter, with spaces ignored: what verify_caller (k = 0) accepts."""
+    """글 안에 등록 이름이 글자까지 같게(공백만 무시) 들어 있는가: verify_caller(허용 오차 k = 0)가 받아들이는
+    기준과 같다."""
     squeezed = "".join(unicodedata.normalize("NFKC", text).split())
     return "".join(unicodedata.normalize("NFKC", name).split()) in squeezed
 
 
-# 원본 음성 실행의 기록에서 다시 합성할 발화 목록을 만든다. 원본이 지금 코드·데이터와 같은 조건인지 먼저
-# 확인한다: 시험용 기록이 아니어야 하고, 음성 실행이어야 하고, 과제 파일과 seed DB의 해시가 실행 때와 같아야
-# 한다. 하나라도 어긋나면 ValueError.
+# 원본이 지금 코드·데이터와 같은 조건인지 먼저 확인한다: 시험용 기록이 아니어야 하고, 음성 실행이어야 하고,
+# 과제 파일과 seed DB의 해시가 실행 때와 같아야 한다. 하나라도 어긋나면 ValueError.
 # 호출 위치: main()의 plan, _run().
 def source_utterances(run_dir: Path) -> tuple[dict[str, Any], list[Utterance]]:
-    """The synthesised customer utterances of a voice run, in the order of the run's records."""
+    """음성 실행에서 합성된 고객 발화들(다시 합성할 목록)을 실행 기록의 순서대로 돌려준다."""
     # DB·과제 모듈은 고객 이름을 얻는 데만 필요해 함수 안에서 불러온다.
     from sqlalchemy import select
     from sqlalchemy.orm import Session
@@ -172,7 +171,7 @@ def source_utterances(run_dir: Path) -> tuple[dict[str, Any], list[Utterance]]:
         task_id, trial = e["task_id"], e["trial"]
         for index, u in enumerate(e.get("voice") or []):
             # 말로 푼 글에 한글이 없으면 채널이 합성하지 않은 발화이므로 뺀다 (channel.py hear()와 같은 조건).
-            if not re.search("[가-힣]", u["spoken"]):  # the channel synthesised nothing
+            if not re.search("[가-힣]", u["spoken"]):
                 continue
             out.append(
                 Utterance(
@@ -192,12 +191,12 @@ def source_utterances(run_dir: Path) -> tuple[dict[str, Any], list[Utterance]]:
     return manifest, out
 
 
-# 지금 올린 합성기·인식기의 describe()가 원본 실행의 음성 설정과 다른 키 목록을 돌려준다. 원본 manifest는 두
-# 설정을 한 dict로 합쳐 device가 하나뿐이라, 양쪽 장치를 모두 그 값과 비교한다.
+# 지금 올린 합성기·인식기의 describe()가 원본 실행의 음성 설정과 다른 키 목록을 돌려준다. 양쪽 장치를 모두
+# 원본 manifest의 device 값과 비교한다.
 # 호출 위치: _run(). 다르면 공식 실행은 멈추고, 아니면 경고만 내고 하니스 확인으로 돈다.
 def channel_mismatches(manifest: dict[str, Any], tts: dict[str, Any], stt: dict[str, Any]) -> list[str]:
-    """What differs from the source run's speech models. Its manifest merged both descriptions into one, so
-    its `device` is the recogniser's; stage 9 ran both models on the same device."""
+    """원본 실행의 음성 모델과 다른 것. 원본 manifest는 두 설명을 한 dict로 합쳤으므로 그 `device`는
+    인식기의 것이다. 9단계는 두 모델을 같은 장치에서 돌렸다."""
     recorded = manifest["voice_channel"]
     sides = {"tts": tts, "stt": stt}
     out = [key for key, side in _SAME_CHANNEL_KEYS if recorded.get(key) != sides[side].get(key)]
@@ -207,11 +206,10 @@ def channel_mismatches(manifest: dict[str, Any], tts: dict[str, Any], stt: dict[
     return out
 
 
-# ---------------------------------------------------------------- the measurement
+# ---------------------------------------------------------------- 측정
 
 
-# 측정 본체: 발화마다 합성 → 디코딩 → 깨끗한 인식 → 열화 → 다시 인식을 하고, 기록 한 줄을 utterances.jsonl에
-# 쓴다.
+# 측정 본체. 기록 한 줄을 utterances.jsonl에 쓴다.
 # 합성기·인식기·디코더·열화 함수를 인자로 받으므로 테스트는 가짜 모델로 이 함수를 그대로 돌린다
 # (tests/test_stage11.py). 반환은 기록 목록이다.
 def measure(
@@ -227,7 +225,7 @@ def measure(
     normalizer: Any = _KEEP,
     progress: Callable[[str], None] | None = None,
 ) -> list[dict[str, Any]]:
-    """Synthesise, decode, recognise clean, degrade, recognise again; one record per utterance."""
+    """발화마다 합성, 디코딩, 깨끗한 인식, 열화, 다시 인식을 하고 발화당 기록 하나를 남긴다."""
     # 정규화 선택: 기본은 V2의 normalize_heard, None이면 받아쓰기 그대로. 두 받아쓰기에 같은 정규화를
     # 적용한다.
     normalise = normalize_heard if normalizer is _KEEP else (normalizer or (lambda text: text))
@@ -293,7 +291,7 @@ def measure(
     return records
 
 
-# ---------------------------------------------------------------- the CPU gate on the drawn conditions
+# ---------------------------------------------------------------- 뽑힌 조건의 CPU 관문
 
 
 # 돌발 소음 수의 허용 범위: 포아송 분포는 평균과 분산이 같으므로 기댓값(오디오 분 × 분당 횟수) ± 3·√기댓값.
@@ -303,13 +301,13 @@ def burst_bounds(seconds: float, per_minute: float = 1.0) -> tuple[float, float]
     return expected - spread, expected + spread
 
 
-# CPU 관문: 모든 발화에 대해 기록된 길이로 열화 조건만 뽑아(소리 없음) 등록한 비율과 맞는지 본다. 먹먹한 발화
-# 비율, 잃은 프레임 비율, 돌발 소음 수, 배경 SNR 범위와 두 색이 모두 나왔는지. 반환은 (출력 줄, 통과 여부).
+# 보는 것: 먹먹한 발화 비율, 잃은 프레임 비율, 돌발 소음 수, 배경 SNR 범위와 두 색이 모두 나왔는지. 반환은
+# (출력 줄, 통과 여부).
 # 왜 필요한가: GPU를 쓰기 전에 구현이 데이터 크기에서 등록한 값대로 뽑는지 확인한다. 어기면 GPU로 가지 않는다.
 # 실제 실행은 다시 합성한 소리의 길이로 뽑으므로 수가 조금 다를 수 있다.
 def plan_gate(utterances: list[Utterance]) -> tuple[list[str], bool]:
-    """Draw every utterance's conditions for its recorded length and check them against the registered rates.
-    It checks the implementation at the size of the data; it measures nothing."""
+    """CPU 관문: 모든 발화의 조건을 기록된 길이로 뽑아(소리 없음) 등록한 비율과 맞는지 본다.
+    데이터 크기에서 구현을 확인할 뿐 아무것도 재지 않는다."""
     from support_agent.voice.degrade import REALISTIC, SAMPLE_RATE, draw
 
     p = REALISTIC
@@ -352,7 +350,7 @@ def plan_gate(utterances: list[Utterance]) -> tuple[list[str], bool]:
     return lines, passed
 
 
-# ---------------------------------------------------------------- the report
+# ---------------------------------------------------------------- 보고서
 
 
 # 한 기록의 한쪽(깨끗한 또는 열화한 글)에 대해 지표별 (분자, 분모)를 센다. 글자 오류율은 (편집 거리, 말한 글자
@@ -373,21 +371,19 @@ def _side(r: dict[str, Any], text: str) -> dict[str, tuple[int, int]]:
     return out
 
 
-# 기록 하나의 지표별 ((깨끗한 분자, 분모), (열화한 분자, 분모)).
 def counts(r: dict[str, Any]) -> dict[str, tuple[tuple[int, int], tuple[int, int]]]:
-    """Per metric: ((clean numerator, denominator), (degraded numerator, denominator))."""
+    """기록 하나의 지표별 ((깨끗한 쪽 분자, 분모), (열화한 쪽 분자, 분모))."""
     clean, degraded = _side(r, r["clean_text"]), _side(r, r["degraded_text"])
     return {key: (clean[key], degraded[key]) for key in clean}
 
 
-# 열화 − 깨끗함의 합친 비율 차이와 95% 구간. 비율은 뽑힌 과제를 모두 합쳐(분자 합 / 분모 합) 계산하고, 과제를
-# 다시 뽑을 때 그 과제의 발화와 두 조건이 함께 뽑힌다 (docs/experiments.md 11단계 "구간").
+# 비율은 뽑힌 과제를 모두 합쳐(분자 합 / 분모 합) 계산한다 (docs/experiments.md 11단계 "구간").
 # 분모가 0인 뽑기는 버린다. 점 추정부터 분모가 0이면 nan을 돌려준다.
 def pooled_difference(
     by_task: dict[str, tuple[tuple[int, int], tuple[int, int]]],
 ) -> tuple[float, float, float]:
-    """Degraded minus clean of the pooled rate, with a 95% interval: tasks are resampled with their utterances
-    (both sides of an utterance stay together)."""
+    """합친 비율의 열화 − 깨끗함 차이와 95% 구간: 과제를 그 발화들과 함께 다시 뽑는다(한 발화의 두 조건은
+    늘 함께 뽑힌다)."""
 
     def rate(tasks: list[str]) -> float | None:
         cn = sum(by_task[t][0][0] for t in tasks)
@@ -524,7 +520,7 @@ def report(records: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------- command line
+# ---------------------------------------------------------------- 명령줄
 
 
 # 음성 모델과 열화 모듈을 불러온다 (음성 의존성 그룹이 필요해 run 명령에서만 부른다).
@@ -625,7 +621,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             normalizer=normalizer,
             progress=lambda text: print(text, flush=True),
         )
-    finally:  # also after a crash: how far it got
+    finally:  # 비정상 종료 뒤에도 어디까지 했는지 남긴다
         written = (
             (out / "utterances.jsonl").read_text("utf-8").splitlines()
             if (out / "utterances.jsonl").exists()
@@ -647,15 +643,15 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("plan", help="CPU gate: the drawn conditions").add_argument("source", type=Path)
-    run = commands.add_parser("run", help="synthesise and recognise (speech models)")
+    commands.add_parser("plan", help="CPU 관문: 뽑힌 열화 조건 확인").add_argument("source", type=Path)
+    run = commands.add_parser("run", help="다시 합성하고 받아 적기(음성 모델 필요)")
     run.add_argument("source", type=Path)
-    run.add_argument("--official", action="store_true", help="write to reports/ (needs a clean tree)")
+    run.add_argument("--official", action="store_true", help="reports/에 쓴다(깨끗한 작업 트리 필요)")
     run.add_argument("--label", default="")
-    run.add_argument("--limit", type=int, default=None, help="only the first N utterances (not official)")
+    run.add_argument("--limit", type=int, default=None, help="앞의 N개 발화만(공식 실행 아님)")
     run.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     run.add_argument("--cache", type=Path, default=CACHE)
-    commands.add_parser("report", help="tables from a stage A run").add_argument("run_dir", type=Path)
+    commands.add_parser("report", help="A단계 실행 기록에서 표 만들기").add_argument("run_dir", type=Path)
     args = parser.parse_args(argv)
 
     if args.command == "plan":

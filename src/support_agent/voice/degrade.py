@@ -1,23 +1,21 @@
-"""Telephone-call conditions for synthesised speech: stage 11 (V4-R), fixed before measuring.
+"""합성 음성에 얹는 전화 통화 조건: 11단계(V4-R). 측정 전에 정해 두었다.
 
-The values are tau-Voice's "Realistic" condition (arXiv 2603.13686, Table 4 and Table 13; the defaults of
-tau2-bench's voice_config.py for the parts the paper leaves out: the muffled segment and its cutoff). Only
-the values are taken; this is our own implementation. The order is tau-Voice's: speech effect (muffling),
-source effects (background noise, bursts), channel effects (telephone band and mu-law, lost frames).
+값은 tau-Voice의 "Realistic" 조건이다(arXiv 2603.13686 표 4·표 13. 논문이 적지 않은 먹먹한 구간과 그 차단
+주파수는 tau2-bench voice_config.py의 기본값). 값만 가져왔고 구현은 이 저장소의 것이다. 순서는 tau-Voice와
+같다: 말소리 효과(먹먹함), 소리 환경 효과(배경 소음, 돌발 소음), 채널 효과(전화 대역과 mu-law, 프레임 손실).
 
-Differences from tau-Voice, chosen before measuring (docs/experiments.md, stage 11):
-- Noise is generated (pink or brown), and bursts are four generated sounds. tau-Voice mixes recordings
-  (street, people talking; phone rings, dog barks). Babble made by our own Korean voice is left out: the
-  recogniser could write down its words, which is another disturbance than noise.
-- Every SNR is measured inside the telephone band (300-3400 Hz) against the utterance's own speech, not
-  against a fixed reference level: the channel removes what lies outside the band, so a noise colour with its
-  energy below 300 Hz does not make the condition easier.
-- The background level is drawn once per utterance (15 dB +-3, uniform) instead of drifting within it.
-- Out-of-turn speech and vocal tics are left out (they need our own voice again).
-- The 8 kHz mu-law step is whisper-ko-ft's channel.py `telephone()` (its stage 4), split in two so that lost
-  frames fall between the codec and the way back to 16 kHz. Lost frames are silence (no concealment).
+측정 전에 정한 tau-Voice와 다른 점(docs/experiments.md 11단계):
+- 소음은 생성한다(분홍 또는 갈색). 돌발 소음은 생성한 소리 네 가지다. tau-Voice는 녹음(거리, 사람들 말소리;
+  전화벨, 개 짖는 소리)을 섞는다. 이 저장소의 한국어 합성 음성으로 만든 웅성거림은 뺐다: 인식기가 그 말을
+  받아 적을 수 있어, 소음과는 다른 방해가 되기 때문이다.
+- 모든 SNR은 고정된 기준 크기가 아니라 그 발화 자신의 말소리에 대해, 전화 대역(300-3400 Hz) 안에서 잰다:
+  채널이 대역 밖을 지우므로, 힘이 300 Hz 아래에 몰린 소음 색이 조건을 쉽게 만들지 않게 하려는 것이다.
+- 배경 소음 크기는 발화 안에서 흔들리게 하지 않고 발화마다 한 번 뽑는다(15 dB ±3, 고르게).
+- 차례가 아닌 때의 말소리와 말버릇은 뺐다(다시 이 저장소의 합성 음성이 필요하므로).
+- 8 kHz mu-law 단계는 whisper-ko-ft channel.py의 `telephone()`(그 저장소의 4단계)이고, 프레임 손실이 코덱과
+  16 kHz 복원 사이에 들어가도록 둘로 나눴다. 잃은 프레임은 무음이다(손실 은닉 없음).
 
-Input and output are 16 kHz mono float32, what faster-whisper decodes a recording to.
+입력과 출력은 16 kHz 모노 float32로, faster-whisper가 녹음을 풀어 쓰는 형식과 같다.
 """
 
 # [파일 역할] 11단계(V4-R A단계)에서 합성한 고객 음성에 '전화 통화 조건'을 얹는 열화 모듈이다. 16 kHz 음성을
@@ -47,7 +45,7 @@ from scipy.signal import butter, resample_poly, sosfiltfilt
 
 # 열화 구현의 버전 문자열. describe()를 거쳐 왕복 캐시 키와 실행 기록(manifest.json의 degrade)에 들어가므로,
 # 아래 무엇이든 바꾸면 이 값도 바꿔야 예전 캐시 결과가 섞이지 않는다.
-DEGRADE_VERSION = "v4r-1"  # part of the cache key and the manifest: change it with any change below
+DEGRADE_VERSION = "v4r-1"
 # SAMPLE_RATE: 입출력 표본화율(16 kHz). faster-whisper가 녹음을 풀어 인식기에 넣는 표본화율과 같다.
 # NARROW_RATE: 전화 채널 구간의 표본화율(8 kHz). 프레임 손실은 이 신호 위에서 계산한다.
 SAMPLE_RATE = 16_000
@@ -60,11 +58,11 @@ MU = 255.0
 BAND = butter(4, [300, 3400], btype="bandpass", fs=SAMPLE_RATE, output="sos")
 # sosfiltfilt는 앞뒤로 신호를 덧대어 거르는데, 이보다 짧은 입력은 덧댈 길이가 모자라 오류가 난다. 그런 발화는
 # 열화 없이 그대로 돌려준다(telephone, apply).
-MIN_SAMPLES = 64  # shorter than the zero-phase filter's padding: left as it is
+MIN_SAMPLES = 64
 # 돌발 소음 네 종류의 길이(초). τ-Voice는 녹음(전화벨, 개 짖는 소리 등)을 섞지만, 이 저장소에는 쓸 녹음이 없고
 # 내려받지 않기로 해서 소리를 직접 생성한다 (docs/experiments.md 11단계 "다르게 정한 것").
-# Generated bursts (seconds): a clatter (decaying broadband noise), a ringing phone (two tones alternating
-# every 25 ms), a car horn (420 Hz and its harmonics), a siren (650 -> 1300 -> 650 Hz).
+# 생성하는 소리: 부딪는 소리(줄어드는 광대역 잡음), 전화벨(25 ms마다 번갈아 나는 두 음), 자동차
+# 경적(420 Hz와 그 배음), 사이렌(650 -> 1300 -> 650 Hz).
 BURST_SECONDS = {"clatter": 0.25, "ring": 1.0, "horn": 0.6, "siren": 1.5}
 # 돌발 소음의 시작과 끝을 10 ms에 걸쳐 키우고 줄인다. 갑자기 켜지고 꺼지는 소리가 딸깍 잡음을 만들지 않게
 # 하려는 것이다.
@@ -81,57 +79,55 @@ class Realistic:
     # 배경 소음: SNR 15 dB ±3 dB를 발화마다 한 번 고르게 뽑는다. τ-Voice는 한 통화 안에서 천천히 흔들지만,
     # 발화가 평균 5.7초라 차이가 작아 발화 단위로 정했다. 색은 분홍·갈색 중 하나.
     noise_snr_db: float = 15.0
-    noise_snr_spread_db: float = 3.0  # uniform in [15 - 3, 15 + 3] per utterance
+    noise_snr_spread_db: float = 3.0  # 발화마다 [15 - 3, 15 + 3]에서 고르게 뽑는다
     noise_colours: tuple[str, ...] = ("pink", "brown")
     # 돌발 소음: 분당 평균 1회(포아송, 발화 길이에 비례). 하나마다 SNR을 −5 ~ +10 dB에서 고르게 뽑고 네 소리
     # 중 하나를 고른다.
-    burst_per_minute: float = 1.0  # Poisson
-    burst_snr_db: tuple[float, float] = (-5.0, 10.0)  # uniform per burst
+    burst_per_minute: float = 1.0  # 포아송: 분당 평균 횟수
+    burst_snr_db: tuple[float, float] = (-5.0, 10.0)  # 돌발 소음마다 고르게 뽑는다
     burst_kinds: tuple[str, ...] = ("clatter", "ring", "horn", "siren")
     # 먹먹함: 발화의 20%에서 한 구간 500 ms를 1500 Hz 저역 통과로 바꾸고, 앞뒤 100 ms에 걸쳐 섞어 들어가고
     # 나온다. 송화기를 손으로 가리는 것 같은 말소리 효과다.
-    muffle_probability: float = 0.2  # of utterances
-    muffle_ms: int = 500  # one low-passed segment ...
-    muffle_transition_ms: int = 100  # ... faded in and out over this
+    muffle_probability: float = 0.2  # 먹먹함을 넣는 발화의 비율
+    muffle_ms: int = 500  # 저역 통과하는 구간 하나의 길이 ...
+    muffle_transition_ms: int = 100  # ... 그 구간에 이 길이에 걸쳐 섞어 들어가고 나온다
     muffle_cutoff_hz: float = 1500.0
     # 프레임 손실: 20 ms 프레임(G.711 패킷 하나)에 Gilbert–Elliott 모형을 적용한다. 평균 손실 2%, 잃는 구간의
     # 평균 길이 100 ms(= 5프레임). 잃은 프레임은 메우지 않고 무음으로 둔다.
-    frame_ms: int = 20  # one G.711 packet
-    loss_rate: float = 0.02  # Gilbert-Elliott: share of lost frames ...
-    loss_burst_ms: float = 100.0  # ... and the mean length of a run of them
+    frame_ms: int = 20  # G.711 패킷 하나
+    loss_rate: float = 0.02  # Gilbert-Elliott: 잃는 프레임의 비율 ...
+    loss_burst_ms: float = 100.0  # ... 과 연달아 잃는 구간의 평균 길이
     # 섞은 소리의 최댓값이 0.99를 넘으면 발화 전체 음량을 낮춘다. mu-law 단계가 -1~1 밖을 잘라 내므로, 잘림
     # 왜곡이라는 다른 열화가 섞이지 않게 미리 줄이는 것이다.
-    peak: float = 0.99  # a louder mixture is turned down before the codec instead of clipped
+    peak: float = 0.99  # 이보다 큰 섞은 소리는 잘리게 두지 않고 코덱 전에 음량을 낮춘다
 
 
 # 등록한 기본 조건. 함수들의 기본 인자로 쓰고, voice_real.py의 CPU 관문도 이 값의 비율로 뽑힌 조건을 검사한다.
 REALISTIC = Realistic()
 
 
-# 매개변수와 버전을 JSON으로 쓸 수 있는 dict로 돌려준다 (튜플은 리스트로 바꾼다).
 # 호출 위치: voice_real.py _run()이 manifest.json의 degrade 항목과 measure()의 캐시 키(description)에 넣는다.
 # 값이 하나라도 바뀌면 캐시 키가 달라져 예전 왕복 결과를 다시 쓰지 않는다.
 def describe(params: Realistic = REALISTIC) -> dict:
-    """What the cache key and the manifest record."""
+    """캐시 키와 manifest에 기록할 것: 매개변수와 버전을 JSON으로 쓸 수 있는 dict(튜플은 리스트로 바꾼다)."""
     values = {k: list(v) if isinstance(v, tuple) else v for k, v in asdict(params).items()}
     return {"degrade": DEGRADE_VERSION, **values}
 
 
-# ---------------------------------------------------------------- the telephone (whisper-ko-ft channel.py)
+# ---------------------------------------------------------------- 전화 채널 (whisper-ko-ft channel.py)
 
 
-# 8비트 mu-law로 압축 → 256단계 양자화 → 복원을 한 번 거친 파형을 돌려준다. whisper-ko-ft channel.py의 같은
-# 이름 함수와 같은 구현이고(G.711의 구간 표가 아니라 연속 mu-law를 256단계로 양자화), 그 저장소 코드로 계산한
-# 출력값을 테스트에 고정해 두었다 (docs/experiments.md 11단계 표 5번).
+# whisper-ko-ft channel.py의 같은 이름 함수와 같은 구현이고(G.711의 구간 표가 아니라 연속 mu-law를 256단계로
+# 양자화), 그 저장소 코드로 계산한 출력값을 테스트에 고정해 두었다 (docs/experiments.md 11단계 표 5번).
 def mu_law_roundtrip(samples: np.ndarray) -> np.ndarray:
-    """Compress to 8-bit mu-law codes and expand back."""
+    """8비트 mu-law 코드로 압축(256단계 양자화)했다가 다시 펼친 파형을 돌려준다."""
     # mu-law 공식은 -1~1 범위를 가정하므로 먼저 잘라 낸다. 잘림 자체가 왜곡이 되므로 mix()는 섞은 소리의
     # 최댓값을 미리 0.99 아래로 낮춘다.
     clipped = np.clip(samples, -1.0, 1.0)
     compressed = np.sign(clipped) * np.log1p(MU * np.abs(clipped)) / np.log1p(MU)
     # -1~1을 0~255 정수 코드로 반올림한다. 여기서 양자화 잡음(정보 손실)이 생기고, 다음 두 줄이 압축의
     # 역함수로 원래 진폭 척도로 되돌린다.
-    codes = np.round((compressed + 1.0) / 2.0 * 255.0)  # 256 levels
+    codes = np.round((compressed + 1.0) / 2.0 * 255.0)  # 256단계
     restored = codes / 255.0 * 2.0 - 1.0
     return (np.sign(restored) * np.expm1(np.abs(restored) * np.log1p(MU)) / MU).astype(np.float32)
 
@@ -140,56 +136,53 @@ def mu_law_roundtrip(samples: np.ndarray) -> np.ndarray:
 # 왜 telephone()을 둘로 나눴나: 프레임 손실을 코덱 뒤, 16 kHz 복원 전(8 kHz 신호 위)에 넣으려고 narrowband와
 # widen으로 갈랐다. 둘을 이어 붙이면 telephone()과 출력이 같다는 것을 테스트가 확인한다.
 def narrowband(samples: np.ndarray) -> np.ndarray:
-    """16 kHz audio through the 300-3400 Hz band, at 8 kHz, after the mu-law codec."""
+    """16 kHz 소리를 300-3400 Hz 대역으로 거르고 8 kHz로 낮춘 뒤 mu-law 코덱을 거친 신호."""
     return mu_law_roundtrip(resample_poly(sosfiltfilt(BAND, samples), 1, 2))
 
 
-# 전화 채널의 뒤 절반: 8 kHz 신호를 16 kHz로 되돌리고 원래 길이로 자른다. 리샘플 과정에서 길이가 한두 표본
-# 달라질 수 있어 자른다. 4 kHz 위의 고역은 되살아나지 않으므로 전화 음질은 그대로 남는다.
+# 전화 채널의 뒤 절반. 리샘플 과정에서 길이가 한두 표본 달라질 수 있어 자른다. 4 kHz 위의 고역은 되살아나지
+# 않으므로 전화 음질은 그대로 남는다.
 def widen(narrow: np.ndarray, length: int) -> np.ndarray:
-    """The 8 kHz signal back at 16 kHz, cut to the original length."""
+    """8 kHz 신호를 16 kHz로 되돌리고 원래 길이로 자른다."""
     return resample_poly(narrow, 2, 1)[:length].astype(np.float32)
 
 
-# 소음·손실 없이 전화 채널만 거친 소리. 테스트가 whisper-ko-ft의 telephone()과 같은 값을 내는지, narrowband와
-# widen을 이은 것과 같은지를 이 함수로 확인한다. 측정 경로(apply)는 이 함수 대신 narrowband와 widen을 직접
-# 부른다.
+# 소음·손실은 넣지 않는다. 테스트가 whisper-ko-ft의 telephone()과 같은 값을 내는지, narrowband와 widen을 이은
+# 것과 같은지를 이 함수로 확인한다. 측정 경로(apply)는 이 함수 대신 narrowband와 widen을 직접 부른다.
 def telephone(samples: np.ndarray) -> np.ndarray:
-    """16 kHz audio as it would sound after a narrowband telephone channel, still at 16 kHz."""
+    """16 kHz 소리가 좁은 대역 전화 채널을 거친 뒤 들릴 소리. 출력도 16 kHz다."""
     if len(samples) < MIN_SAMPLES:
         return samples.astype(np.float32)
     return widen(narrowband(samples), len(samples))
 
 
-# ---------------------------------------------------------------- what is drawn for one utterance
+# ---------------------------------------------------------------- 발화 하나에 대해 뽑는 것
 
 
-# 16 kHz 표본 length개를 8 kHz로 줄였을 때의 20 ms 프레임 수(마지막 프레임은 짧을 수 있다).
 # (length + 1) // 2는 resample_poly(…, 1, 2)가 내는 8 kHz 표본 수이고, -(-a // b)는 올림 나눗셈이다. 8 kHz에서
 # 20 ms는 160표본이다.
 def frame_count(length: int) -> int:
-    """20 ms frames of the 8 kHz signal of `length` samples at 16 kHz (the last one may be short)."""
+    """16 kHz 표본 `length`개를 8 kHz로 줄인 신호의 20 ms 프레임 수(마지막 프레임은 짧을 수 있다)."""
     narrow = (length + 1) // 2
     per_frame = NARROW_RATE * REALISTIC.frame_ms // 1000
     return -(-narrow // per_frame)
 
 
-# Gilbert–Elliott 2상태 마르코프 연쇄로 잃을 프레임을 뽑는다. 나쁜 상태의 프레임은 모두 잃고 좋은 상태의
-# 프레임은 하나도 잃지 않는 단순형이다.
 # 공식: 나쁜 상태를 떠날 확률 leave = 1/burst_frames로 두면 잃는 구간의 평균 길이가 burst_frames(5프레임 = 100
 # ms)가 된다. 들어갈 확률 enter = rate·leave/(1−rate)로 두면 정상 상태에서 나쁜 상태의 비율
 # enter/(enter+leave)가 정확히 rate(2%)가 된다.
 # 난수를 frames + 1개 한 번에 뽑아 두므로, 같은 rng 상태면 같은 손실 위치가 나온다.
 def gilbert_elliott(frames: int, rate: float, burst_frames: float, rng: np.random.Generator) -> np.ndarray:
-    """Lost frames of a two-state chain: every frame of the bad state is lost, none of the good state. Leaving
-    the bad state has probability 1/burst_frames (mean run), entering it is set so that `rate` are lost."""
+    """Gilbert–Elliott 2상태 마르코프 연쇄로 뽑은 잃는 프레임: 나쁜 상태의 프레임은 모두 잃고 좋은 상태의
+    프레임은 하나도 잃지 않는다. 나쁜 상태를 떠날 확률은 1/burst_frames(평균 연속 길이)이고, 들어갈 확률은
+    `rate`만큼 잃도록 정한다."""
     leave = 1.0 / burst_frames
     enter = rate * leave / (1.0 - rate)
     draws = rng.random(frames + 1)
     lost = np.zeros(frames, dtype=bool)
     # 첫 프레임의 상태는 정상 상태 비율(rate)로 정한다. 발화가 연쇄의 중간에서 시작한 것처럼 다뤄, 발화
     # 앞부분의 손실률이 낮게 치우치지 않게 한다.
-    bad = draws[0] < rate  # the first frame from the chain's stationary share
+    bad = draws[0] < rate
     for i in range(frames):
         lost[i] = bad
         # 다음 프레임의 상태: 지금 나쁘면 1 − leave 확률로 계속 나쁘고, 좋으면 enter 확률로 나빠진다.
@@ -202,13 +195,13 @@ def gilbert_elliott(frames: int, rate: float, burst_frames: float, rng: np.rando
 # 바꾼다. 위치는 16 kHz 표본 번호로 들고 있다.
 @dataclass(frozen=True)
 class Plan:
-    muffle_start: int | None  # first sample of the muffled span (ramp, segment, ramp); None: not muffled
+    muffle_start: int | None  # 먹먹한 구간(들어감, 유지, 나옴)의 첫 표본. None: 먹먹함 없음
     colour: str
     snr_db: float
     noise_seed: int
-    bursts: tuple[tuple[str, int, float, int], ...]  # (kind, first sample, SNR dB, seed of its sound)
+    bursts: tuple[tuple[str, int, float, int], ...]  # (종류, 첫 표본, SNR dB, 그 소리의 seed)
     frames: int
-    lost: tuple[int, ...]  # indices of lost 20 ms frames
+    lost: tuple[int, ...]  # 잃은 20 ms 프레임의 번호
 
     # 기록용 dict. 표본 번호를 초 단위로 바꿔 사람이 읽기 쉽게 하고, degrade()가 gain을 더해
     # utterances.jsonl의 plan 항목으로 남긴다. voice_real.report()는 이 키(muffle_start_s, lost, bursts,
@@ -228,15 +221,14 @@ class Plan:
         }
 
 
-# seed와 길이만으로 발화 하나의 무작위 조건을 모두 뽑는다.
 # 왜 효과마다 난수 흐름을 나누나: SeedSequence.spawn(4)로 먹먹함·소음·돌발·손실의 생성기를 따로 만들면, 한
 # 효과의 뽑기 개수가 달라져도(예: 돌발 소음 수) 다른 효과의 뽑기가 밀리지 않는다 (docs/experiments.md 11단계
 # "무작위는 … 효과마다 따로 갈라 쓴다").
 # seed는 voice_real.py가 derive_seed(기본 seed, 과제, 시도, "degrade", 순번)로 만든다. 관문은 기록된 길이로,
 # 측정은 다시 합성한 소리의 길이로 뽑으므로 둘의 조건이 조금 다를 수 있다.
 def draw(seed: int, length: int, params: Realistic = REALISTIC) -> Plan:
-    """Everything random about one utterance of `length` samples. Each effect has its own stream, so the
-    draws of one do not move when another changes."""
+    """표본 `length`개인 발화 하나의 무작위 조건을 seed와 길이만으로 모두 뽑는다. 효과마다 난수 흐름이 따로라
+    한 효과가 바뀌어도 다른 효과의 뽑기는 움직이지 않는다."""
     muffle_rng, noise_rng, burst_rng, loss_rng = (
         np.random.default_rng(s) for s in np.random.SeedSequence(seed).spawn(4)
     )
@@ -272,7 +264,7 @@ def draw(seed: int, length: int, params: Realistic = REALISTIC) -> Plan:
     )
 
 
-# ---------------------------------------------------------------- sounds
+# ---------------------------------------------------------------- 소리 만들기
 
 
 # 전화 대역(300~3400 Hz) 안의 RMS. SNR을 이 값으로 재는 이유: 채널이 대역 밖을 걸러 내므로, 힘이 대부분 300 Hz
@@ -282,11 +274,11 @@ def _band_rms(x: np.ndarray) -> float:
     return float(np.sqrt(np.mean(sosfiltfilt(BAND, x) ** 2)))
 
 
-# 색 잡음 생성: 백색 가우스 잡음을 주파수 영역으로 옮겨 진폭에 f^(−지수/2)를 곱한다. 진폭이 f^(−1/2)이면 힘이
-# 1/f(분홍), f^(−1)이면 1/f²(갈색)이다. 20 Hz 아래는 0으로 둔다. 마지막에 RMS 1로 맞춰 두고, 크기는 mix()가
-# SNR에 맞게 정한다. "white"는 표에만 있고 등록한 조건(분홍·갈색)에서는 쓰지 않는다.
+# 만드는 법: 백색 가우스 잡음을 주파수 영역으로 옮겨 진폭에 f^(−지수/2)를 곱한다. 진폭이 f^(−1/2)이면 힘이
+# 1/f(분홍), f^(−1)이면 1/f²(갈색)이다. 크기는 mix()가 SNR에 맞게 정한다. "white"는 표에만 있고 등록한
+# 조건(분홍·갈색)에서는 쓰지 않는다.
 def coloured_noise(length: int, colour: str, rng: np.random.Generator) -> np.ndarray:
-    """Gaussian noise with power falling as 1/f (pink) or 1/f^2 (brown) above 20 Hz, none below; unit RMS."""
+    """20 Hz 위에서 힘이 1/f(분홍) 또는 1/f^2(갈색)으로 줄고 20 Hz 아래는 없는 가우스 잡음. RMS는 1이다."""
     exponent = {"white": 0.0, "pink": 1.0, "brown": 2.0}[colour]
     spectrum = np.fft.rfft(rng.standard_normal(length))
     freqs = np.fft.rfftfreq(length, 1 / SAMPLE_RATE)
@@ -340,14 +332,15 @@ def _muffle(x: np.ndarray, start: int, params: Realistic) -> np.ndarray:
     return x + window * (low - x)
 
 
-# ---------------------------------------------------------------- putting it together
+# ---------------------------------------------------------------- 합치기
 
 
-# 말소리 효과와 소리 환경(먹먹함, 배경 소음, 돌발 소음)을 전화 채널 앞에서 섞는다. 반환: (섞은 신호, 최댓값을
-# 넘지 않게 곱한 음량 배율).
 # 순서는 τ-Voice와 같다: 말소리 효과 → 소리 환경 → (apply의) 채널.
 def mix(samples: np.ndarray, plan: Plan, params: Realistic = REALISTIC) -> tuple[np.ndarray, float]:
-    """The speech and source effects, before the telephone: (mixture, gain applied to stay under the peak)."""
+    """전화 채널 앞에서 말소리 효과와 소리 환경(먹먹함, 배경 소음, 돌발 소음)을 섞는다.
+
+    반환: (섞은 신호, 최댓값을 넘지 않게 곱한 음량 배율).
+    """
     x = np.asarray(samples, dtype=np.float64)
     # SNR의 기준이 되는 말소리 크기는 먹먹함을 넣기 전의 발화 전체로 잰다 (docs/experiments.md 11단계 "말소리
     # 쪽은 그 발화 전체(먹먹함 전)"). 먹먹함이 있는 발화에서 소음이 덩달아 작아지지 않게 하려는 것이다.
@@ -371,12 +364,11 @@ def mix(samples: np.ndarray, plan: Plan, params: Realistic = REALISTIC) -> tuple
     return x * gain, gain
 
 
-# Plan 하나로 조건 전체를 적용한다: mix → narrowband(대역, 8 kHz, mu-law) → 잃은 프레임을 0으로 → widen(16
-# kHz). 반환은 인식기가 받는 16 kHz float32와 음량 배율이다.
+# 순서: mix → narrowband(대역, 8 kHz, mu-law) → 잃은 프레임을 0으로 → widen(16 kHz).
 # 잃은 프레임을 8 kHz 신호에서 지우는 이유: 실제 전화망에서 패킷은 코덱을 거친 뒤 잃으므로, 코덱과 16 kHz 복원
 # 사이에 넣는다. 메움(손실 은닉)은 하지 않는다.
 def apply(samples: np.ndarray, plan: Plan, params: Realistic = REALISTIC) -> tuple[np.ndarray, float]:
-    """The whole condition: (16 kHz float32 as the recogniser gets it, gain)."""
+    """Plan 하나로 조건 전체를 적용한다: (인식기가 받는 16 kHz float32, 음량 배율)."""
     if len(samples) < MIN_SAMPLES:
         return np.asarray(samples, dtype=np.float32), 1.0
     mixed, gain = mix(samples, plan, params)
@@ -388,12 +380,11 @@ def apply(samples: np.ndarray, plan: Plan, params: Realistic = REALISTIC) -> tup
     return widen(narrow, len(samples)), gain
 
 
-# 측정에서 부르는 진입점: seed로 조건을 뽑고(draw) 적용한(apply) 뒤, 열화한 소리와 기록용 조건(Plan.to_dict +
-# gain)을 돌려준다.
+# 측정에서 부르는 진입점: seed로 조건을 뽑고(draw) 적용한다(apply).
 # 호출 위치: voice_real.py _run()이 measure(degrade=dg.degrade)로 넘기고, measure()가 발화마다
 # degrade(samples, u.degrade_seed)로 부른다.
 def degrade(samples: np.ndarray, seed: int, params: Realistic = REALISTIC) -> tuple[np.ndarray, dict]:
-    """(degraded 16 kHz float32, what was done: the plan and the gain)."""
+    """(열화한 16 kHz float32, 한 일: Plan.to_dict()와 음량 배율 gain)."""
     plan = draw(seed, len(samples), params)
     out, gain = apply(samples, plan, params)
     return out, plan.to_dict() | {"gain": gain}

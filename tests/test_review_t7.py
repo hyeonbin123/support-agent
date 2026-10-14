@@ -1,4 +1,4 @@
-"""Regressions for the findings of the read-only review of stages 3 to 5 (work/relay, round 1, T7)."""
+"""3~5단계 코드를 읽기 전용으로 검토해 찾은 문제들의 회귀 테스트."""
 
 # [테스트 묶음] 3~5단계(서비스, MCP, 음성)를 읽기 전용으로 검토한 결과에서 나온 지적마다 회귀
 # 테스트를 둔다. 구역 제목의 번호는 지적 번호다: 1-3 한 트랜잭션, 4-6 웹 계층의 한도, 8-9 MCP, 10-13 말로 풀어
@@ -49,7 +49,7 @@ from support_agent.voice import metrics
 from support_agent.voice.speech import AudioTooLongError
 from support_agent.voice.verbalize import verbalize
 
-# -------------------------------------------------------------------- 1-3: one transaction
+# -------------------------------------------------------------------- 1-3: 하나의 트랜잭션
 
 
 # execute()의 on_success 훅은 도구와 같은 트랜잭션 안에서 돈다: 훅이 받은 정보(도구, 정규화한 인자, 결과)가
@@ -95,7 +95,7 @@ def test_a_refusal_or_a_failure_in_the_hook_undoes_the_tool(tiny_engine):
 # 채팅에서 취소의 감사 행을 만들 때 오류가 나면 취소도 일어나지 않아야 한다(주문이 preparing 그대로). 감사
 # 기록 없이 주문만 바뀐 상태가 생기지 않는다는 서비스의 약속이다 (docs/service.md).
 def test_no_change_of_the_shop_without_its_audit_row(engine, monkeypatch):  # noqa: F811
-    """The audit row is written in the tool's transaction: when it cannot be written, nothing is cancelled."""
+    """감사 행은 도구의 트랜잭션 안에서 쓰인다: 그것을 쓰지 못하면 아무것도 취소되지 않는다."""
 
     class NoAudit:
         def __init__(self, **fields):
@@ -122,14 +122,14 @@ def test_the_audit_row_of_a_successful_write_is_in_the_same_transaction(engine):
         audit = client.get(f"/api/admin/sessions/{session_id}", headers=ADMIN).json()["audit"]
     calls = [e["payload"] for e in audit if e["kind"] == "tool_call"]
     assert [(c["name"], c["ok"]) for c in calls] == [("find_customer", True), ("cancel_order", True)]
-    assert len([e for e in audit if e["kind"] == "tool_call"]) == 2  # written once, not again afterwards
+    assert len([e for e in audit if e["kind"] == "tool_call"]) == 2  # 한 번 쓰이고 다시 쓰이지 않음
 
 
 # 승인 관문은 도구가 실제로 계산한 환불액을 그 트랜잭션 안에서 본다. 큰 취소는 approval_required로 끝나고 DB는
 # 그대로이며, 감사 로그에 승인 번호(AP-1)가 담긴 거절 결과가 남는다. 미리 계산해 보는 단계가 없으니 '확인할
 # 때와 실행할 때 금액이 다른' 틈이 없다.
 def test_the_gate_reads_the_refund_the_tool_really_computed(engine):  # noqa: F811
-    """The amount is checked inside the transaction of the real call, so nothing can change in between."""
+    """금액은 실제 호출의 트랜잭션 안에서 확인되므로 그 사이에 바뀔 수 있는 것이 없다."""
     with make_client(engine, [*verify_and_cancel(BIG), "담당자 확인 후 처리됩니다."]) as client:
         before = db.dump_db(engine)
         session_id, events = ask_for_big_cancel(client)
@@ -147,7 +147,7 @@ def test_the_gate_reads_the_refund_the_tool_really_computed(engine):  # noqa: F8
 # 번으로 선점). 실행된 취소는 하나이고 승인 결과의 환불액이 맞다. PostgreSQL에서의 같은 시험은
 # test_postgres.py에 있다.
 def test_of_two_deciders_one_carries_the_write_out(engine):  # noqa: F811
-    """Two service processes share the database; the claim is one conditional UPDATE."""
+    """두 서비스 프로세스가 데이터베이스를 함께 쓴다. 선점은 조건부 UPDATE 한 번이다."""
     with make_client(engine, [*verify_and_cancel(BIG), "담당자 확인 후 처리됩니다."]) as client:
         ask_for_big_cancel(client)
     services = [ChatService(Settings(), engine, ScriptedProvider([])) for _ in range(2)]
@@ -187,7 +187,7 @@ def carried_out(engine, code: str) -> list[dict]:  # noqa: F811
 # 돌아가 다시 결정할 수 있어야 한다. 오류는 감사 로그에 승인 번호와 함께 남고, 고친 뒤 다시 승인하면 취소가 한
 # 번만 실행된다.
 def test_a_failed_approved_write_gives_the_claim_back(engine, monkeypatch):  # noqa: F811
-    """The tool's transaction was rolled back, so nothing changed: the approval can be decided again."""
+    """도구의 트랜잭션이 롤백되어 아무것도 바뀌지 않았다: 승인을 다시 결정할 수 있다."""
     with make_client(engine, [*verify_and_cancel(BIG), "담당자 확인 후 처리됩니다."]) as client:
         session_id, _ = ask_for_big_cancel(client)
     service = ChatService(Settings(), engine, ScriptedProvider([]))
@@ -219,7 +219,7 @@ def test_a_failed_approved_write_gives_the_claim_back(engine, monkeypatch):  # n
 # 반대로 도구의 커밋이 끝난 뒤(이미 approved로 기록됨)에 오류가 나면 승인을 되돌리지 않는다. 되돌리면 같은
 # 취소가 두 번 실행될 수 있다.
 def test_a_write_that_committed_is_not_given_back(engine, monkeypatch):  # noqa: F811
-    """An error after the commit (the tool's transaction already said "approved") leaves it approved."""
+    """커밋 뒤의 오류(도구의 트랜잭션이 이미 "approved"로 기록함)는 승인을 그대로 둔다."""
     with make_client(engine, [*verify_and_cancel(BIG), "담당자 확인 후 처리됩니다."]) as client:
         ask_for_big_cancel(client)
     service = ChatService(Settings(), engine, ScriptedProvider([]))
@@ -237,7 +237,7 @@ def test_a_write_that_committed_is_not_given_back(engine, monkeypatch):  # noqa:
     assert order_status(engine, "O-10097") == "cancelled"
 
 
-# -------------------------------------------------------------------- 4-6: limits of the web layer
+# -------------------------------------------------------------------- 4-6: 웹 계층의 한도
 
 
 # 동시에 도는 턴 수 한도: 한도 1에서 첫 턴이 모델 호출에 머무는 동안 다른 세션의 메시지는 503과 Retry-After:
@@ -263,7 +263,7 @@ def test_turns_over_the_limit_are_turned_away(engine):  # noqa: F811
         release.set()
         worker.join(timeout=30)
         assert done[0][-1][1] == {"status": "open"}
-        assert say(client, second, "안녕하세요")[-1][0] == "end"  # the slot came back
+        assert say(client, second, "안녕하세요")[-1][0] == "end"  # 자리가 돌아왔다
 
 
 # 인식된 문장이 메시지 길이 한도를 넘으면 자르지 않고 다시 말해 달라고 하며, 턴을 쓰지 않는다. 문장 끝의
@@ -324,10 +324,10 @@ async def test_mcp_refuses_oversized_arguments_before_anything_runs(engine):  # 
         result = await client.call_tool("create_ticket", {"category": "etc", "body": body})
         assert result.is_error and "너무 큽니다" in result.content[0].text
     with Session(engine) as session:
-        assert session.scalars(select(store.ChatSession)).all() == []  # not even a session was made
+        assert session.scalars(select(store.ChatSession)).all() == []  # 세션조차 만들어지지 않았다
 
 
-# -------------------------------------------------------------------- 10-13: spoken forms and metrics
+# -------------------------------------------------------------------- 10-13: 말로 푼 꼴과 지표
 
 
 # 검토자가 찾은, 말로 잘못 풀던 표기들: +82와 괄호가 든 전화번호, 이메일의 %, 한 글자 영문 식별자(G는 그램이
@@ -368,7 +368,7 @@ def test_an_entity_inside_a_longer_one_did_not_survive(kind, entity, text, alive
     assert metrics.survived(kind, entity, text) is alive
 
 
-# -------------------------------------------------------------------- 14-15: the measurement procedure
+# -------------------------------------------------------------------- 14-15: 측정 절차
 
 
 # analyze가 읽는 최소한의 실행 폴더(manifest.json과 episodes.jsonl)를 만든다. 과제 파일 이름·과제 번호
@@ -428,7 +428,7 @@ def test_the_normaliser_cannot_be_built_from_test_records(tmp_path, monkeypatch,
     assert "lost : ['O-1']" in capsys.readouterr().out
 
 
-# -------------------------------------------------------------------- found by the security scan (HawkScan)
+# -------------------------------------------------------------------- 보안 스캔(HawkScan)이 찾은 것
 
 
 # HawkScan 1차 스캔이 찾은 결함: 승인 번호에 DB 정수 범위를 넘는 수를 넣으면 500이 났다. 이제 경로 인자에
@@ -442,4 +442,4 @@ def test_an_approval_number_beyond_the_database_range_is_a_client_error(engine):
             assert answer.status_code == 422, approval_id
         assert (
             client.post("/api/admin/approvals/2147483647/decision", headers=ADMIN, json={"approve": False})
-        ).status_code == 409  # a valid number that names no approval
+        ).status_code == 409  # 형식은 맞지만 해당 승인이 없는 번호

@@ -1,4 +1,4 @@
-"""Shared fixtures: a tiny hand-made database that does not depend on the seed generator."""
+"""공용 fixture: seed 생성기에 기대지 않는, 손으로 만든 아주 작은 데이터베이스."""
 
 # [파일 역할] 여러 테스트가 함께 쓰는 pytest fixture와 고정 시각을 둔다. 손으로 만든 아주 작은 쇼핑몰 DB(고객
 # 1명, 주소 1개, 상품 1개, 주문 2개)를 tiny_engine으로 제공한다.
@@ -24,11 +24,11 @@ from support_agent.clock import KST
 NOW = datetime(2026, 9, 14, 10, 0, tzinfo=KST)
 
 
-# 작은 DB의 행을 넣는다. 고객 C-1(김하준)의 주문 O-1은 결제 완료(paid)라 취소할 수 있고, O-2는 출고(shipped)라
-# 규정상 취소할 수 없다. 두 주문 모두 무선 이어폰 1개 38,900원, 카드 결제다.
+# 고객 C-1(김하준)의 주문 O-1은 결제 완료(paid)라 취소할 수 있고, O-2는 출고(shipped)라 규정상 취소할 수
+# 없다. 두 주문 모두 무선 이어폰 1개 38,900원, 카드 결제다.
 # 호출 위치: 아래 tiny_engine fixture, tests/factories.py extend_tiny_rows의 바탕.
 def add_tiny_rows(session: Session) -> None:
-    """One customer, one address, one product, two orders: O-1 (paid) and O-2 (shipped)."""
+    """작은 DB의 행을 넣는다: 고객 1명, 주소 1개, 상품 1개, 주문 2개(O-1 결제 완료, O-2 출고)."""
     at = datetime(2026, 9, 10, 9, 0, tzinfo=KST)
     session.add(
         db.Customer(
@@ -115,12 +115,11 @@ def add_tiny_rows(session: Session) -> None:
         )
 
 
-# 작은 DB를 담은 메모리 SQLite 엔진. 테스트는 db.memory_engine(tiny_engine)으로 바이트 복사본을 만들어
-# 에피소드 하나의 전용 DB로 쓴다(평가가 에피소드마다 seed DB를 복사하는 방식과 같다). 테스트가 끝나면 엔진을
-# 닫는다.
+# 평가가 에피소드마다 seed DB를 복사하는 방식과 같다. 테스트가 끝나면 엔진을 닫는다.
 @pytest.fixture
 def tiny_engine():
-    """A seed-like engine; copy it with db.memory_engine(tiny_engine) for a private episode database."""
+    """작은 DB를 담은, seed DB 같은 메모리 SQLite 엔진. db.memory_engine(tiny_engine)으로 복사해 에피소드
+    하나의 전용 데이터베이스로 쓴다."""
     engine = db.memory_engine()
     db.Base.metadata.create_all(engine)
     with Session(engine) as session:

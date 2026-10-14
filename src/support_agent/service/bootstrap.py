@@ -1,4 +1,4 @@
-"""Bring a service database up: connect, migrate, and fill an empty shop with the generated data."""
+"""서비스 데이터베이스를 올린다: 연결하고, 마이그레이션하고, 빈 쇼핑몰이면 생성 데이터로 채운다."""
 
 # [파일 역할] 서비스 DB를 쓸 수 있는 상태로 올린다: 엔진 생성 → Alembic 마이그레이션 → 쇼핑몰이 비어 있으면
 # 평가와 같은 생성 데이터 복사.
@@ -42,7 +42,6 @@ def make_engine(url: str) -> Engine:
         path = url.removeprefix("sqlite:///")
         if path and path != url and path != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-        # Requests run in worker threads; every unit of work opens its own Session.
         # check_same_thread=False: SQLite 연결을 만든 스레드 밖에서도 쓰게 한다. FastAPI는 동기 처리기를 작업
         # 스레드에서 돌리기 때문이다. 대신 작업 단위마다 Session을 따로 열어 한 연결을 동시에 나눠 쓰지
         # 않는다.
@@ -71,7 +70,7 @@ def alembic_config(url: str) -> Config:
 def migrate(engine: Engine) -> None:
     config = alembic_config(engine.url.render_as_string(hide_password=False))
     with engine.begin() as connection:
-        config.attributes["connection"] = connection  # env.py uses it instead of opening its own
+        config.attributes["connection"] = connection  # env.py는 자기 연결을 열지 않고 이것을 쓴다
         command.upgrade(config, "head")
 
 
@@ -80,12 +79,12 @@ def migrate(engine: Engine) -> None:
 # sorted_tables는 외래 키 의존 순서(부모 → 자식)라, 자식 행이 아직 들어가지 않은 부모 행을 가리키는 일 없이
 # 넣을 수 있다. 한 트랜잭션(engine.begin)이므로 중간에 실패하면 반쯤 채운 상태가 남지 않는다.
 def copy_seed(engine: Engine) -> bool:
-    """Copy the generated shop data into an empty shop. Returns False when there were customers already."""
+    """생성한 쇼핑몰 데이터를 빈 쇼핑몰에 복사한다. 이미 고객이 있었으면 False를 돌려준다."""
     with engine.begin() as target:
         if target.execute(select(func.count()).select_from(db.Customer.__table__)).scalar_one():
             return False
         with build_seed_engine().connect() as source:
-            for table in db.Base.metadata.sorted_tables:  # parents before children
+            for table in db.Base.metadata.sorted_tables:  # 부모 테이블이 자식보다 먼저
                 rows = [dict(row) for row in source.execute(select(table)).mappings()]
                 if rows:
                     target.execute(insert(table), rows)

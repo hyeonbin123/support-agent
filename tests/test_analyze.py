@@ -18,7 +18,7 @@ def make_run(tmp_path):
     name, contact = CONTACTS[task.customer_id]
     good = [ToolCall("find_customer", {"name": name, "contact": contact})]
     good += [ToolCall(a.tool, a.args) for a in task.gold_actions] + [say_values(task)]
-    quiet = good[:-1] + ["취소가 완료되었습니다."]  # the database matches, the refund amount is never said
+    quiet = good[:-1] + ["취소가 완료되었습니다."]  # DB는 맞지만 환불 금액을 말하지 않는다
     results = [episode(task, good), episode(task, quiet), episode(task, ["안 됩니다."]), episode(task, good)]
     for trial, result in enumerate(results):
         result.trial = trial
@@ -36,7 +36,7 @@ def test_pass_k_and_the_interval_come_from_the_records(tmp_path):
     by_task = analyze.successes_by_task(analyze.load_episodes(make_run(tmp_path)))
     assert by_task == {"smoke-action-01": [True, False, False, True]}
     assert analyze.pass_k(by_task, 1) == 0.5 and analyze.pass_k(by_task, 2) == 1 / 6
-    assert analyze.bootstrap_interval(by_task, 1) == (0.5, 0.5)  # one task: nothing to resample
+    assert analyze.bootstrap_interval(by_task, 1) == (0.5, 0.5)  # 과제가 하나라 다시 뽑을 것이 없다
 
 
 # table()이 실행마다 한 줄(과제 수, 에피소드 수, infra, 중단, pass^1과 구간)과 과제 유형별·종료 사유별 줄을

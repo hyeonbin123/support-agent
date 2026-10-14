@@ -1,15 +1,15 @@
-"""Measuring again after a fix to the spoken form (voice/verbalize.py). Nothing here calls a model.
+"""말로 풀어 쓰기(voice/verbalize.py)를 고친 뒤의 재측정. 여기서는 모델을 부르지 않는다.
 
-A voice run synthesised the spoken form of every customer utterance and recorded it (`spoken`). When
-verbalize() changes, an episode whose recorded utterances the current code spells exactly as recorded would
-have gone the same way with the fixed code, so its record stands. An episode with an utterance spelled
-differently now has to be run again. `respelled` lists those episodes; `stitch` copies a run's record with
-them replaced by the same episodes of a rerun that ran only them (`run --episode TASK:TRIAL` with the run's
-options), after checking that the rerun has the original's setup (docs/experiments.md, end of stage 9).
+음성 실행은 고객 발화마다 말로 풀어 쓴 형태를 합성했고 그것을 기록했다(`spoken`). verbalize()가 바뀌어도,
+기록된 발화를 지금 코드가 기록과 똑같이 풀어 쓰는 에피소드는 고친 코드로 돌렸어도 같은 길을 갔을 것이므로
+그 기록을 그대로 둔다. 지금 다르게 풀어 쓰는 발화가 든 에피소드는 다시 돌려야 한다. `respelled`는 그런
+에피소드를 나열하고, `stitch`는 실행의 기록을 복사하면서 그 에피소드들을, 그것들만 다시 돈 실행(원래
+실행의 옵션으로 `run --episode TASK:TRIAL`)의 같은 에피소드로 바꿔 넣는다. 바꾸기 전에 다시 잰 실행이
+원래 실행과 같은 설정인지 확인한다(docs/experiments.md 9단계 끝).
 
-Usage:
-    uv run python -m support_agent.analyze respelled reports/<voice run> [...]
-    uv run python -m support_agent.analyze stitch reports/<voice run> reports/<rerun> [--out <dir>]
+사용법:
+    uv run python -m support_agent.analyze respelled reports/<음성 실행> [...]
+    uv run python -m support_agent.analyze stitch reports/<음성 실행> reports/<다시 잰 실행> [--out <폴더>]
 """
 
 # [파일 역할] 말로 풀어 쓰기(voice/verbalize.py)를 고친 뒤, 기록된 음성 실행 가운데 바뀐 발화가 든
@@ -53,7 +53,7 @@ def _voice_records(run_dir: Path) -> list[tuple[str, int, list[dict[str, Any]]]]
 
 # 지금 코드가 다르게 풀어 쓰는 발화가 하나라도 든 (과제, 시도).
 def changed_episodes(run_dir: Path) -> list[tuple[str, int]]:
-    """The episodes of a voice run with an utterance that the current verbalize() spells differently."""
+    """음성 실행의 에피소드 가운데 지금 verbalize()가 다르게 풀어 쓰는 발화가 든 것."""
     return sorted(
         {(task, trial) for task, trial, items in _voice_records(run_dir) if respelled_indexes(items)}
     )
@@ -82,14 +82,14 @@ def respelled_table(run_dirs: list[Path]) -> str:
 # - 원래 실행에서 바뀐 에피소드마다 다시 잰 실행에 같은 (과제, 시도)가 있고, infra 오류가 아니고, 그 발화를
 #   지금 코드로 풀어 쓴 것이어야 한다.
 def stitch_problems(original: Path, rerun: Path) -> list[str]:
-    """Why `rerun` may not replace the changed episodes of `original`. Empty when it may."""
+    """`rerun`이 `original`의 바뀐 에피소드를 대신할 수 없는 이유들. 대신해도 되면 빈 목록."""
     a, b = load_manifest(original), load_manifest(rerun)
     problems = []
     if a.get("stitched"):
         problems.append(f"{original.name} is itself stitched: start from the run that was measured")
     if not b.get("only_episodes"):
         problems.append(f"{rerun.name} did not run chosen episodes (run --episode)")
-    # The rerun ran a few episodes, so only its judged trials per task may differ.
+    # 다시 잰 실행은 에피소드 몇 개만 돌았으므로, 과제별 판정된 시도 수만은 달라도 된다.
     problems += [
         d for d in setup_differences(original, rerun, ignore=()) if not d.startswith("judged trials")
     ]
@@ -113,7 +113,7 @@ def stitch_problems(original: Path, rerun: Path) -> list[str]:
 # 그대로다. manifest는 원래 것에 run_id와 stitched(원래 실행·다시 잰 실행과 각 커밋, 바꾼 에피소드)를
 # 더한다. summary.json은 쓰지 않는다(수치는 analyze가 episodes.jsonl에서 다시 계산한다).
 def stitch(original: Path, rerun: Path, out_dir: Path) -> list[tuple[str, int]]:
-    """Write `out_dir`: the record of `original` with its changed episodes taken from `rerun`."""
+    """`out_dir`를 쓴다: `original`의 기록에서 바뀐 에피소드만 `rerun`의 것으로 바꾼 기록."""
     problems = stitch_problems(original, rerun)
     if problems:
         raise ValueError("; ".join(problems))

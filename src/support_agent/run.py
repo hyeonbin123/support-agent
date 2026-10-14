@@ -1,18 +1,18 @@
-"""Run tasks x trials with a local model and write one JSONL record per episode.
+"""로컬 모델로 과제 × 시도를 돌리고 에피소드마다 JSONL 기록 한 줄을 쓴다.
 
-Usage:
+사용법:
     uv run python -m support_agent.run --tasks smoke --trials 1
     uv run python -m support_agent.run --tasks smoke --model qwen2.5:14b-instruct --policy P1 --label p1-14b
     uv run python -m support_agent.run --tasks smoke --policy P1 --model qwen3:4b-instruct-2507-q4_K_M
-        --think off --num-ctx 12288 --user-num-ctx 12288 --label smoke-m2a   (one command line)
-    stage 12 (another simulator): add --user-model qwen3:4b-instruct-2507-q4_K_M --user-think off
-        --user-num-ctx 8192
-    a few episodes of a full run again (after a spoken-form fix): the run's options plus
-        --episode dev-018:1 --episode dev-018:2, then `analyze stitch` (docs/experiments.md, stage 9)
+        --think off --num-ctx 12288 --user-num-ctx 12288 --label smoke-m2a   (한 줄 명령)
+    12단계(다른 시뮬레이터): --user-model qwen3:4b-instruct-2507-q4_K_M --user-think off
+        --user-num-ctx 8192 를 더한다
+    전체 실행의 에피소드 몇 개만 다시(말로 풀어 쓰기를 고친 뒤): 그 실행의 옵션에
+        --episode dev-018:1 --episode dev-018:2 를 더하고, 뒤에 `analyze stitch` (docs/experiments.md 9단계)
 
-Records go to outputs/runs/<run_id>/ (git-ignored). Pass --official to write to reports/ (committed); that
-needs a clean working tree, and test task files also need --allow-test. The GPU is shared with other
-projects: the run refuses to start when something else holds GPU memory (see --force).
+기록은 outputs/runs/<run_id>/에 쌓인다(git이 무시함). --official을 주면 reports/에 쓴다(커밋 대상). 그러려면
+작업 트리가 깨끗해야 하고, 시험용 과제 파일은 --allow-test도 있어야 한다. GPU를 다른 프로젝트와 나눠 쓰므로,
+다른 것이 GPU 메모리를 쥐고 있으면 실행이 시작을 거부한다(--force 참고).
 """
 
 # [파일 역할] 평가 실행기 CLI. 과제 × 시도마다 에피소드를 돌려 episodes.jsonl에 한 줄씩 쓰고, 실행의 조건을
@@ -66,8 +66,8 @@ from support_agent.voice.speech import versions as speech_versions
 # infra_error가 3번 잇달아 나면 모델 서버가 죽었다고 보고 멈춘다. 나머지 과제를 모두 infra_error로 태우지 않게
 # 하려는 것이다. GPU 한도 3,000 MiB는 데스크톱 앱이 쓰는 1~2 GiB보다 크면 다른 작업(다른 프로젝트의
 # 학습·측정)이 돈다고 보는 기준이다.
-MAX_CONSECUTIVE_INFRA_ERRORS = 3  # the model server is probably down: stop instead of burning the task list
-OTHER_GPU_USE_LIMIT_MIB = 3000  # desktop apps take 1-2 GiB; more than this means another job is running
+MAX_CONSECUTIVE_INFRA_ERRORS = 3  # 모델 서버가 죽었을 것이다: 과제 목록을 태우지 말고 멈춘다
+OTHER_GPU_USE_LIMIT_MIB = 3000  # 데스크톱 앱이 1~2 GiB를 쓴다. 이보다 많으면 다른 작업이 도는 것이다
 
 
 # 저장소 루트에서 git 명령을 돌려 출력을 돌려준다. git이 없거나 실패하면 빈 문자열(그러면 --official은
@@ -100,8 +100,8 @@ def gpu_memory_used_mib() -> int | None:
 # Ollama가 아닌 것이 쓰는 GPU 메모리 = 전체 사용량 − Ollama가 보고한 모델별 GPU 적재량(size_vram).
 # Windows에서는 프로세스별 조회가 쓸모없어 이렇게 뺀다(docstring).
 def gpu_used_by_others_mib(provider: OllamaProvider) -> int | None:
-    """GPU memory held by anything but Ollama. `nvidia-smi --query-compute-apps` is useless on Windows
-    (it lists every desktop app), so this subtracts what Ollama reports from the total in use."""
+    """Ollama가 아닌 것이 쥐고 있는 GPU 메모리. Windows에서는 `nvidia-smi --query-compute-apps`가 쓸모없어서
+    (모든 데스크톱 앱을 나열한다) 전체 사용량에서 Ollama가 보고한 양을 뺀다."""
     used = gpu_memory_used_mib()
     if used is None:
         return None
@@ -112,7 +112,7 @@ def gpu_used_by_others_mib(provider: OllamaProvider) -> int | None:
 # 서버가 지금 메모리에 들고 있는 모델 목록. manifest(적재 직후)와 summary(끝날 때)에 남겨, 실행 중 모델이
 # 내려가거나 CPU로 옮겨졌는지 기록으로 확인한다. loaded_models가 없는 제공자는 빈 목록이다.
 def ollama_ps(provider: OllamaProvider) -> list[dict[str, Any]]:
-    """What the server holds in memory (name, size, size_vram); [] for providers that cannot say."""
+    """서버가 메모리에 들고 있는 것(name, size, size_vram). 그것을 알려 줄 수 없는 제공자면 []."""
     loaded = getattr(provider, "loaded_models", None)
     return loaded() if callable(loaded) else []
 
@@ -137,7 +137,7 @@ def summarise(results: list[EpisodeResult]) -> dict[str, Any]:
     by_task: dict[str, list[bool]] = {}
     for r in counted:
         by_task.setdefault(r.task_id, []).append(bool(r.verdict and r.verdict.success))
-    # A task whose every trial was an infra error must not vanish from the table without a trace.
+    # 모든 시도가 infra_error인 과제는 흔적 없이 표에서 사라지면 안 된다.
     unmeasured = sorted({r.task_id for r in results} - set(by_task))
     agent_calls = [c for r in counted for c in r.llm_calls if c.who == "agent"]
     user_calls = [c for r in counted for c in r.llm_calls if c.who == "user"]
@@ -153,8 +153,8 @@ def summarise(results: list[EpisodeResult]) -> dict[str, Any]:
             t: sum(r.termination == t for r in results) for t in sorted({r.termination for r in results})
         },
         "successes": sum(sum(v) for v in by_task.values()),
-        # pass^k uses every valid trial of a task (C(c,k)/C(n,k) with the task's own n), for k up to the
-        # smallest n. Trials lost to infra errors therefore shrink k, never the success counts.
+        # pass^k는 과제의 유효한 시도를 모두 쓴다(과제마다 자기 n으로 C(c,k)/C(n,k)), k는 가장 작은 n까지.
+        # 그래서 infra_error로 잃은 시도는 k의 범위를 줄일 뿐 성공 수를 줄이지 않는다.
         "pass_hat_k": pass_k_table(by_task) if by_task else {},
         "by_task": {k: f"{sum(v)}/{len(v)}" for k, v in sorted(by_task.items())},
         "tasks_without_valid_trials": unmeasured,
@@ -174,7 +174,7 @@ def summarise(results: list[EpisodeResult]) -> dict[str, Any]:
         "agent_call_ms": mean([c.wall_ms for c in agent_calls]),
         "agent_prompt_eval_ms": mean([c.prompt_eval_ms for c in agent_calls]),
         "agent_prompt_tokens_max": max((c.prompt_tokens for c in agent_calls), default=0),
-        # The context-limit check reads prompt_tokens; calls that report none are blind spots.
+        # 컨텍스트 한도 검사는 prompt_tokens를 읽는다. 그 값을 보고하지 않은 호출은 검사의 사각지대다.
         "agent_calls_without_prompt_tokens": sum(c.prompt_tokens == 0 for c in agent_calls),
         "user_call_ms": mean([c.wall_ms for c in user_calls]),
         "model_load_ms_total": round(sum(c.load_ms for c in agent_calls + user_calls), 1),
@@ -186,14 +186,14 @@ def summarise(results: list[EpisodeResult]) -> dict[str, Any]:
 # V2·V4는 인식 결과를 규칙 기반 정규화기에 거친다. V4는 듣는 방식이 V2와 같고 본인 확인 방법만 다르다.
 # 합성·인식 결과는 outputs/voice-cache에 캐시한다.
 def build_channel(config: RunConfig, tts_device: str, stt_device: str):
-    """The speech channel of V1/V2/V4 (needs the `voice` dependency group), or None for text."""
+    """V1/V2/V4의 음성 채널(`voice` 의존성 그룹이 필요하다). 텍스트 조건이면 None."""
     if config.voice == "V0":
         return None
     from support_agent.voice.channel import SpeechChannel
     from support_agent.voice.speech import MeloSpeaker, WhisperListener
 
     normalizer = None
-    if config.voice in ("V2", "V4"):  # V4 hears exactly as V2 does; only the identification differs
+    if config.voice in ("V2", "V4"):  # V4는 V2와 똑같이 듣고 본인 확인 방법만 다르다
         from support_agent.voice.normalize import normalize_heard as normalizer
     print(f"loading the speech models (tts on {tts_device}, stt on {stt_device}) ...")
     return SpeechChannel(
@@ -207,7 +207,7 @@ def build_channel(config: RunConfig, tts_device: str, stt_device: str):
 # --episode 값('dev-018:1')을 (과제, 시도) 집합으로 바꾼다. 과제 파일에 없는 과제나 --trials 밖의 시도는
 # 오류다(ValueError, main이 parser.error로 낸다).
 def parse_episodes(values: list[str], task_ids: list[str], trials: int) -> set[tuple[str, int]]:
-    """'dev-018:1' -> ('dev-018', 1): episodes of the full run, checked against the task file and --trials."""
+    """'dev-018:1' -> ('dev-018', 1): 전체 실행의 에피소드. 과제 파일과 --trials에 비춰 확인한다."""
     picked = set()
     for value in values:
         task_id, sep, trial = value.rpartition(":")
@@ -225,77 +225,79 @@ def parse_episodes(values: list[str], task_ids: list[str], trials: int) -> set[t
 # 단계별 옵션이 있다.
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--tasks", default="smoke", help="task file name in tasks/ (without .yaml) or a path")
-    parser.add_argument("--task-id", action="append", help="run only these task ids (repeatable)")
+    parser.add_argument(
+        "--tasks", default="smoke", help="tasks/ 안의 과제 파일 이름(.yaml 없이) 또는 파일 경로"
+    )
+    parser.add_argument("--task-id", action="append", help="이 과제 id만 돌린다 (여러 번 줄 수 있음)")
     parser.add_argument("--trials", type=int, default=1)
     parser.add_argument(
         "--episode",
         action="append",
         metavar="TASK:TRIAL",
-        help="run only these episodes of the full run (repeatable): same seeds, and the manifest describes "
-        "the full run (task and prompt hashes, trials) and lists them",
+        help="전체 실행 가운데 이 에피소드만 돌린다 (여러 번 줄 수 있음): seed가 같고, manifest는 전체 "
+        "실행(과제·프롬프트 해시, 시도 수)을 적고 고른 에피소드를 나열한다",
     )
     parser.add_argument("--model", default=RunConfig.model)
-    parser.add_argument("--user-model", default=None, help="simulator model (default: qwen2.5:7b-instruct)")
+    parser.add_argument("--user-model", default=None, help="시뮬레이터 모델 (기본: qwen2.5:7b-instruct)")
     parser.add_argument("--policy", choices=["P0", "P1"], default="P0")
     parser.add_argument(
         "--reasoning",
         choices=["R0", "R1", "R2"],
         default="R0",
-        help="R1: the think tool; R2: a write runs only after the customer agreed to its preview",
+        help="R1: think 도구. R2: 고객이 미리보기에 동의한 뒤에만 쓰기가 실행된다",
     )
     parser.add_argument(
-        "--guard", choices=["G0", "G1", "G2"], default="G0", help="G1: hold back replies that only promise"
+        "--guard", choices=["G0", "G1", "G2"], default="G0", help="G1: 하겠다는 약속만 하는 답을 붙잡는다"
     )
     parser.add_argument(
-        "--rescue", choices=["F0", "F1"], default="F0", help="F1: run tool calls leaked into text"
+        "--rescue", choices=["F0", "F1"], default="F0", help="F1: 본문에 샌 도구 호출을 실행한다"
     )
     parser.add_argument(
         "--claims",
         choices=["C0", "C1", "C2"],
         default="C0",
-        help="C1: hold back a reply that says work is done which no tool result shows; C2: sampled retry",
+        help="C1: 도구 결과가 보여 주지 않는 일을 끝냈다고 말하는 답을 붙잡는다. C2: 재시도를 표본 추출로",
     )
     parser.add_argument(
         "--user-on-cpu",
         action="store_true",
-        help="run the simulator model on the CPU (when the agent model leaves no GPU memory for it)",
+        help="시뮬레이터 모델을 CPU에서 돌린다 (에이전트 모델이 GPU 메모리를 남기지 않을 때)",
     )
     parser.add_argument(
         "--user-num-gpu",
         type=int,
         default=None,
-        help="layers of the simulator model on the GPU, the rest on the CPU (0 is --user-on-cpu)",
+        help="시뮬레이터 모델을 GPU에 올릴 층 수, 나머지는 CPU (0이면 --user-on-cpu와 같음)",
     )
     parser.add_argument(
         "--think",
         choices=["on", "off"],
         default=None,
-        help="send think to the agent model only (default: not sent; models without thinking refuse it)",
+        help="에이전트 모델에만 think를 보낸다 (기본: 보내지 않음. 사고 모드가 없는 모델은 거절한다)",
     )
     parser.add_argument(
         "--user-think",
         choices=["on", "off"],
         default=None,
-        help="send think to the simulator model (stage 12; default: not sent, as for the 7B simulator)",
+        help="시뮬레이터 모델에 think를 보낸다 (12단계. 기본: 7B 시뮬레이터처럼 보내지 않음)",
     )
     parser.add_argument(
         "--voice",
         choices=["V0", "V1", "V2", "V4"],
         default="V0",
-        help="V1: the customer is heard through speech synthesis and recognition; V2: and a normaliser; "
-        "V4: V2, and verify_caller checks the name against the caller's number instead of find_customer",
+        help="V1: 고객의 말이 음성 합성과 인식을 거쳐 들린다. V2: 거기에 정규화기까지. V4: V2이고, "
+        "find_customer 대신 verify_caller가 발신 번호의 고객과 이름을 맞춰 본다",
     )
     parser.add_argument("--tts-device", choices=["cuda", "cpu"], default="cuda")
     parser.add_argument("--stt-device", choices=["cuda", "cpu"], default="cuda")
     parser.add_argument("--num-ctx", type=int, default=RunConfig.num_ctx)
     parser.add_argument(
-        "--user-num-ctx", type=int, default=None, help="the simulator's num_ctx (default: --num-ctx)"
+        "--user-num-ctx", type=int, default=None, help="시뮬레이터의 num_ctx (기본: --num-ctx 값)"
     )
-    parser.add_argument("--label", default="", help="short name added to the run id")
-    parser.add_argument("--official", action="store_true", help="write to reports/ (needs a clean tree)")
-    parser.add_argument("--allow-test", action="store_true", help="required for test task files")
-    parser.add_argument("--force", action="store_true", help="skip the check that the GPU is free")
+    parser.add_argument("--label", default="", help="run id에 붙일 짧은 이름")
+    parser.add_argument("--official", action="store_true", help="reports/에 쓴다 (작업 트리가 깨끗해야 함)")
+    parser.add_argument("--allow-test", action="store_true", help="시험용 과제 파일을 돌릴 때 필요하다")
+    parser.add_argument("--force", action="store_true", help="GPU가 비어 있는지 보는 검사를 건너뛴다")
     args = parser.parse_args()
 
     # 시험용 과제는 단계가 끝날 때 고른 구성만 한 번 잰다. 실수로 시험용을 돌려 보는 것을 막는다.
@@ -304,7 +306,6 @@ def main() -> None:
     # 작업 트리가 깨끗한지 볼 때 reports/는 뺀다. 앞선 공식 실행의 기록이 커밋을 기다리며 남아 있을 수 있고,
     # 그것은 코드가 아니기 때문이다.
     commit = _git("rev-parse", "HEAD")
-    # Records of earlier official runs wait in reports/ until they are committed; they are not code.
     dirty = bool(_git("status", "--porcelain", "--", ".", ":(exclude)reports"))
     if args.official and (dirty or not commit):
         parser.error(
@@ -321,7 +322,6 @@ def main() -> None:
     # 두 역할이 같은 모델이면 실행기 옵션이 같아야 한다. Ollama는 모델마다 실행기를 하나 두므로, 옵션이 다르면
     # 턴마다 모델을 다시 읽게 된다.
     if user_model == args.model and (user_num_ctx != args.num_ctx or user_num_gpu is not None):
-        # Ollama keeps one runner per model; other runner options reload it, and here that is every turn.
         parser.error(
             "the agent and the simulator are the same model, so they need the same runner options: "
             "drop --user-num-ctx/--user-on-cpu/--user-num-gpu or use another simulator model"
@@ -366,11 +366,11 @@ def main() -> None:
     if not tasks:
         parser.error("no tasks selected")
 
-    # think is a request field, not a runner option, so it never reloads a model; it goes to the agent only.
+    # think는 실행기 옵션이 아니라 요청 필드라 모델을 다시 읽게 하지 않는다. 에이전트 쪽에만 보낸다.
     provider = OllamaProvider(
         config.model, num_ctx=config.num_ctx, **({} if think is None else {"think": think})
     )
-    # One provider object when both roles use the same model and nothing differs: equal runner options.
+    # 두 역할이 같은 모델이고 다른 점이 하나도 없으면 제공자 객체를 하나만 쓴다: 실행기 옵션이 같아진다.
     same = config.user_model == config.model and think is None and user_think is None
     user_provider = (
         provider
@@ -398,16 +398,16 @@ def main() -> None:
     seed_engine = build_seed_engine()
     seed_dump = db.dump_db(seed_engine)
     policy_text = load_policy()
-    # Everything that can fail without the model fails here, before hours of GPU time are spent.
+    # 모델 없이도 실패할 수 있는 일은 몇 시간의 GPU 시간을 쓰기 전에 여기서 모두 실패하게 한다.
     gold_dumps = {task.id: gold_dump_of(task, seed_engine, registry) for task in tasks}
     channel = build_channel(config, args.tts_device, args.stt_device)
     # 측정 전에 모델을 올려 둔다. 첫 에피소드의 시간에 모델 적재 시간이 섞이지 않게 하려는 것이다.
     print(f"loading {config.model} ... {provider.preload() / 1000:.1f} s")
     if user_provider is not provider:
         print(f"loading {config.user_model} ... {user_provider.preload() / 1000:.1f} s")
-        # The server may evict the first model to load the second even when the first then fits next to the
-        # second (seen 2026-10-04: qwen2.5 7B evicted qwen3 4B, whose next load sat beside it). Load it again
-        # here, once, so that the first episode does not pay for that reload.
+        # 서버는 둘째 모델을 올리려고 첫 모델을 내릴 수 있다. 그 뒤에 첫 모델이 둘째 옆에 들어갈 수 있어도
+        # 그렇다(2026-10-04에 봄: qwen2.5 7B가 qwen3 4B를 내렸는데, 4B를 다시 올리자 7B 옆에 들어갔다). 그래서
+        # 여기서 한 번 다시 올려, 첫 에피소드가 그 재적재 시간을 떠안지 않게 한다.
         held = [m.get("name") for m in ollama_ps(provider)]
         if held and config.model not in held:
             seconds = provider.preload() / 1000
@@ -478,7 +478,6 @@ def main() -> None:
     )
     # seed 덤프를 해시별로 한 번만 저장한다. seed 생성기가 나중에 바뀌어도 옛 기록을 그때의 seed로 다시 판정할
     # 수 있게 하려는 것이다.
-    # The seed dump is kept once per hash, so that old records can be re-judged after the generator changes.
     seed_file = (REPORTS if args.official else OUTPUTS) / "seeds" / f"{manifest['seed_hash'][:16]}.json"
     if not seed_file.exists():
         seed_file.parent.mkdir(parents=True, exist_ok=True)
@@ -506,9 +505,9 @@ def main() -> None:
             channel,
             only,
         )
-    finally:  # also after Ctrl-C or a crash: what was measured so far stays readable
+    finally:  # Ctrl-C나 비정상 종료 뒤에도: 그때까지 잰 것을 읽을 수 있게 남긴다
         summary = summarise(results)
-        summary["ollama_ps_at_end"] = ollama_ps(provider)  # a model evicted or moved to the CPU shows here
+        summary["ollama_ps_at_end"] = ollama_ps(provider)  # 모델이 내려갔거나 CPU로 옮겨졌으면 여기 보인다
         (run_dir / "summary.json").write_text(
             json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n"
         )

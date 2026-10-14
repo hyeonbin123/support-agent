@@ -1,4 +1,4 @@
-"""The seed database: determinism, the fixture rows tasks rely on, and consistency of every row."""
+"""seed 데이터베이스: 결정성, 과제가 기대는 고정 행, 모든 행의 일관성."""
 
 # [테스트 묶음] seed DB(seed.py가 만드는 가상 쇼핑몰 데이터)를 세 방향에서 확인한다: (1) 결정성(같은 seed면
 # 같은 DB, 현재 시각·uuid·전역 난수를 쓰지 않음), (2) 과제가 기대는 고정 행(고객 C-9001~9005, 주문
@@ -234,7 +234,7 @@ def test_o90004_delivered(session):
     assert shipment.status == db.ShipmentStatus.DELIVERED
     assert shipment.delivered_at == kst(9, 2, 14, 20)
     assert shipment.shipped_at < shipment.delivered_at
-    assert shipment.promised_by >= date(2026, 9, 2)  # on time: no delay compensation
+    assert shipment.promised_by >= date(2026, 9, 2)  # 제때 도착: 지연 보상 없음
 
 
 # O-90005: 상품 준비 중인 러닝화 89,100원, 배송지 AD-C-9005-1. 취소·배송지 변경이 가능한 상태다.
@@ -272,13 +272,13 @@ def test_fixture_products_are_dedicated_and_exchangeable(session):
     assert not {i.variant_id for i in session.scalars(bulk_items)} & fixture_variants
 
 
-# --- every row ---
+# --- 모든 행 ---
 
 
 # 개발용·시험용 과제를 위해 손으로 넣은 행인지 id의 9xxx 번호로 가린다. 아래 수 세기와 시각 범위 검사에서 이
 # 행들은 빼고 생성 행만 본다.
 def _is_task_row(value) -> bool:
-    """Hand-written rows of the smoke, dev and test tasks: their ids carry a 9xxx number."""
+    """스모크·개발용·시험용 과제를 위해 손으로 쓴 행: id에 9xxx 번호가 붙는다."""
     import re
 
     return isinstance(value, str) and re.search(r"(?:^|-)9\d{3,4}(?:-|$)", value) is not None
@@ -288,7 +288,7 @@ def _is_task_row(value) -> bool:
 # 한 번 이상 나오는지 확인한다. 배경 데이터가 모든 상태를 덮어야 도구가 여러 경우를 만난다.
 def test_row_counts(session):
     def count(model) -> int:
-        # Generated rows only; the hand-written task rows (90xx, 91xx, 92xx) are checked by the task tests.
+        # 생성 행만 센다. 손으로 쓴 과제 행(90xx, 91xx, 92xx)은 과제 테스트가 검사한다.
         rows = session.scalars(select(model)).all()
         return sum(not _is_task_row(getattr(r, "id", None) or getattr(r, "order_id", None)) for r in rows)
 
@@ -503,7 +503,7 @@ def test_coupons_and_tickets(session):
 # 생성 데이터보다 뒤라 미래의 데이터를 보고 판정하지 않는다. 검사한 시각이 500개를 넘는지도 본다(검사가 실제로
 # 돌았는지).
 def test_bulk_datetimes_are_inside_the_window(engine):
-    """Every datetime of a generated row (coupon expiry included) is in [2026-06-01, SEED_END]."""
+    """생성 행의 모든 시각(쿠폰 만료 포함)이 [2026-06-01, SEED_END] 안에 있다."""
     start, end = seed.BULK_START.astimezone(UTC), seed.SEED_END.astimezone(UTC)
     checked = 0
     for table, rows in db.dump_db(engine).items():
@@ -534,7 +534,7 @@ def test_fixture_datetimes_are_before_the_smoke_now(session):
 
 # 제외 칸 없이 전체를 덤프해도 값은 None·bool·int·str뿐이다(금액은 정수 원). 이관 행은 seed에 없다.
 def test_dump_has_no_floats_and_handoffs_are_empty(engine):
-    dump = db.dump_db(engine, ignore=frozenset())  # _plain raises TypeError on a float
+    dump = db.dump_db(engine, ignore=frozenset())  # _plain은 float를 만나면 TypeError를 낸다
     assert dump["handoffs"] == []
     for rows in dump.values():
         for row in rows:

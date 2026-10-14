@@ -12,7 +12,7 @@
 (() => {
   // LIMIT: 메시지 글자 수 한도(서버 기본값 max_message_chars와 같음). 서버처럼 코드 포인트 단위로 센다.
   // COUNTER_FROM: 이 글자 수부터 남은 글자 표시를 보인다. POLL_MS: 대화를 다시 읽는 주기(5초).
-  const LIMIT = 1000; // characters, counted as code points like the server does
+  const LIMIT = 1000; // 글자 수. 서버처럼 코드 포인트로 센다
   const COUNTER_FROM = 800;
   const POLL_MS = 5000;
   // 세션 번호를 sessionStorage에 두는 키. 같은 탭에서 새로 고침해도 대화가 이어지고, 탭을 닫으면 사라진다.
@@ -41,7 +41,7 @@
     send: $('send'),
     hints: $('demo-hints'),
     hintsIntro: $('demo-hints-intro'),
-    // voice: hidden unless the server has it
+    // 음성: 서버가 음성 모드가 아니면 숨긴다
     voiceBar: $('voice-bar'),
     speak: $('speak-replies'),
     speakStop: $('speak-stop'),
@@ -55,16 +55,16 @@
   // 목록으로 서버 대화와 비교하는 기준이다.
   let sessionId = null;
   let status = 'open';
-  let busy = false; // a turn is running in this tab
-  let rec = null; // the recording in progress (see voice); typing, sending and polling wait for it
+  let busy = false; // 이 탭에서 턴이 도는 중
+  let rec = null; // 진행 중인 녹음(음성 절 참고). 입력·보내기·동기화는 녹음이 끝나기를 기다린다
   let polling = false;
-  let epoch = 0; // grows with every new session; late answers of an older one are dropped
+  let epoch = 0; // 새 세션마다 커진다. 예전 세션에 대한 늦은 응답은 버린다
   let controller = null;
-  let recoverable = null; // the shown error goes away by itself: 'load' on the next answer, 'reply' on new messages
-  const displayed = []; // [{role, text}] in the order of the bubbles
-  const pending = new Map(); // approval code -> {code, tool, refund_won}
+  let recoverable = null; // 보이는 오류가 저절로 사라지는 조건: 'load'는 다음 응답, 'reply'는 새 메시지
+  const displayed = []; // 말풍선 순서대로의 [{role, text}]
+  const pending = new Map(); // 승인 번호 -> {code, tool, refund_won}
 
-  // ------------------------------------------------------------ rendering
+  // ------------------------------------------------------------ 그리기 (rendering)
 
   const won = (amount) => `${Number(amount).toLocaleString('ko-KR')}원`;
   const sessionUrl = (id) => `/api/sessions/${encodeURIComponent(id)}`;
@@ -75,7 +75,7 @@
       if (value) sessionStorage.setItem(key, value);
       else sessionStorage.removeItem(key);
     } catch {
-      // storage can be blocked; the chat still works for this page view
+      // 저장소가 막혀 있을 수 있다. 그래도 이 페이지를 보는 동안 채팅은 동작한다
     }
   }
 
@@ -115,8 +115,8 @@
     }
   }
 
-  // Append what is new. The server stores a turn only when it ends, so its list may lag behind the page
-  // (then nothing changes); redraw only when the two lists disagree.
+  // 새로 생긴 것만 덧붙인다. 서버는 턴이 끝날 때만 저장하므로 서버 목록이 화면보다 뒤처질 수 있다(그때는
+  // 아무것도 바꾸지 않는다). 두 목록이 어긋날 때만 다시 그린다.
   function reconcile(messages) {
     const shared = Math.min(displayed.length, messages.length);
     const agree = displayed
@@ -183,7 +183,7 @@
     renderStatus();
   }
 
-  // ------------------------------------------------------------ sessions
+  // ------------------------------------------------------------ 세션 (sessions)
 
   // 새 상담을 시작한다. 진행 중인 요청·녹음·재생을 모두 멈추고 화면을 비운 뒤 POST /api/sessions로 새 세션을
   // 만든다. 응답이 오기 전에 또 새 상담을 눌렀으면(epoch가 바뀜) 늦은 응답은 버린다.
@@ -216,8 +216,8 @@
     }
   }
 
-  // Bring the page in line with the server. Returns false when the server could not be asked.
-  // 서버의 세션 상태를 다시 읽어 화면을 맞춘다. 세션이 없어졌으면(404) 새 상담을 열고 그렇게 했다고 알린다.
+  // 서버의 세션 상태를 다시 읽어 화면을 맞춘다. 서버에 물을 수 없었으면 false를 돌려준다. 세션이
+  // 없어졌으면(404) 새 상담을 열고 그렇게 했다고 알린다.
   // 승인 대기였던 건이 목록에서 사라졌다면 담당자가 결정한 것이고, 그 결과 문장은 새로 생긴 답이므로 음성
   // 듣기를 켠 고객에게 읽어 준다.
   async function refresh({ fromPoll = false } = {}) {
@@ -232,15 +232,14 @@
       }
       if (!response.ok) return false;
       const transcript = await response.json();
-      // The server stores a turn when it ends, so a snapshot taken during a turn must not be applied
-      // (nor during a recording: a message that is read aloud would be recorded).
+      // 서버는 턴이 끝날 때 저장하므로, 턴 도중에 읽은 상태는 반영하면 안 된다(녹음 중에도 안 된다: 소리로
+      // 읽어 주는 메시지가 녹음된다).
       if (mine !== epoch || (fromPoll && (busy || rec))) return true;
       const before = displayed.slice();
       const waiting = [...pending.keys()];
       applyTranscript(transcript);
       if (recoverable === 'load' || (recoverable === 'reply' && displayed.length > before.length)) showError('');
-      // An approval was decided: its message is new, unlike the rest of a stored conversation, so it is
-      // read aloud like a reply.
+      // 승인이 결정됐다: 그 메시지는 저장된 대화의 나머지와 달리 새로 생긴 것이므로 답처럼 소리로 읽어 준다.
       if (waiting.some((code) => !pending.has(code))) unseenReplies(before).forEach((text) => speak(text));
       return true;
     } catch {
@@ -252,7 +251,7 @@
   // 승인 대기가 남아 있으면 결정 결과를 받으려고 계속 읽는다.
   async function poll() {
     if (busy || rec || polling || !sessionId || document.hidden) return;
-    if (status !== 'open' && pending.size === 0) return; // a decision can still arrive after a handoff
+    if (status !== 'open' && pending.size === 0) return; // 상담원 연결 뒤에도 승인 결정은 올 수 있다
     polling = true;
     try {
       await refresh({ fromPoll: true });
@@ -261,7 +260,7 @@
     }
   }
 
-  // ------------------------------------------------------------ one turn
+  // ------------------------------------------------------------ 한 턴 (one turn)
 
   // SSE 프레임 하나(빈 줄로 구분된 덩어리)를 {event, data}로 바꾼다. data 줄이 여러 개면 줄바꿈으로 이어
   // JSON으로 읽고, 읽을 수 없는 프레임은 버린다.
@@ -302,10 +301,9 @@
     }
   }
 
-  // Returns true for the last event of a turn.
   // 서버 이벤트별 화면 반영: status·tool_result는 "답변 작성 중", tool은 "주문 조회 중" 같은 진행 표시,
   // approval은 승인 대기 칩, error는 오류 줄, reply는 상담원 말풍선(음성 듣기를 켰으면 읽어 줌), end는 세션
-  // 상태 갱신. end면 true를 돌려준다.
+  // 상태 갱신. 턴의 마지막 이벤트인 end면 true를 돌려준다.
   function onEvent(event, data) {
     if (event === 'status' || event === 'tool_result') setProgress(THINKING);
     else if (event === 'tool') setProgress(`${data.label || data.name} 중…`);
@@ -340,7 +338,6 @@
     if (text && [...text].length <= LIMIT) runTurn(text);
   }
 
-  // One turn. A typed message is shown at once; what a recording (`audio`) says is known when `heard` arrives.
   // 한 턴을 보낸다. 글 메시지는 고객 말풍선을 바로 그리고, 녹음은 서버가 heard 이벤트로 인식 결과를 보내야
   // 말풍선을 그린다.
   // 응답이 끝 이벤트(end) 없이 끊기면 오류로 본다. 이미 서버가 메시지를 받았다면(accepted) 턴은 서버에서
@@ -357,7 +354,7 @@
     if (!audio) addBubble('customer', text);
     setProgress(audio ? HEARING : THINKING);
     controller = new AbortController();
-    let accepted = false; // the server took the message and a turn runs
+    let accepted = false; // 서버가 메시지를 받았고 턴이 돈다
     let ended = false;
     let replied = false;
     let sessionGone = false;
@@ -379,14 +376,14 @@
         await readStream(response.body, (event, data) => {
           if (mine !== epoch) return;
           if (event === 'heard') {
-            text = (data.text || '').trim() || null; // nothing understood: an `error` follows, no bubble
+            text = (data.text || '').trim() || null; // 알아들은 것이 없다: `error`가 뒤따르고 말풍선은 없다
             if (!text) return;
             addBubble('customer', text);
             setProgress(THINKING);
-            if (!speakChosen) setSpeaking(true); // whoever talks most likely wants to listen
+            if (!speakChosen) setSpeaking(true); // 말로 하는 사람은 아마 소리로 듣고 싶어 한다
             return;
           }
-          if (event === 'status' && audio && !text) return; // still recognising the speech
+          if (event === 'status' && audio && !text) return; // 아직 말을 인식하는 중
           if (event === 'reply') replied = true;
           if (onEvent(event, data)) ended = true;
         });
@@ -398,9 +395,9 @@
         if (audio && response.status === 503) setVoice(false);
       }
     } catch {
-      if (mine !== epoch) return; // a new session was started meanwhile
+      if (mine !== epoch) return; // 그 사이 새 상담이 시작됐다
       if (accepted) {
-        // The turn goes on at the server; polling shows its answer when it is stored.
+        // 턴은 서버에서 계속 돈다. 답이 저장되면 주기적 동기화가 그 답을 보여 준다.
         showError('연결이 끊겼습니다. 답변이 준비되면 이 화면에 자동으로 표시됩니다.');
         recoverable = 'reply';
       } else showError('메시지를 보내지 못했습니다. 네트워크를 확인하고 다시 시도해 주세요.');
@@ -411,26 +408,25 @@
       await startSession();
       showError('이전 상담을 찾을 수 없어 새 상담을 시작했습니다. 메시지를 다시 보내 주세요.');
     } else {
-      // Not taken (refused, unreachable) or ended without an answer (the session was busy or not open).
-      // 서버가 받지 않았거나 답 없이 끝났으면 먼저 그린 고객 말풍선을 지우고, 서버 목록을 다시 읽어 맞춘다.
+      // 서버가 받지 않았거나(거절, 연결 불가) 답 없이 끝났으면(세션이 바쁘거나 열려 있지 않음) 먼저 그린
+      // 고객 말풍선을 지우고, 서버 목록을 다시 읽어 맞춘다.
       if (!accepted || (ended && !replied)) truncate(index);
-      await refresh(); // busy stays true meanwhile, so a poll cannot interleave
+      await refresh(); // 그동안 busy가 true로 남아 있어 동기화가 끼어들 수 없다
       if (mine !== epoch) return;
       busy = false;
     }
-    // Give the text back when the server did not record it (refused, busy, or never reached).
-    // 서버에 기록되지 않은 글이면 입력창에 되돌려 놓아 다시 쓰지 않아도 되게 한다.
+    // 서버에 기록되지 않은 글이면(거절, 바쁨, 닿지 않음) 입력창에 되돌려 놓아 다시 쓰지 않아도 되게 한다.
     const kept = displayed[index];
     const recorded = !sessionGone && kept && kept.role === 'customer' && kept.text === text;
     if (text && !recorded && !els.input.value) els.input.value = text;
     updateComposer();
-    // After a recording the microphone button keeps the focus: on a phone the text box would open the keyboard.
+    // 녹음 뒤에는 마이크 버튼이 포커스를 유지한다: 휴대폰에서 입력창에 포커스가 가면 키보드가 열린다.
     if (status === 'open') (audio && voiceOn ? els.mic : els.input).focus();
   }
 
-  // ------------------------------------------------------------ voice (optional)
-  // On only when /healthz reports `voice`. A recording goes through runTurn() like a typed message; the
-  // replies of a turn are read aloud one after another when the customer wants to listen.
+  // ------------------------------------------------------------ 음성 (선택 기능)
+  // /healthz가 `voice`를 알릴 때만 켜진다. 녹음은 입력한 메시지처럼 runTurn()을 거치고, 고객이 듣기를
+  // 원하면 한 턴의 답들을 차례로 소리로 읽어 준다.
 
   // 녹음 형식 후보(브라우저가 지원하는 첫 번째를 쓴다). 서버의 인식기는 webm·ogg·mp4 등을 그대로
   // 받는다(docs/voice.md).
@@ -439,9 +435,9 @@
   // 보내지 않는다. 5 MB(서버 기본 한도)를 넘는 녹음은 보내기 전에 거절한다. /speech 한 번에는 600자까지(서버
   // max_tts_chars).
   const MAX_RECORD_MS = 30000;
-  const MIN_RECORD_MS = 300; // shorter than this is a slip of the finger
-  const MAX_AUDIO_BYTES = 5000000; // the server's default limit; above its own it answers 413
-  const SPEECH_LIMIT = 600; // characters in one /speech request
+  const MIN_RECORD_MS = 300; // 이보다 짧으면 손가락이 미끄러진 것이다
+  const MAX_AUDIO_BYTES = 5000000; // 서버 기본 한도. 서버는 자기 한도를 넘으면 413으로 답한다
+  const SPEECH_LIMIT = 600; // /speech 요청 한 번의 글자 수
   const SPEAK_KEY = 'support-agent.speak-replies';
   const HEARING = '음성 인식 중…';
   const MIC_LABEL = '음성으로 말하기';
@@ -457,7 +453,7 @@
   };
 
   let voiceOn = false;
-  let speakChosen = false; // the listening toggle was set, by the customer or by the first voice message
+  let speakChosen = false; // 듣기 토글이 정해졌다(고객이 직접, 또는 첫 음성 메시지가)
   // 답 읽어 주기의 상태: 읽을 조각 큐, 멈출 때마다 늘어나는 run 번호(이전 재생 루프를 끝내는 데 씀), 재생 중
   // 여부, 재사용하는 Audio 객체, 진행 중인 요청을 끊을 AbortController, 지금 재생의 마무리 함수.
   const speech = { queue: [], run: 0, busy: false, audio: null, abort: null, finish: null };
@@ -466,18 +462,18 @@
     if (el.textContent !== text) el.textContent = text;
   }
 
-  // Hide a button without losing the keyboard's place.
+  // 키보드 포커스 위치를 잃지 않고 버튼을 숨긴다(포커스가 그 버튼에 있으면 next로 옮긴다).
   function hideButton(button, next) {
     if (document.activeElement === button) next.focus();
     button.hidden = true;
   }
 
-  // --- recording: `rec` is {stream, recorder, chunks, startedAt, timer, ending}
+  // --- 녹음: `rec`는 {stream, recorder, chunks, startedAt, timer, ending}이다
 
   // 마이크 버튼과 녹음 상태 표시를 그린다. 브라우저가 마이크 권한을 묻는 동안(startedAt 없음)은 "마이크 연결
   // 중…"으로 보이고, 녹음이 시작되면 버튼이 "눌러서 전송"으로 바뀐다.
   function renderMic(open) {
-    const live = Boolean(rec && rec.startedAt); // before that the browser is asking for the microphone
+    const live = Boolean(rec && rec.startedAt); // 그 전에는 브라우저가 마이크 권한을 묻는 중이다
     els.mic.disabled = busy || !open || Boolean(rec && rec.ending);
     els.mic.classList.toggle('btn-danger', live);
     if (els.mic.textContent !== (live ? MIC_STOP : MIC_START)) {
@@ -504,14 +500,14 @@
   function release(take) {
     clearInterval(take.timer);
     if (take.recorder && take.recorder.state !== 'inactive') take.recorder.stop();
-    if (take.stream) for (const track of take.stream.getTracks()) track.stop(); // the browser's mic sign goes off
+    if (take.stream) for (const track of take.stream.getTracks()) track.stop(); // 브라우저의 마이크 표시가 꺼진다
   }
 
   // 녹음을 시작한다. 답을 읽어 주는 중이면 그 소리가 녹음되지 않게 먼저 멈춘다. 마이크나 MediaRecorder가
   // 없거나 권한을 거절하면 안내를 보인다. 권한을 묻는 사이 취소했으면 얻은 마이크를 바로 놓는다.
   async function startRecording() {
     if (rec || busy || status !== 'open' || !sessionId) return;
-    stopSpeaking(); // it would be recorded
+    stopSpeaking(); // 그 소리가 녹음될 것이다
     showError('');
     const media = navigator.mediaDevices;
     if (!media || !media.getUserMedia || typeof MediaRecorder === 'undefined') {
@@ -524,7 +520,7 @@
     try {
       mine.stream = await media.getUserMedia({ audio: true });
       if (rec !== mine) {
-        release(mine); // cancelled while the browser asked for permission
+        release(mine); // 브라우저가 권한을 묻는 사이 취소됐다
         return;
       }
       const type = MIC_TYPES.find((t) => MediaRecorder.isTypeSupported(t));
@@ -535,7 +531,7 @@
       mine.recorder.onstop = () => finishRecording(mine);
       mine.recorder.start();
     } catch {
-      release(mine); // no permission, no microphone, or a recorder that does not start
+      release(mine); // 권한 없음, 마이크 없음, 또는 녹음기가 시작되지 않음
       if (rec !== mine) return;
       rec = null;
       showError(NO_MIC);
@@ -548,38 +544,36 @@
     tick();
   }
 
-  // Turn the microphone off. `keep`: send what was recorded; otherwise it is thrown away.
-  // keep이 true면 녹음기를 멈춰 dataavailable → stop 순으로 finishRecording이 보내게 하고, false면 녹음을
-  // 버린다.
+  // 마이크를 끈다. keep이 true면 녹음기를 멈춰 dataavailable → stop 순으로 finishRecording이 보내게 하고,
+  // false면 녹음을 버린다.
   function stopRecording(keep) {
     const mine = rec;
     if (!mine || (keep && mine.ending)) return;
     if (keep && mine.startedAt) {
       mine.ending = true;
       clearInterval(mine.timer);
-      if (mine.recorder.state !== 'inactive') mine.recorder.stop(); // `dataavailable`, then `stop`
+      if (mine.recorder.state !== 'inactive') mine.recorder.stop(); // `dataavailable` 다음에 `stop`
     } else {
-      rec = null; // finishRecording drops a recording that is not the current one
+      rec = null; // finishRecording은 지금 녹음이 아닌 녹음을 버린다
       release(mine);
     }
     updateComposer();
   }
 
-  // The recorder stopped: on request, or by itself when the microphone went away.
-  // 녹음기가 멈춘 뒤 조각을 하나의 Blob으로 모아 runTurn으로 보낸다. 지금 녹음이 아니면(취소됨) 버리고, 너무
-  // 짧거나 비었으면 취소처럼 아무것도 보내지 않는다.
+  // 녹음기가 멈췄다(요청해서, 또는 마이크가 사라져 저절로). 멈춘 뒤 조각을 하나의 Blob으로 모아 runTurn으로
+  // 보낸다. 지금 녹음이 아니면(취소됨) 버리고, 너무 짧거나 비었으면 취소처럼 아무것도 보내지 않는다.
   function finishRecording(mine) {
     release(mine);
     if (rec !== mine) return;
     rec = null;
     const audio = new Blob(mine.chunks, { type: mine.recorder.mimeType || '' });
     updateComposer();
-    if (Date.now() - mine.startedAt < MIN_RECORD_MS || !audio.size) return; // as if cancelled
+    if (Date.now() - mine.startedAt < MIN_RECORD_MS || !audio.size) return; // 취소한 것처럼
     if (audio.size > MAX_AUDIO_BYTES) showError(VOICE_REFUSALS[413]);
     else runTurn(null, audio);
   }
 
-  // --- reading replies aloud
+  // --- 답을 소리로 읽어 주기
 
   // "답변을 음성으로 듣기" 선택을 저장한다(같은 탭 안에서 기억). 끄면 지금 읽는 것도 멈춘다.
   function setSpeaking(on) {
@@ -589,20 +583,19 @@
     if (!on) stopSpeaking();
   }
 
-  // Pieces of at most SPEECH_LIMIT characters, cut after a sentence (. ? ! or a line break) where there is one.
   // 긴 답을 /speech 한도(600자) 안의 조각으로 나눈다. 가능하면 문장 끝(마침표·물음표·느낌표 또는 줄바꿈)
   // 뒤에서 자르고, 끝없이 긴 문장 하나는 600자씩 자른다. 서버처럼 코드 포인트로 센다.
   function speechPieces(text) {
     const pieces = [];
     let piece = '';
     for (const sentence of text.match(/[\s\S]+?(?:[.?!]+(?=\s|$)|\n|$)\s*/g) || []) {
-      let rest = [...sentence]; // code points, as the server counts
+      let rest = [...sentence]; // 서버처럼 코드 포인트로 센다
       if (piece && [...piece].length + rest.length > SPEECH_LIMIT) {
         pieces.push(piece);
         piece = '';
       }
       for (; rest.length > SPEECH_LIMIT; rest = rest.slice(SPEECH_LIMIT)) {
-        pieces.push(rest.slice(0, SPEECH_LIMIT).join('')); // one endless sentence
+        pieces.push(rest.slice(0, SPEECH_LIMIT).join('')); // 끝없이 긴 문장 하나
       }
       piece += rest.join('');
     }
@@ -610,8 +603,8 @@
     return pieces.map((p) => p.trim()).filter(Boolean);
   }
 
-  // Agent messages on the page that `before` (an earlier copy of `displayed`) did not have.
-  // before에는 없던 상담원 답을 고른다. 같은 글의 답이 여러 번 있을 수 있어 하나씩 지워 가며 센다.
+  // 화면의 상담원 답 가운데 before(앞서 복사해 둔 displayed)에는 없던 것을 고른다. 같은 글의 답이 여러 번
+  // 있을 수 있어 하나씩 지워 가며 센다.
   function unseenReplies(before) {
     const seen = before.filter((m) => m.role === 'agent').map((m) => m.text);
     const unseen = [];
@@ -641,7 +634,7 @@
       await sayPiece(speech.queue.shift(), run);
     }
     speech.busy = false;
-    if (speech.queue.length) pump(); // stopped, and asked again before this loop noticed
+    if (speech.queue.length) pump(); // 멈췄다가 이 루프가 알아채기 전에 다시 요청됐다
     else hideButton(els.speakStop, els.speak);
   }
 
@@ -657,16 +650,16 @@
         signal: speech.abort.signal,
       });
       if (response.status === 503) setVoice(false);
-      if (response.status !== 200) return; // 204: nothing in it can be pronounced
+      if (response.status !== 200) return; // 204: 소리로 낼 수 있는 것이 없다
       const sound = await response.blob();
       if (run === speech.run) await play(sound);
     } catch {
-      // stopped, or the server cannot be reached: the text is on the page anyway
+      // 멈췄거나 서버에 닿지 못했다: 글은 어차피 화면에 있다
     }
   }
 
-  // Resolves when the sound ended, failed or was stopped. Needs `media-src blob:` in the CSP.
-  // Blob을 blob: 주소로 재생하고 끝나면 주소를 해제한다. 브라우저가 사용자 동작 전 자동 재생을
+  // Blob을 blob: 주소로 재생하고 끝나면 주소를 해제한다. 소리가 끝나거나, 실패하거나, 멈추면 resolve된다.
+  // CSP에 `media-src blob:`이 있어야 한다. 브라우저가 사용자 동작 전 자동 재생을
   // 막으면(NotAllowedError) 나머지 큐도 실패하므로 읽기를 멈추고 한 번 눌러 달라고 안내한다.
   function play(sound) {
     return new Promise((resolve) => {
@@ -687,7 +680,7 @@
       audio.play().catch((error) => {
         finish();
         if (!error || error.name !== 'NotAllowedError') return;
-        stopSpeaking(); // the browser wants a click first: the rest of the queue would fail too
+        stopSpeaking(); // 브라우저가 먼저 클릭을 원한다: 큐의 나머지도 실패할 것이다
         if (els.error.hidden) showError(NO_AUTOPLAY);
       });
     });
@@ -719,7 +712,7 @@
       const response = await fetch('/healthz', { cache: 'no-store' });
       if (!response.ok || (await response.json()).voice !== true) return;
     } catch {
-      return; // text chat only
+      return; // 글 채팅만
     }
     const saved = recall(SPEAK_KEY);
     speakChosen = saved !== null;
@@ -727,7 +720,7 @@
     setVoice(true);
   }
 
-  // ------------------------------------------------------------ demo hints
+  // ------------------------------------------------------------ 체험 안내 (demo hints)
 
   // 체험 안내에 시험해 볼 가상 고객(이름 · 전화번호 — 시나리오)을 /static/demo.json에서 읽어 보인다. 파일이
   // 없거나 읽지 못하면 그냥 넘어간다.
@@ -744,11 +737,11 @@
       }
       els.hintsIntro.hidden = els.hints.children.length === 0;
     } catch {
-      // the file is optional
+      // 이 파일은 없어도 된다
     }
   }
 
-  // ------------------------------------------------------------ wiring
+  // ------------------------------------------------------------ 이벤트 연결 (wiring)
 
   // --- 이벤트 연결 ---
   // 폼 제출은 페이지를 다시 읽지 않고 send로 처리한다.
@@ -760,7 +753,6 @@
   els.input.addEventListener('keydown', (event) => {
     // Enter는 보내기, Shift+Enter는 줄바꿈. 한글 조합을 확정하는 Enter(isComposing, keyCode 229)로는 보내지
     // 않는다.
-    // isComposing: Enter that only confirms a Hangul composition must not send
     if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return;
     event.preventDefault();
     send();

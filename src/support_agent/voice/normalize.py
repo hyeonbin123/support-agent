@@ -1,11 +1,11 @@
-"""V2: rule-based repair of what the recogniser wrote, before the agent reads it.
+"""V2: 에이전트가 읽기 전에 인식기가 적은 글을 규칙으로 고친다.
 
-Every rule here comes from the development run of V1 (`analyze voice-worst` on its records): how synthesised
-speech of the customers' utterances came back from the recogniser. Nothing was taken from the test tasks.
+여기의 모든 규칙은 V1 개발용 실행(그 기록에 돌린 `analyze voice-worst`)에서 나왔다: 고객 발화를 합성한 음성이
+인식기를 거쳐 어떻게 돌아왔는가. 시험용 과제에서는 아무것도 가져오지 않았다.
 
-What the rules can repair is notation: the recogniser heard the right sounds and wrote them differently
-("오 다시 구일공일공" -> "5-91010", "골뱅이 이그잼플 닷컴" -> "골뱅이그젠플.com"). What they cannot repair is
-lost sound: a dropped digit ("010-0000-921"), a misheard name ("배성분"), a misspelt mail address.
+규칙이 고칠 수 있는 것은 표기다: 인식기가 소리는 맞게 듣고 다르게 적은 경우("오 다시 구일공일공" ->
+"5-91010", "골뱅이 이그잼플 닷컴" -> "골뱅이그젠플.com"). 고칠 수 없는 것은 잃어버린 소리다: 빠진
+숫자("010-0000-921"), 잘못 들은 이름("배성분"), 철자가 틀린 메일 주소.
 """
 
 # [파일 역할] 음성 채널 V2의 정규화: 인식기가 적은 글에서 도구 인자가 되는 값의 '표기'만 고쳐 에이전트에게
@@ -23,12 +23,12 @@ from __future__ import annotations
 # 바뀌지 않는다(멱등)는 것을 확인한다.
 import re
 
-# "O-91010" is said "오 다시 구일공일공"; "오" is also the digit 5, and that is what the recogniser writes.
+# "O-91010"은 "오 다시 구일공일공"으로 읽히는데, "오"는 숫자 5이기도 해서 인식기는 5로 적는다.
 # 5 다음에 하이픈(앞뒤 공백 허용)과 숫자 4~6자리를 O-번호로 되돌린다. 앞에 숫자·영문·하이픈이 붙어 있으면 다른
 # 값의 일부로 보고 건드리지 않고, 숫자 자리를 4~6자리로 묶어 '5-5 사이즈', '5-10일' 같은 말은 바꾸지 않는다
 # (tests/test_voice.py).
 _ORDER_ID = re.compile(r"(?<![\dA-Za-z-])5\s?-\s?(\d{4,6})(?!\d)")
-# "5에서 9100": "다시" heard as a range
+# "5에서 9100": "다시"를 범위("에서")로 들은 경우
 _ORDER_ID_RANGE = re.compile(r"(?<![\dA-Za-z-])5에서\s?(\d{4,6})(?!\d)")
 # 010, 0000, 9103 / 010 0000 9103
 # 휴대전화 번호의 세 덩어리 사이에 공백·쉼표·점·하이픈이 1~3자 섞인 것(예: 인식기가 적은 '010, 0000, 9103')을
@@ -38,8 +38,8 @@ _PHONE = re.compile(r"(?<!\d)(01\d)[\s,.\-]{1,3}(\d{3,4})[\s,.\-]{1,3}(\d{4})(?!
 # 'N만 원', 'N만 M원'(M은 쉼표 천 단위 또는 4자리까지)을 아라비아 숫자 금액으로 바꾼다. 앞에 숫자나 쉼표가
 # 붙어 있으면 더 긴 금액의 일부로 보고 건드리지 않는다.
 _MAN_WON = re.compile(r"(?<![\d,])(\d{1,4})만\s?(?:(\d{1,3}(?:,\d{3})*|\d{1,4})\s?)?원")
-# The mail domain as it was heard: the at sign as a word, a hyphen or a dot, and the domain in Korean or in
-# a spelling of its sound. The shop's customers all use example.com; a deployment would list its domains.
+# 들린 그대로의 메일 도메인: 골뱅이(@)는 낱말, 하이픈 또는 점으로 들리고, 도메인은 한글이나 소리를 옮긴
+# 철자로 적힌다. 이 쇼핑몰 고객은 모두 example.com을 쓴다. 실제로 배포한다면 쓰는 도메인을 나열하게 된다.
 _DOMAIN = r"(?:e-)?(?:example|igsemple|이그잼플|이그젠플|그젠플)"
 _TLD = r"(?:\s?\.\s?com|\s?닷컴|\s?점\s?컴)"
 # 골뱅이(@)가 들린 모양: 한글 '골뱅이', 로마자 'golbenie', 기호 @, 또는 하이픈·점으로 바뀐 경우. 위 _DOMAIN,
@@ -55,7 +55,7 @@ _EMAIL = re.compile(rf"([A-Za-z0-9]+(?:[._][A-Za-z0-9]+)*?){_AT}{_DOMAIN}{_TLD}"
 def _won(match: re.Match[str]) -> str:
     rest = int(match[2].replace(",", "")) if match[2] else 0
     if rest >= 10_000:
-        return match[0]  # "12만 34,000원" is not a number anybody says: leave it alone
+        return match[0]  # "12만 34,000원"은 아무도 그렇게 말하지 않는 수라 그대로 둔다
     return f"{int(match[1]) * 10_000 + rest:,}원"
 
 

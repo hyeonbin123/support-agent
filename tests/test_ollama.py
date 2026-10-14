@@ -1,4 +1,4 @@
-"""OllamaProvider against httpx.MockTransport. No real server, no GPU."""
+"""OllamaProvider를 httpx.MockTransport에 대고 시험한다. 실제 서버도 GPU도 없다."""
 
 # [테스트 묶음] Ollama 연결(ollama.OllamaProvider)을 실제 서버 없이 httpx.MockTransport로 확인한다: 보내는
 # 요청 본문, 응답 해석, 오류를 ProviderError로 바꾸는 것, manifest용 정보(describe), 적재된 모델 조회, 미리
@@ -53,10 +53,10 @@ def reply(message: dict[str, Any] | None = None, **extra: Any) -> dict[str, Any]
     return body
 
 
-# 가짜 Ollama 서버. 경로 → (dict면 200 JSON, Response면 그대로, 예외면 던짐) 표로 답하고, 받은 요청을 순서대로
-# 모은다. 표에 없는 경로는 404다.
+# dict면 200 JSON, Response면 그대로, 예외면 던진다. 표에 없는 경로는 404다.
 class Server:
-    """Records requests and answers from a route table: path -> dict | httpx.Response | Exception."""
+    """가짜 Ollama 서버. 받은 요청을 순서대로 모으고, 경로 표로 답한다:
+    경로 -> dict | httpx.Response | Exception."""
 
     def __init__(self, routes: dict[str, Any] | None = None):
         self.routes: dict[str, Any] = {"/api/chat": reply()}
@@ -86,7 +86,7 @@ def make(server: Server, **kwargs: Any) -> OllamaProvider:
     return OllamaProvider(MODEL, transport=httpx.MockTransport(server), **kwargs)
 
 
-# --- request body ---
+# --- 요청 본문 ---
 
 
 # 기본 요청 본문: POST /api/chat, stream 끔, keep_alive 60분, options에 num_ctx
@@ -183,7 +183,7 @@ def test_request_body_is_utf8_json():
     assert json.loads(server.requests[0].content.decode("utf-8"))["messages"][0]["content"] == "환불해 주세요"
 
 
-# --- response parsing ---
+# --- 응답 해석 ---
 
 
 # 글 답의 해석: 내용, 도구 호출 없음, 사고 글 없음, 끝난 이유.
@@ -304,7 +304,7 @@ def test_missing_usage_fields_default_to_zero():
 # 모델 출력에 짝 없는 서로게이트(\ud83d 같은 반쪽 이모지)가 섞이면 내용·사고 글·도구 인자(키와 중첩
 # 값까지)에서 '?'로 바꾼다. 그대로 두면 기록을 UTF-8로 쓸 때 예외가 나 에피소드 기록이 깨진다.
 def test_lone_surrogates_are_cleaned():
-    # An escaped "\ud83d" in the JSON body decodes to a lone surrogate in Python.
+    # JSON 본문 속 이스케이프된 "\ud83d"는 파이썬에서 짝 없는 서로게이트로 풀린다.
     message = {
         "role": "assistant",
         "content": "가\ud83d나",
@@ -331,7 +331,7 @@ def test_lone_surrogates_are_cleaned():
     dumped = json.dumps(
         [response.text, response.thinking, [c.arguments for c in response.tool_calls]], ensure_ascii=False
     )
-    dumped.encode("utf-8")  # must not raise
+    dumped.encode("utf-8")  # 예외가 나면 안 된다
 
 
 # 정상적인 이모지는 바꾸지 않는다.
@@ -370,7 +370,7 @@ def test_http_error_includes_truncated_body():
     assert "400" in message
     assert "does not support thinking" in message
     assert len(message) < 450
-    assert server.count("/api/chat") == 1  # no retries
+    assert server.count("/api/chat") == 1  # 다시 시도하지 않는다
 
 
 # JSON이 아닌 응답(프록시의 HTML 오류 페이지 등)은 ProviderError다.
@@ -476,7 +476,7 @@ def test_loaded_models():
     }
     provider = make(Server({"/api/ps": ps}))
 
-    # size next to size_vram tells how much of a model sits on the GPU (stage 8 smoke gate)
+    # size와 size_vram을 나란히 보면 모델이 GPU에 얼마나 올라가 있는지 안다(8단계 스모크 관문)
     assert provider.loaded_models() == [
         {"name": MODEL, "size": 6_000_000_000, "size_vram": 5_500_000_000},
         {"name": "other:1b", "size": 0, "size_vram": 0},
@@ -499,7 +499,7 @@ def test_preload():
     )
     provider = make(server, num_ctx=8192, think=False)
 
-    assert provider.preload() >= 0.0  # measured by the client, not taken from load_duration
+    assert provider.preload() >= 0.0  # load_duration에서 가져오지 않고 클라이언트가 잰 값
     body = server.bodies()[0]
     assert body == {
         "model": MODEL,
@@ -517,7 +517,7 @@ def test_preload_failure_raises():
         make(server).preload()
 
 
-# --- base URL / lifecycle ---
+# --- base URL / 수명 주기 ---
 
 
 # OLLAMA_BASE_URL 환경 변수로 주소를 바꿀 수 있고, 끝의 '/'는 뗀다. describe()에도 바뀐 주소가 남는다.
