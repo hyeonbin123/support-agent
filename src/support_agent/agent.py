@@ -72,6 +72,14 @@ CLAIM_NOTICE = (
     "이 대화의 도구 결과에는 그것을 보여 주는 기록이 없습니다. 실제로 처리하려면 지금 {tools} 도구를 "
     "호출하세요. 처리하지 않았거나 처리할 수 없는 일이면 끝났다고 말하지 말고 사실대로 안내하세요."
 )
+# REPEAT_NOTICE: 되풀이 가드(D1, 13단계). 바로 앞에 고객에게 전달한 답과 같은 답을 돌려보낼 때. 문구는 13단계
+# 규칙(docs/experiments.md)에 적은 그대로이고, 측정 전에 고정했다. 무엇이 정답인지는 말하지 않고, 고객이 다시
+# 묻는 것에 사실로 답하라는 것만 적는다.
+REPEAT_NOTICE = (
+    "[시스템 안내] 방금 응답은 고객에게 전달되지 않았습니다. 바로 앞에 고객에게 한 답과 같습니다. "
+    "고객이 다시 묻는 것에 답하는 데 필요한 사실을 도구로 확인하거나, 이미 확인한 날짜·금액·번호를 들어 "
+    "답하세요."
+)
 # 시스템 프롬프트의 '오늘' 표기에 붙일 요일. datetime.weekday()가 월요일=0이라 이 순서다.
 _WEEKDAYS = "월화수목금토일"
 
@@ -94,9 +102,11 @@ class AgentState:
     dropped_calls: int = 0
     stalls: int = 0  # 멈춤 가드(G1)가 붙잡아 전달하지 않은 답 수
     held_claims: int = 0  # 완료 주장 가드(C1)가 붙잡아 전달하지 않은 답 수
+    repeats: int = 0  # 되풀이 가드(D1)가 붙잡아 전달하지 않은 답 수
     tool_log: list[ToolCallLog] = field(default_factory=list)
     llm_log: list[LLMCallLog] = field(default_factory=list)
 
+    # repeats는 0이 아닐 때만 넣는다. 그래야 D1을 쓰지 않는 서비스 세션의 저장 상태가 2026-10-15 전과 같다.
     def to_dict(self) -> dict[str, Any]:
         return {
             "messages": [m.to_dict() for m in self.messages],
@@ -106,6 +116,7 @@ class AgentState:
             "dropped_calls": self.dropped_calls,
             "stalls": self.stalls,
             "held_claims": self.held_claims,
+            **({"repeats": self.repeats} if self.repeats else {}),
         }
 
 
@@ -207,6 +218,24 @@ def is_stall(text: str) -> bool:
     return bool(_PROMISE.search(text)) and not _ASKS.search(text)
 
 
+# 되풀이 가드(D1, 13단계)의 비교 기준: 이 대화에서 고객에게 마지막으로 전달된 상담원 글(도구 호출이 아니고,
+# 전달됐고, 비어 있지 않은 assistant 메시지). 고정 첫 인사도 전달된 글이라 포함된다. 하니스가 붙잡아 전달하지
+# 않은 답(delivered=False)은 고객이 듣지 못했으므로 건너뛴다.
+def last_delivered_reply(messages: list[Message]) -> str | None:
+    for m in reversed(messages):
+        if m.role == "assistant" and m.content and m.delivered and not m.tool_calls:
+            return m.content
+    return None
+
+
+# 공백(줄바꿈 포함)의 차이만 있으면 같은 답으로 본다. 7B·4B 모델은 고객이 같은 말을 되풀이하면 온도 0에서
+# 글자까지 같은 답을 되풀이했다(M2b 개발용 실패 40개 중 15개가 마지막 상담원 답 셋이 글자까지 같음).
+def is_repeat(text: str, messages: list[Message]) -> bool:
+    """도구 호출 없는 답 `text`가 바로 앞에 고객에게 전달한 상담원 답과 공백만 빼고 같은가."""
+    previous = last_delivered_reply(messages)
+    return previous is not None and " ".join(text.split()) == " ".join(previous.split())
+
+
 # 한자(CJK 통합 한자)와 일본어 가나의 유니코드 범위.
 _OTHER_SCRIPT = re.compile(r"[\u4e00-\u9fff\u3040-\u30ff]")  # \ud55c\uc790, \uac00\ub098
 
@@ -261,6 +290,7 @@ def agent_turn(
     retries = 0  # 형식 오류 재시도는 턴마다 따로 센다
     stall_retries = 0
     claim_retries = 0
+    repeat_retries = 0
     # LLM 호출 한도에 닿을 때까지 돈다. 평가에서는 에피소드당 30번이다. 서비스는 상태를 되살릴 때
     # agent_calls를 0부터 다시 세므로 턴당 한도가 된다(service/core.py).
     while state.agent_calls < config.max_agent_calls:
@@ -317,8 +347,8 @@ def agent_turn(
             if rescued is not None:  # 정식 호출이었던 것처럼 실행하되 형식 오류로는 센다
                 calls, problem = (rescued,), None
                 state.format_errors += 1
-        # 아래 세 검사(언어, 완료 주장, 멈춤)는 도구 호출 없이 고객에게 갈 본문 답에만 한다. 도구 호출이
-        # 있으면 본문은 어차피 전달되지 않는다.
+        # 아래 네 검사(언어, 완료 주장, 멈춤, 되풀이)는 도구 호출 없이 고객에게 갈 본문 답에만 한다. 도구
+        # 호출이 있으면 본문은 어차피 전달되지 않는다.
         if not problem and not calls and config.language == "L1" and in_another_language(response.text):
             problem = "wrong_language"
         claim = None
@@ -337,6 +367,17 @@ def agent_turn(
         ):
             if is_stall(response.text):
                 problem = "stall"
+        # D1: 다른 가드가 걸지 않은 본문 답이 바로 앞에 전달한 답과 같으면, 턴당 예산(1번)이 남아 있을 때만
+        # 붙잡는다. 예산을 다 쓰면 같은 답이라도 그대로 전달한다(G1과 같은 방식). state.messages에는 이번
+        # 턴의 고객 말까지 들어 있고, 비교는 그 앞의 마지막 전달 답과 한다.
+        if (
+            not problem
+            and not calls
+            and config.repeat == "D1"
+            and repeat_retries < config.max_repeat_retries
+            and is_repeat(response.text, state.messages)
+        ):
+            problem = "repeat"
         usage = response.usage
         # 모든 LLM 호출을 기록한다. format_error는 문제의 이유, 구제한 호출이면 rescued_tool_call이다.
         # dropped_text는 도구 호출과 함께 와서 전달하지 않은 본문, dropped_calls는 실행하지 않은 두 번째 이후
@@ -376,6 +417,13 @@ def agent_turn(
             state.stalls += 1
             state.messages.append(Message("assistant", response.text, delivered=False))
             state.messages.append(Message("user", STALL_NOTICE, harness=True))
+            continue
+        # 되풀이(D1): 멈춤과 같은 처방이고 자기 예산(repeat_retries)을 쓴다. 형식 오류로 세지 않는다.
+        if problem == "repeat":
+            repeat_retries += 1
+            state.repeats += 1
+            state.messages.append(Message("assistant", response.text, delivered=False))
+            state.messages.append(Message("user", REPEAT_NOTICE, harness=True))
             continue
         # 근거 없는 완료 주장: 이것도 형식 오류가 아니다. 멈춤과 달리 예산을 다 써도 전달하지 않고
         # unbacked_claim으로 끝낸다. 고객이 '취소되었습니다'를 들으면 더 묻지 않기 때문이다.

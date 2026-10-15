@@ -27,6 +27,8 @@
     uv run python -m support_agent.analyze sim-check reports/<7B 시뮬레이터 실행> reports/<다른 시뮬레이터>
     uv run python -m support_agent.analyze respelled reports/<음성 실행> [...]   (말로 풀어 쓰기를 고친 뒤)
     uv run python -m support_agent.analyze stitch reports/<음성 실행> reports/<다시 잰 실행> [--out <폴더>]
+    uv run python -m support_agent.analyze guards reports/<M2b 개발용> reports/<팔> [...]   (13단계 선택)
+    uv run python -m support_agent.analyze guards-verdict reports/<M2b 시험용> reports/<고른 구성 시험용>
 
 `table`은 docs/experiments.md에 들어가는 마크다운 표를 출력한다. `misses`는 DB는 맞았지만 꼭 전달할 값을
 찾지 못한 에피소드를 나열해, 사람이 값 찾기 규칙을 점검할 수 있게 한다. `sample`은 "시뮬레이터 점검"용
@@ -88,7 +90,7 @@ _COUNT_COLUMNS = (
 )
 # 형식 오류로 세지 않는 format_error 값. 멈춤(stall)과 근거 없는 완료 주장(unbacked_claim)은 형식이 맞는 답을
 # 가드가 돌려보낸 것이라 따로 센다. run.py의 summary와 같은 기준이다.
-_NOT_A_FORMAT_ERROR = (None, "stall", "unbacked_claim")
+_NOT_A_FORMAT_ERROR = (None, "stall", "unbacked_claim", "repeat")
 
 
 # 실행 폴더의 episodes.jsonl을 에피소드 dict 목록으로 읽는다(빈 줄은 건너뜀).
@@ -1089,6 +1091,21 @@ def _sim_command(args: argparse.Namespace) -> None:
         print(sim_report.check(args.base_dir, args.run_dir)[0])
 
 
+# 13단계(가드 네 팔) 명령을 guard_report.py로 넘긴다. guard_report.py도 이 모듈을 가져다 쓰므로 함수 안에서
+# 가져온다. 선택은 합친 팔이 더 필요하면 그 팔을 알리고, 짝지을 수 없으면 종료 코드 1로 끝난다.
+def _guards_command(args: argparse.Namespace) -> None:
+    """13단계 명령. 코드는 guard_report.py에 있다."""
+    from support_agent import guard_report
+
+    if args.command == "guards":
+        report, chosen = guard_report.select(args.base_dir, args.run_dirs)
+    else:
+        report, chosen = guard_report.verdict(args.base_dir, args.run_dir)
+    print(report)
+    if chosen == "짝지을 수 없음" or report.startswith("짝지을 수 없음"):
+        sys.exit(1)
+
+
 # 말로 풀어 쓰기를 고친 뒤의 재측정 명령을 respell.py로 넘긴다. respell.py도 이 모듈을 가져다 쓰므로 함수
 # 안에서 가져온다. stitch는 끼워 넣을 수 없으면 이유를 내고 종료 코드 1로 끝난다.
 def _respell_command(args: argparse.Namespace) -> None:
@@ -1177,6 +1194,12 @@ def main() -> None:
     stitching.add_argument("original", type=Path, help="잰 그대로의 음성 실행")
     stitching.add_argument("rerun", type=Path, help="그 실행의 바뀐 에피소드를 run --episode로 다시 돈 실행")
     stitching.add_argument("--out", type=Path, default=None, help="기본: <original>-respelled")
+    guarding = commands.add_parser("guards")
+    guarding.add_argument("base_dir", type=Path, help="8단계 qwen3.5:4b 개발용 기록 (기준)")
+    guarding.add_argument("run_dirs", nargs="+", type=Path, help="13단계 팔의 개발용 실행들 (합친 팔 포함)")
+    guard_judging = commands.add_parser("guards-verdict")
+    guard_judging.add_argument("base_dir", type=Path, help="8단계 qwen3.5:4b 시험용 기록 (기준)")
+    guard_judging.add_argument("run_dir", type=Path, help="13단계에서 고른 구성의 시험용 실행")
     args = parser.parse_args()
 
     # Windows 콘솔의 기본 인코딩으로는 한국어 표가 깨지거나 오류가 나므로 표준 출력을 UTF-8로 바꾼다.
@@ -1222,6 +1245,8 @@ def main() -> None:
         _sim_command(args)
     elif args.command in ("respelled", "stitch"):
         _respell_command(args)
+    elif args.command.startswith("guards"):
+        _guards_command(args)
     elif args.command == "same-setup":
         differences = setup_differences(args.run_a, args.run_b, tuple(args.ignore), tuple(args.ignore_prompt))
         print("\n".join(differences) or "same setup")

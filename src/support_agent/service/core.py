@@ -271,6 +271,7 @@ def _state_from(data: dict[str, Any]) -> AgentState:
         dropped_calls=data.get("dropped_calls", 0),
         stalls=data.get("stalls", 0),
         held_claims=data.get("held_claims", 0),
+        repeats=data.get("repeats", 0),
     )
 
 
@@ -314,6 +315,11 @@ class ChatService:
             max_agent_calls=settings.max_agent_calls_per_turn,
             language="L1",  # 중국어로 넘어간 답은 절대 고객에게 보이지 않는다
             claims=settings.claims,
+            # 13단계 후보(멈춤 G1, 오류 사실 E1, 되풀이 D1)는 설정으로만 있고 기본값은 모두 끔이다. 켤지는
+            # 13단계 규칙의 서비스 기본값 조건으로 정한다(docs/experiments.md 13단계).
+            guard=settings.guard,
+            errors=settings.errors,
+            repeat=settings.repeat,
         )
         # 잠금 셋: 세션별 잠금(한 세션은 한 번에 메시지 하나), 승인 결정 잠금(승인된 쓰기는 세션과 상관없이 한
         # 번에 하나), 그리고 세션별 잠금 dict 자체를 보호하는 잠금. 프로세스 안의 잠금이라 앱은 프로세스
@@ -414,11 +420,7 @@ class ChatService:
         self._audit(session_id, "customer_message", {"text": text, **({"via": via} if via else {})})
         # 도구 문맥: 쇼핑몰의 지금(고정 시계), 규정을 막을지(P1), 이 세션에서 본인 확인된 고객. 본인 확인은
         # 턴을 넘어 세션에 저장된다.
-        ctx = ToolContext(
-            now=self.settings.clock(),
-            enforce_policy=self.config.enforce_policy,
-            state=ConversationState(verified_customer_id=customer_id),
-        )
+        ctx = self._context(customer_id)
 
         # 이번 턴에 승인 대기에 걸린 쓰기의 {승인 번호: 고객 안내 문장}. _run_tool이 채운다.
         held: dict[str, str] = {}  # 승인 번호 -> 고객 안내 문장(이번 턴에 대기에 걸린 쓰기마다)
@@ -642,11 +644,7 @@ class ChatService:
         try:
             with Session(self.engine) as db_session:
                 customer_id = self._row(db_session, session_id).verified_customer_id
-            ctx = ToolContext(
-                now=self.settings.clock(),
-                enforce_policy=self.config.enforce_policy,
-                state=ConversationState(verified_customer_id=customer_id),
-            )
+            ctx = self._context(customer_id)
             result = self._run_tool(session_id, ctx, name, arguments, lambda _event, _data: None)
             with Session(self.engine) as db_session:
                 row = self._row(db_session, session_id)
@@ -770,11 +768,7 @@ class ChatService:
         if approve:
             # 요청 당시 본인 확인된 고객을 문맥에 넣고 같은 인자로 도구를 다시 실행한다. 그 사이 주문 상태가
             # 바뀌었으면 도구가 거절하고 failed가 된다.
-            ctx = ToolContext(
-                now=self.settings.clock(),
-                enforce_policy=self.config.enforce_policy,
-                state=ConversationState(verified_customer_id=customer_id),
-            )
+            ctx = self._context(customer_id)
             # 도구의 변경, 그 감사 행, 승인의 "approved" 표시는 한 트랜잭션이다.
             try:
                 result = self._run_tool(
@@ -902,6 +896,16 @@ class ChatService:
             ]
 
     # ---------------------------------------------------------------- 도우미 (helpers)
+
+    # 도구 문맥: 쇼핑몰의 지금(고정 시계), 규정을 막을지(P1), 오류 글에 사실을 붙일지(E1), 이 세션에서 본인
+    # 확인된 고객. 채팅 턴, MCP 호출, 승인 실행이 같은 문맥을 쓴다.
+    def _context(self, customer_id: str | None) -> ToolContext:
+        return ToolContext(
+            now=self.settings.clock(),
+            enforce_policy=self.config.enforce_policy,
+            state=ConversationState(verified_customer_id=customer_id),
+            error_facts=self.config.errors == "E1",
+        )
 
     # 세션 행을 읽고, 없으면 SessionNotFoundError.
     def _row(self, db_session: Session, session_id: str) -> ChatSession:

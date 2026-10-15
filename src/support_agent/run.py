@@ -129,9 +129,9 @@ def safe_name(text: str) -> str:
 
 # 실행 결과를 summary.json용으로 집계한다. infra_error는 분모에서 빼고(counted), 모든 시도가 infra_error인
 # 과제는 표에서 조용히 사라지지 않게 따로 적는다.
-# 형식 오류 수에서 멈춤(stall)과 근거 없는 완료 주장(unbacked_claim)은 뺀다. 둘은 형식이 맞는 답을 돌려보낸
-# 것이라 따로 세고, analyze table과 같은 기준이다(docs/experiments.md 7단계 코드 검토 뒤에 고친 것). 시간 값은
-# 에피소드당 시간, 에이전트 호출당 시간, 모델 적재 시간 등이다.
+# 형식 오류 수에서 멈춤(stall), 근거 없는 완료 주장(unbacked_claim), 되풀이(repeat, 13단계 D1)는 뺀다. 셋은
+# 형식이 맞는 답을 가드가 돌려보낸 것이라 따로 세고, analyze table과 같은 기준이다(docs/experiments.md 7단계
+# 코드 검토 뒤에 고친 것). 시간 값은 에피소드당 시간, 에이전트 호출당 시간, 모델 적재 시간 등이다.
 def summarise(results: list[EpisodeResult]) -> dict[str, Any]:
     counted = [r for r in results if r.status != "infra_error"]
     by_task: dict[str, list[bool]] = {}
@@ -165,8 +165,12 @@ def summarise(results: list[EpisodeResult]) -> dict[str, Any]:
         "policy_violations": sum(len(r.verdict.policy_violations) for r in counted if r.verdict),
         "policy_blocks": sum(len(r.verdict.policy_blocks) for r in counted if r.verdict),
         "auth_blocks": sum(r.verdict.auth_blocks for r in counted if r.verdict),
-        "format_errors": sum(c.format_error not in (None, "stall", "unbacked_claim") for c in agent_calls),
+        "format_errors": sum(
+            c.format_error not in (None, "stall", "unbacked_claim", "repeat") for c in agent_calls
+        ),
         "held_claims": sum(c.format_error == "unbacked_claim" for c in agent_calls),
+        # 13단계: 되풀이 가드(D1)가 붙잡은 답 수. 형식 오류로 세지 않는다.
+        "held_repeats": sum(c.format_error == "repeat" for c in agent_calls),
         "confirmation_requests": sum(t.error_code == CONFIRM_CODE for r in counted for t in r.tool_calls),
         "dropped_calls": sum(c.dropped_calls for c in agent_calls),
         "seconds_per_episode": mean([r.wall_seconds for r in counted]),
@@ -259,6 +263,19 @@ def main() -> None:
         help="C1: 도구 결과가 보여 주지 않는 일을 끝냈다고 말하는 답을 붙잡는다. C2: 재시도를 표본 추출로",
     )
     parser.add_argument(
+        "--errors",
+        choices=["E0", "E1"],
+        default="E0",
+        help="E1(13단계): 규정이 막은 쓰기의 오류 글에 그 검사가 쓴 사실(수령·출고 시각, 접수 마감일, 이미 "
+        "발급된 쿠폰, 도착 예정일)을 붙인다",
+    )
+    parser.add_argument(
+        "--repeat",
+        choices=["D0", "D1"],
+        default="D0",
+        help="D1(13단계): 바로 앞에 고객에게 전달한 답과 같은 답을 붙잡아 한 번 다시 시킨다",
+    )
+    parser.add_argument(
         "--user-on-cpu",
         action="store_true",
         help="시뮬레이터 모델을 CPU에서 돌린다 (에이전트 모델이 GPU 메모리를 남기지 않을 때)",
@@ -340,6 +357,8 @@ def main() -> None:
         rescue=args.rescue,
         voice=args.voice,
         claims=args.claims,
+        errors=args.errors,
+        repeat=args.repeat,
         num_ctx=args.num_ctx,
         user_num_ctx=user_num_ctx,
     )
@@ -414,8 +433,9 @@ def main() -> None:
             print(f"{config.model} was evicted by that load; loaded it again ... {seconds:.1f} s")
     if config.user_model != config.model:
         print("warning: two models take turns; if both do not fit in GPU memory every turn reloads one")
-    # run_id = 시작 시각(UTC) + 모델 + 축 코드 + 라벨. 음성 축은 채널이 있을 때만, C 축은 C0가 아닐 때만
-    # 넣는다. 이 실행기는 평가 하니스라 벽시계를 써도 된다(도구·seed·판정 코드만 시각을 읽지 않는다).
+    # run_id = 시작 시각(UTC) + 모델 + 축 코드 + 라벨. 음성 축은 채널이 있을 때만, C·E·D 축은
+    # 기본값(C0·E0·D0)이 아닐 때만 넣는다(그래서 지금까지의 실행 이름 꼴이 그대로다). 이 실행기는 평가
+    # 하니스라 벽시계를 써도 된다(도구·seed·판정 코드만 시각을 읽지 않는다).
     started = datetime.now(UTC)
     run_id = "-".join(
         p
@@ -428,6 +448,8 @@ def main() -> None:
             config.rescue,
             config.voice if channel else "",
             config.claims if config.claims != "C0" else "",
+            config.errors if config.errors != "E0" else "",
+            config.repeat if config.repeat != "D0" else "",
             safe_name(args.label),
         ]
         if p

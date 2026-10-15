@@ -107,6 +107,9 @@ tasks/smoke.yaml, dev.yaml, test.yaml
 | `coupon_already_issued_for_order` | 보상 쿠폰은 주문당 1장 |
 | `coupon_limit_exceeded` | 보상 쿠폰은 고객당 최근 30일(KST 발급일 기준, 오늘 포함)에 2장까지. 에이전트가 직접 셀 수 있게 `get_order`와 `get_customer`가 발급된 보상 쿠폰을 보여 준다 |
 
+- E1(13단계, `--errors E1`, 서비스 `ERRORS=E1`)이면 위 표의 기한·상태(`*_window_expired`, `*_not_delivered`, `cancel_not_allowed_status`, `address_change_not_allowed_status`)·쿠폰(`coupon_already_issued_for_order`, `coupon_limit_exceeded`, 배송 지연의 `coupon_not_eligible`) 거절 오류 끝에 그 검사가 쓴 사실을 괄호 하나로 붙인다 (수령·출고 시각, 접수 마감일, 쿠폰 번호와 발급 시각, 도착 예정일). 오류 코드와 이유 문장은 그대로이고 다음 행동은 적지 않는다. 기본(E0)은 위 표 그대로다
+- 쓰기 도구는 주문 행(쿠폰은 그다음 고객 행, 티켓은 고객 행만)을 잠그고, 교환의 재고는 조건부 UPDATE로 줄인다 (2026-10-15, PostgreSQL 서비스의 동시성. SQLite 평가에는 잠금 구문이 가지 않는다)
+
 ### 금액 규칙 (`rules.py`)
 
 - 취소 환불액 = 결제 금액 전액. 결제 상태는 `refund_pending`, 주문과 모든 줄은 `cancelled`
@@ -130,6 +133,7 @@ tasks/smoke.yaml, dev.yaml, test.yaml
 | 도구 호출이 여러 개 | 첫 번째만 실행하고 나머지는 `dropped_calls`로 센다 |
 | 형식 오류: 빈 응답, 본문에 샌 도구 호출(`<tool_call>` 태그, 또는 본문 안의 `name`과 `arguments`/`parameters`를 가진 JSON 객체), 길이 제한으로 잘림 | 고객에게 보내지 않는다. 그 응답(`delivered=False`)과 하니스 안내문(`harness=True`인 user 메시지)을 기록에 넣고 다시 호출한다. 한 턴에 `max_format_retries`(2)번까지, 넘으면 `agent_format_error`로 끝 |
 | 근거 없는 완료 안내 (C1·C2일 때만. `claims.py`) | "취소가 완료되었습니다"처럼 끝났다고 말하는데 그 대화의 성공한 도구 결과에 그 상태가 없으면 고객에게 보내지 않고 안내문을 넣어 다시 호출한다. 한 턴에 `max_claim_retries`(2)번까지, 넘으면 전달하지 않고 `unbacked_claim`으로 끝. 형식 오류로 세지 않는다 (`experiments.md` 7단계) |
+| 같은 답 되풀이 (D1일 때만, 13단계) | 도구 호출 없는 답이 바로 앞에 고객에게 전달한 상담원 답과 공백만 빼고 같으면 고객에게 보내지 않고 안내문(`REPEAT_NOTICE`)을 넣어 다시 호출한다. 한 턴에 `max_repeat_retries`(1)번, 다시도 같으면 그대로 전달한다. 형식 오류로 세지 않는다 (`format_error` = `repeat`) |
 | 도구 오류 누적 | `max_tool_errors`(10)에 닿으면 `too_many_tool_errors`로 끝 |
 | 이관 성공 | 고정 안내문(`HANDOFF_MESSAGE`)을 고객에게 전달한 것으로 치고 `handoff`로 끝 |
 | 한도 | 에이전트 LLM 호출 30, 고객 턴 20 |

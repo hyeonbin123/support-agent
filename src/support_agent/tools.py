@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Annotated
 
 from pydantic import Field, field_validator
@@ -198,6 +198,49 @@ def _require_line_free(ctx: ToolContext, item: db.OrderItem) -> None:
     )
 
 
+# --- E1(13단계): 규정 거절 오류에 붙이는 사실 ---
+# 규정 검사가 막을 때 그 검사가 쓴 사실을 괄호 하나로 적는다. ctx.check_policy가 E1이고 실제로 막을 때만
+# 부른다(toolkit.py). 조언·다음 할 일은 넣지 않고 사실만 넣는다. 시각은 도구 출력과 같은 KST 표기(format_kst,
+# 날짜만이면 ISO 날짜)다. 13단계 규칙(docs/experiments.md)에 이 고정 목록을 적었다:
+# - 반품·교환 기한 지남 → 수령 시각과 접수 마감일(rules.return_deadline)
+# - 배송완료가 아니라 반품·교환 불가, 상태 때문에 취소·배송지 변경 불가 → 지금 주문 상태와 그 상태가 된
+#   시각(출고, 수령)
+# - 이미 발급된 보상 쿠폰(주문당 1장), 최근 30일 2장 한도 → 그 쿠폰들의 번호와 발급 시각
+# - 배송 지연 보상 자격 없음 → 도착 예정일과 수령 시각(아직 받지 않았으면 그렇게)
+
+
+# 지금 주문 상태와 출고·수령 시각.
+def _status_facts(order: db.Order) -> str:
+    shipment = order.shipment
+    parts = [f"주문 상태: {label(order.status)}"]
+    if shipment is not None and shipment.shipped_at is not None:
+        parts.append(f"출고: {format_kst(shipment.shipped_at)}")
+    if shipment is not None and shipment.delivered_at is not None:
+        parts.append(f"수령: {format_kst(shipment.delivered_at)}")
+    return "(" + ", ".join(parts) + ")"
+
+
+# 수령 시각과 반품·교환 접수 마감일(수령일 다음 날부터 7일째 되는 날, KST 날짜).
+def _window_facts(delivered_at: datetime) -> str:
+    return (
+        f"(수령: {format_kst(delivered_at)}, 접수 마감일: {rules.return_deadline(delivered_at).isoformat()})"
+    )
+
+
+# 보상 쿠폰들의 번호와 발급 시각. what은 괄호 안 머리말(어떤 쿠폰인지)이다.
+def _coupon_facts(what: str, coupons: list[db.Coupon]) -> str:
+    listed = ", ".join(f"{c.id} 발급 {format_kst(c.issued_at)}" for c in coupons)
+    return f"({what}: {listed})"
+
+
+# 도착 예정일과 수령 시각(아직이면 '수령 전').
+def _delay_facts(shipment: db.Shipment | None) -> str:
+    if shipment is None:
+        return "(배송 정보 없음)"
+    received = format_kst(shipment.delivered_at) if shipment.delivered_at is not None else "아직 수령 전"
+    return f"(도착 예정일: {format_kst_date(shipment.promised_by)}, 수령: {received})"
+
+
 # 배송완료인데 수령 시각 기록이 없는 것은 데이터 무결성 문제라 규정이 아니라 require로 막는다.
 def _check_delivered_in_window(ctx: ToolContext, order: db.Order, kind: str, word: str) -> None:
     """반품과 교환이 함께 쓰는 규정 두 가지. `kind`는 오류 코드의 접두사(return/exchange)다.
@@ -209,6 +252,7 @@ def _check_delivered_in_window(ctx: ToolContext, order: db.Order, kind: str, wor
         order.status == db.OrderStatus.DELIVERED,
         f"{kind}_not_delivered",
         f"배송완료 상태의 주문만 {word}할 수 있습니다.",
+        facts=lambda: _status_facts(order),
     )
     delivered_at = order.shipment.delivered_at if order.shipment is not None else None
     ctx.require(
@@ -221,6 +265,7 @@ def _check_delivered_in_window(ctx: ToolContext, order: db.Order, kind: str, wor
             rules.within_return_window(ctx.now, delivered_at),
             f"{kind}_window_expired",
             f"{word} 기한(수령일 다음 날부터 {rules.RETURN_WINDOW_DAYS}일)이 지났습니다.",
+            facts=lambda: _window_facts(delivered_at),
         )
 
 
@@ -545,6 +590,7 @@ def cancel_order(session: Session, ctx: ToolContext, args: CancelOrderArgs) -> d
         order.status in CANCELLABLE,
         "cancel_not_allowed_status",
         f"{label(order.status)} 상태의 주문은 취소할 수 없습니다.",
+        facts=lambda: _status_facts(order),
     )
     order.status = db.OrderStatus.CANCELLED
     order.cancelled_at = ctx.now
@@ -697,6 +743,7 @@ def change_shipping_address(session: Session, ctx: ToolContext, args: ChangeAddr
         order.status in CANCELLABLE,
         "address_change_not_allowed_status",
         f"{label(order.status)} 상태의 주문은 배송지를 바꿀 수 없습니다.",
+        facts=lambda: _status_facts(order),
     )
     order.ship_address_id = address.id
     order.ship_recipient = address.recipient
@@ -734,7 +781,12 @@ def issue_compensation_coupon(session: Session, ctx: ToolContext, args: IssueCou
         if shipment is not None:
             late = rules.delay_days(shipment.promised_by, shipment.delivered_at, ctx.now)
             amount = rules.compensation_amount_won(args.reason, late)
-        ctx.check_policy(amount is not None, "coupon_not_eligible", "도착 예정일보다 늦어진 주문이 아닙니다.")
+        ctx.check_policy(
+            amount is not None,
+            "coupon_not_eligible",
+            "도착 예정일보다 늦어진 주문이 아닙니다.",
+            facts=lambda: _delay_facts(order.shipment),
+        )
     else:
         defective = any(r.reason == db.RequestReason.DEFECTIVE for r in order.requests)
         amount = rules.compensation_amount_won(args.reason, 0) if defective else None
@@ -749,7 +801,10 @@ def issue_compensation_coupon(session: Session, ctx: ToolContext, args: IssueCou
 
     for_order = _compensation_coupons(session, order_id=order.id)
     ctx.check_policy(
-        not for_order, "coupon_already_issued_for_order", "이 주문에는 이미 보상 쿠폰이 발급되었습니다."
+        not for_order,
+        "coupon_already_issued_for_order",
+        "이 주문에는 이미 보상 쿠폰이 발급되었습니다.",
+        facts=lambda: _coupon_facts("이 주문의 보상 쿠폰", for_order),
     )
     # 반품 기한처럼 KST 날짜로 센다: 오늘을 포함한 최근 30일 안에 발급된 쿠폰.
     first_day = kst_date(ctx.now) - timedelta(days=rules.COUPON_WINDOW_DAYS - 1)
@@ -763,6 +818,7 @@ def issue_compensation_coupon(session: Session, ctx: ToolContext, args: IssueCou
         len(recent) < limit,
         "coupon_limit_exceeded",
         f"최근 {days}일 동안 보상 쿠폰을 이미 {limit}장 받은 고객입니다.",
+        facts=lambda: _coupon_facts(f"최근 {days}일 보상 쿠폰", recent),
     )
 
     # 쿠폰 id는 CP-주문-n. 과제는 같은 부모 아래 새 행을 1개까지만 만들므로 개수 기반 id도

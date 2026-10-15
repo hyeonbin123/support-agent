@@ -55,7 +55,7 @@ class LLMCallLog:
     text: str
     tool_calls: list[dict[str, Any]]
     # 답을 받은 그대로 쓰지 않은 이유: empty | leaked_tool_call | cut_off | rescued_tool_call |
-    # wrong_language | stall(G1) | unbacked_claim(C1). 그대로 썼으면 None.
+    # wrong_language | stall(G1) | unbacked_claim(C1) | repeat(D1, 13단계). 그대로 썼으면 None.
     format_error: str | None
     dropped_text: str  # 도구 호출과 함께 왔지만 전달하지 않은 본문
     dropped_calls: int  # 첫 번째 뒤의 도구 호출 수(실행하지 않음)

@@ -124,6 +124,7 @@ class ToolContext:
     - enforce_policy: P1이면 True
     - violations: P0에서 통과시킨 규정 위반 코드(판정의 보조 지표)
     - caller_phone: 음성 V4에서만 쓰는 발신 번호(verify_caller)
+    - error_facts: E1(13단계)이면 규정이 막은 호출의 오류 글 끝에 그 검사가 쓴 사실을 붙인다
     """
 
     now: datetime  # 시간대 정보가 있는 시각
@@ -131,17 +132,26 @@ class ToolContext:
     state: ConversationState = field(default_factory=ConversationState)
     violations: list[str] = field(default_factory=list)  # 막지 않고 통과시킨 규정 위반 코드(P0에서만)
     caller_phone: str | None = None  # 음성 V4: 전화가 걸려 온 번호(숫자만). 그 밖에서는 None
+    # E1(docs/experiments.md 13단계): 규정 거절 오류에 그 검사가 쓴 사실(수령·출고 시각, 접수 마감일, 이미
+    # 발급된 쿠폰, 도착 예정일)을 붙인다. 기본 False면 오류 글이 2026-10-15 전과 바이트까지 같다.
+    error_facts: bool = False
 
     def require(self, ok: bool, code: str, message: str) -> None:
         """무결성·본인 확인 검사. P0·P1과 상관없이 어느 모드에서든 막는다."""
         if not ok:
             raise ToolError(code, message)
 
-    def check_policy(self, ok: bool, code: str, message: str) -> None:
+    # facts는 검사가 쓴 사실을 글로 만드는 함수다(예: "(수령: 2026-09-06 14:20, 접수 마감일: 2026-09-13)").
+    # 막힐 때만, 그리고 error_facts(E1)일 때만 불러 메시지 끝에 붙인다. 함수로 받는 이유: 사실을 만들려면
+    # 배송·쿠폰 행을 더 읽어야 할 수 있는데, 검사를 통과하거나 E0이면 그 조회를 하지 않게 하려는 것이다.
+    # 오류 코드는 바꾸지 않는다. 다음에 할 일은 넣지 않는다(이유와 사실만, docs/design.md "도구").
+    def check_policy(self, ok: bool, code: str, message: str, facts: Callable[[], str] | None = None) -> None:
         """코드로 확인할 수 있는 규정. P1은 policy=True인 ToolError로 막고, P0는 위반만 기록하고 넘긴다."""
         if ok:
             return
         if self.enforce_policy:
+            if self.error_facts and facts is not None:
+                message = f"{message} {facts()}"
             raise ToolError(code, message, policy=True)
         self.violations.append(code)
 

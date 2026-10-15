@@ -54,6 +54,13 @@ class Settings(BaseModel):
     # 꺼짐: 개발용 과제에서 C1은 −2.1%p와 정답에 없는 쓰기 1건 증가, C2는 −5.2%p라 둘 다 측정 전에 적은 규칙을
     # 만족하지 못했다(docs/experiments.md 7단계). CLAIMS=C1로 켠다.
     claims: Literal["C0", "C1", "C2"] = "C0"
+    # 13단계 후보(docs/experiments.md 13단계). 모두 기본은 꺼짐이고, 켜는 조건은 13단계 규칙에 측정 전에
+    # 적었다. GUARD=G1: "확인해 보겠습니다"만 하는 답을 붙잡아 다시 시킨다(2단계 멈춤 가드). ERRORS=E1: 규정이
+    # 막은 쓰기의 오류 글에 그 검사가 쓴 사실(수령·출고 시각, 접수 마감일, 이미 발급된 쿠폰, 도착 예정일)을
+    # 붙인다. REPEAT=D1: 바로 앞에 고객에게 전달한 답과 같은 답을 붙잡아 한 번 다시 시킨다.
+    guard: Literal["G0", "G1"] = "G0"
+    errors: Literal["E0", "E1"] = "E0"
+    repeat: Literal["D0", "D1"] = "D0"
     now: AwareDatetime | Literal["real"] = Field(default_factory=lambda: datetime.fromisoformat(DEMO_NOW))
     approval_refund_won: int = 100_000  # 이 금액 이상의 환불은 사람을 기다린다
     admin_token: str = ""  # ""이면 관리자 API가 꺼진다

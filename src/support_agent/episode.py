@@ -174,6 +174,7 @@ def run_episode(
         now=task.now,
         enforce_policy=config.enforce_policy,
         caller_phone=caller_number(task, seed_engine) if config.caller_id else None,
+        error_facts=config.errors == "E1",  # 13단계 E1: 규정 거절 오류에 사실을 붙인다
     )
     state = new_state(build_system_prompt(policy_text, task.now, caller_id=config.caller_id))
     # R2(10단계)면 쓰기가 고객의 동의를 기다리는 확인 관문을 붙인다. 프롬프트와 도구 목록은 R0와 같다.
