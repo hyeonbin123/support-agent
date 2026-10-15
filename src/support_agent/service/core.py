@@ -660,8 +660,11 @@ class ChatService:
 
     # ---------------------------------------------------------------- 승인 (approvals)
 
-    # 롤백된 쓰기를 승인 대기열에 올린다. 같은 세션·도구·인자의 대기 건이 이미 있으면 새로 만들지 않고 그것을
-    # 쓴다(모델이 같은 요청을 다시 불러도 대기열에는 하나만).
+    # 롤백된 쓰기를 승인 대기열에 올린다. 같은 세션에서 같은 대상(도구 + 주문, 반품이면 + 줄 번호)의 대기 건이
+    # 이미 있으면 새로 만들지 않고 그것을 쓴다(모델이 같은 요청을 다시 불러도 대기열에는 하나만). 대상은
+    # _approval_target으로 비교한다: 예전에는 인자 전체를 비교해, 사유(reason)만 바꾼 재요청이 같은 주문의
+    # 승인을 하나 더 만들었다. 두 건이 모두 승인되면 둘째는 주문 상태가 바뀌어 failed가 될 뿐이지만, 담당자가
+    # 같은 요청을 두 번 보게 된다. 대기 건의 인자(처음 요청의 사유)는 그대로 둔다.
     # 돌려주는 것: 에이전트가 읽을 approval_required 결과(held_for_agent 문구)와 {승인 번호: 고객 안내 문장}.
     # approval 이벤트로 화면에도 알린다.
     def _queue_approval(
@@ -686,7 +689,9 @@ class ChatService:
                     Approval.status == ApprovalStatus.PENDING.value,
                 )
             ).all()
-            approval = next((a for a in pending if a.args == clean), None)
+            target = _approval_target(tool, clean)
+            approval = next((a for a in pending if _approval_target(a.tool, a.args) == target), None)
+            reused = approval is not None
             if approval is None:
                 approval = Approval(
                     session_id=session_id,
@@ -709,6 +714,8 @@ class ChatService:
                 "args": clean,
                 "refund_won": refund,
                 "order_refund_won": order_total,
+                # 같은 대상의 대기 건을 다시 쓴 요청이면 표시한다(새 승인을 만들지 않았다).
+                **({"reused": True} if reused else {}),
             },
         )
         emit("approval", {"code": code, "tool": tool, "refund_won": refund})
@@ -915,6 +922,13 @@ class ChatService:
         with Session(self.engine) as db_session:
             db_session.add(AuditEvent(session_id=session_id, at=wall_clock(), kind=kind, payload=payload))
             db_session.commit()
+
+
+# 승인 대기 건의 대상: (도구, 주문 번호, 반품 줄 번호). 같은 세션에서 대상이 같은 대기 건은 하나만 둔다
+# (_queue_approval). 사유처럼 대상을 바꾸지 않는 인자는 보지 않는다. 반품은 줄 번호가 다르면 다른 요청이다(줄
+# 번호는 도구가 정렬해 둔 canonical_args 형태라 순서와 무관하다).
+def _approval_target(tool: str, args: dict[str, Any]) -> tuple[str, str, tuple[int, ...]]:
+    return tool, str(args.get("order_id", "")), tuple(args.get("line_nos") or ())
 
 
 # 승인 행 → 관리자 API의 JSON. 화면 표기용 승인 번호와 도구의 한국어 이름을 함께 넣는다.

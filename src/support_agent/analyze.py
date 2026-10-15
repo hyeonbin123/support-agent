@@ -394,6 +394,11 @@ def is_test_run(run_dir: Path) -> bool:
     )
 
 
+# Ollama 제공자 설명(manifest의 agent_provider·user_provider)에 나중에 더해진 필드와, 그 필드가 없는 옛
+# manifest에서 그 값으로 볼 값. setup_differences가 쓴다.
+_PROVIDER_FIELDS_ADDED_LATER: dict[str, Any] = {"truncate": False}
+
+
 # 두 실행을 '한 축만 다른 같은 설정'으로 짝지어도 되는지 확인하고, 안 되는 이유를 목록으로 돌려준다(빈 목록 =
 # 짝지어도 됨). analyze same-setup과 8·10·12단계의 짝짓기 검사가 쓴다.
 # 비교 항목: 무시할 축을 뺀 모든 설정(옛 manifest에 없는 필드는 기본값으로 봄), 시도 수, 과제 해시, seed 해시,
@@ -413,6 +418,15 @@ def setup_differences(
         prompts = manifest.get("prompt_sha256")
         if isinstance(prompts, dict) and ignore_prompts:
             manifest["prompt_sha256"] = {k: v for k, v in prompts.items() if k not in ignore_prompts}
+        # 제공자 설명에 나중에 생긴 필드는, 그 필드가 없는 옛 manifest에서 지금 값과 같다고 보고 비교한다.
+        # truncate(2026-10-15부터 False): 옛 실행은 이 필드 없이 요청했지만, 기록된 어느 실행에서도 프롬프트가
+        # 잘린 호출이 없어(같은 에피소드 안에서 프롬프트 길이가 줄어든 호출 0, tests/test_recorded_numbers.py)
+        # 모든 응답이 truncate: false일 때와 같다. 그래서 필드가 생겼다는 이유만으로 옛 기록과 짝짓기가 막히지
+        # 않게 한다.
+        for key in ("agent_provider", "user_provider"):
+            provider = manifest.get(key)
+            if isinstance(provider, dict) and provider.get("provider") == "ollama":
+                manifest[key] = {**_PROVIDER_FIELDS_ADDED_LATER, **provider}
     # 새 필드가 생기기 전의 기록은 그 필드가 없다. 기본값과 같다고 보고 비교해, 필드가 추가됐다는 이유만으로
     # 옛 기록과 짝짓기가 막히지 않게 한다.
     defaults = RunConfig().to_dict()

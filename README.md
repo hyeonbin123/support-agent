@@ -204,7 +204,8 @@ uv run python -m support_agent.run --tasks smoke --trials 1
 - 결과는 `outputs/runs/<run_id>/`에 남는다: `manifest.json`(설정, 커밋, 모델 digest, 프롬프트·과제 해시), `episodes.jsonl`(대화 전체, 도구 호출, DB 변경분, 판정), `summary.json`
 - `--policy P1`은 코드로 검증할 수 있는 규정을 도구 안에서도 막는다. `--reasoning R1`은 think 도구를 보여 준다
 - GPU 메모리를 다른 작업이 쓰고 있으면 시작하지 않는다 (`--force`로 무시)
-- Ollama 주소는 `OLLAMA_BASE_URL`로 바꾼다 (기본 `http://127.0.0.1:11434`)
+- Ollama 주소는 `OLLAMA_BASE_URL`로 바꾼다 (기본 `http://127.0.0.1:11434`). 주소에 인증 정보(`http://아이디:비밀번호@호스트`)가 있으면 `manifest.json`에는 그 부분을 `***`로 가려 적는다
+- 요청에는 `truncate: false`를 넣는다 (2026-10-15부터). 프롬프트가 컨텍스트(`--num-ctx`)보다 길면 Ollama가 앞부분을 잘라 답하지 않고 거절하고, 에피소드는 컨텍스트 한도 종료로 끝난다. 기록된 실행에서는 잘린 호출이 없었다 ([docs/experiments.md](docs/experiments.md) 공통 규칙)
 
 ### 서비스와 MCP 서버
 

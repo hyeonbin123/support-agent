@@ -15,15 +15,25 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from collections.abc import Sequence
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 # httpx: 동기 HTTP 클라이언트. 시간 제한을 연결과 읽기로 나눠 줄 수 있고, 테스트용 가짜 transport를 넣을 수
 # 있다.
 import httpx
 
-from support_agent.chat import ChatProvider, ChatResponse, Message, ProviderError, ToolCall, Usage
+from support_agent.chat import (
+    ChatProvider,
+    ChatResponse,
+    ContextOverflowError,
+    Message,
+    ProviderError,
+    ToolCall,
+    Usage,
+)
 
 # Ollama 기본 주소. 환경 변수 OLLAMA_BASE_URL로 바꿀 수 있다(README 실행 절). 메타 조회(/api/tags 등)는 바로
 # 답하거나 아예 답하지 않으므로 짧은 10초 제한을 쓴다. _UNSET은 '아직 조회 안 함'과 '조회 결과 None'을
@@ -123,6 +133,55 @@ def _parse_tool_calls(items: Any) -> tuple[ToolCall, ...]:
 # 재시도, 시뮬레이터면 infra_error).
 REPEAT_LIMIT_ERROR = "token repeat limit reached"
 
+# 컨텍스트 넘침을 알아보는 표시. truncate: false인 요청의 프롬프트가 num_ctx보다 길면 Ollama 0.35.1은 HTTP
+# 400과 함께 {"error": {"type": "exceed_context_size_error", "message": "request (N tokens) exceeds the
+# available context size (M tokens), ...", "n_prompt_tokens": N, "n_ctx": M}}를 돌려준다(같은 PC에서
+# rag-doc-qa 프로젝트의 v11 스모크가 확인한 본문). 본문 꼴이 버전마다 바뀔 수 있어 type과 문구 둘 다 본다.
+_OVERFLOW_TYPE = "exceed_context_size_error"
+_OVERFLOW_TEXT = "exceeds the available context size"
+_OVERFLOW_COUNTS = re.compile(r"request \((\d+) tokens\) exceeds the available context size \((\d+) tokens\)")
+
+
+# 컨텍스트 넘침 오류 응답이면 ContextOverflowError를, 아니면 None을 돌려준다. 서버가 알려 준 프롬프트
+# 토큰 수와 num_ctx를 함께 담아, 에이전트 루프가 LLM 호출 기록에 남길 수 있게 한다.
+def _overflow_error(method: str, path: str, resp: httpx.Response) -> ContextOverflowError | None:
+    text = resp.text
+    if resp.status_code != 400 or (_OVERFLOW_TYPE not in text and _OVERFLOW_TEXT not in text):
+        return None
+    prompt_tokens = num_ctx = 0
+    try:
+        error = resp.json().get("error")
+    except (ValueError, AttributeError):
+        error = None
+    if isinstance(error, dict):
+        prompt_tokens = int(error.get("n_prompt_tokens") or 0)
+        num_ctx = int(error.get("n_ctx") or 0)
+    if not prompt_tokens:
+        found = _OVERFLOW_COUNTS.search(text)
+        if found:
+            prompt_tokens, num_ctx = int(found.group(1)), int(found.group(2))
+    return ContextOverflowError(
+        f"ollama: {method} {path} returned HTTP 400 (context overflow): {text[:300]}",
+        prompt_tokens=prompt_tokens,
+        num_ctx=num_ctx,
+    )
+
+
+# 주소에 든 인증 정보(http://사용자:비밀번호@호스트)를 가린다. manifest의 base_url은 공식 실행이면 공개
+# 저장소에 커밋되므로(reports/), OLLAMA_BASE_URL에 인증 정보를 넣어 쓰는 경우에도 기록에는 남지 않게 한다.
+# 인증 정보가 없는 주소(기본 http://127.0.0.1:11434)는 글자까지 그대로라 지난 기록과 짝짓기가 바뀌지 않는다.
+# 실제 요청은 가리지 않은 주소로 간다(self.base_url).
+def redact_url(url: str) -> str:
+    """주소의 사용자 정보(아이디·비밀번호)를 `***`로 바꾼다. 사용자 정보가 없으면 그대로 돌려준다."""
+    parts = urlsplit(url)
+    if parts.username is None and parts.password is None:
+        return url
+    host = parts.hostname or ""
+    if ":" in host:  # IPv6 주소는 대괄호로 다시 감싼다
+        host = f"[{host}]"
+    netloc = f"***@{host}" + (f":{parts.port}" if parts.port is not None else "")
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
 
 # Ollama 제공자. 인자: 모델 이름, 컨텍스트 크기, keep_alive(요청 뒤 모델을 메모리에 둘 시간, 기본 60분),
 # think(사고 모드 켜기/끄기, None이면 보내지 않음), num_gpu(GPU에 올릴 층 수, 9단계에서 시뮬레이터 일부를
@@ -185,6 +244,11 @@ class OllamaProvider(ChatProvider):
             resp = self._http.request(method, path, json=body, **kwargs)
         except httpx.HTTPError as e:
             raise ProviderError(f"ollama: {method} {path} failed: {type(e).__name__}: {e}") from e
+        # 컨텍스트 넘침(HTTP 400)은 일반 서버 오류와 나눠 올린다. 에이전트 루프가 이것만 컨텍스트 한도 종료로
+        # 바꾼다(agent.py).
+        overflow = _overflow_error(method, path, resp)
+        if overflow is not None:
+            raise overflow
         if not resp.is_success:
             raise ProviderError(
                 f"ollama: {method} {path} returned HTTP {resp.status_code}: {resp.text[:300]}"
@@ -217,11 +281,17 @@ class OllamaProvider(ChatProvider):
         }
         if seed is not None:
             options["seed"] = seed
+        # truncate: false(2026-10-15부터): 프롬프트가 num_ctx보다 길면 서버가 앞부분(시스템 프롬프트 포함)을
+        # 조용히 잘라 답하지 않고 HTTP 400으로 거절하게 한다. 그 오류는 _request가 ContextOverflowError로
+        # 올린다. 프롬프트가 num_ctx 안에 들면 응답은 이 필드가 없을 때와 같다(잘림이 일어나지 않으므로).
+        # 기록된 평가 실행에서는 같은 에피소드 안에서 프롬프트 길이가 줄어든 호출이 하나도 없어 잘림이 없었다
+        # (docs/experiments.md 공통 규칙의 2026-10-15 메모, tests/test_recorded_numbers.py가 확인).
         body: dict[str, Any] = {
             "model": self.model,
             "messages": [_wire_message(m) for m in messages],
             "stream": False,
             "keep_alive": self.keep_alive,
+            "truncate": False,
             "options": options,
         }
         if tools:
@@ -321,6 +391,8 @@ class OllamaProvider(ChatProvider):
 
     # manifest의 agent_provider·user_provider 값. analyze same-setup이 이 값을 비교한다. digest와 버전은 한
     # 번만 조회해 두되, 조회에 실패하면 저장하지 않아 다음 호출에서 다시 시도한다.
+    # base_url은 인증 정보를 가린 주소다(redact_url). truncate는 chat()이 보내는 값(2026-10-15부터 False)이고,
+    # 이 필드가 없는 옛 manifest는 analyze.setup_differences가 같은 값으로 보고 비교한다.
     def describe(self) -> dict[str, Any]:
         if self._digest is _UNSET:
             try:
@@ -335,9 +407,10 @@ class OllamaProvider(ChatProvider):
         return {
             "provider": self.name,
             "model": self.model,
-            "base_url": self.base_url,
+            "base_url": redact_url(self.base_url),
             "num_ctx": self.num_ctx,
             "keep_alive": self.keep_alive,
+            "truncate": False,
             "think": self.think,
             "num_gpu": self.num_gpu,
             "digest": None if self._digest is _UNSET else self._digest,

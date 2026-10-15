@@ -29,7 +29,7 @@ from typing import Any
 # 내부 모듈: 제공자 중립 대화 타입(chat), 완료 주장 검출기(claims, 7단계), KST 변환(clock), 설정·고정
 # 문자열·seed(config), R2 미리보기 코드(confirm, 10단계), 기록 타입(records), 도구 등록부와 결과
 # 타입(toolkit).
-from support_agent.chat import ChatProvider, ChatResponse, Message, ToolCall
+from support_agent.chat import ChatProvider, ChatResponse, ContextOverflowError, Message, ToolCall
 from support_agent.claims import unbacked_claim
 from support_agent.clock import to_kst
 from support_agent.config import (
@@ -276,9 +276,37 @@ def agent_turn(
         if config.claims == "C2" and claim_retries > 0:
             temperature = config.claim_retry_temperature
         # 대화 전체와 보이는 도구 목록을 보내 한 턴을 받는다.
-        response = provider.chat(
-            state.messages, tools, temperature=temperature, seed=seed, max_tokens=config.max_tokens
-        )
+        started = time.perf_counter()
+        try:
+            response = provider.chat(
+                state.messages, tools, temperature=temperature, seed=seed, max_tokens=config.max_tokens
+            )
+        except ContextOverflowError as overflow:
+            # 프롬프트가 num_ctx를 넘어 서버가 요청을 거절했다(ollama.py가 truncate: false를 보내므로 잘라서
+            # 답하지 않는다). 아래 95% 검사와 같은 컨텍스트 한도 종료로 끝낸다. 형식 오류가 아니므로
+            # format_error는 비우고, 기록에서 이유를 알 수 있게 finish_reason에 context_overflow와 서버가 알려
+            # 준 프롬프트 토큰 수를 남긴다.
+            state.agent_calls += 1
+            state.llm_log.append(
+                LLMCallLog(
+                    who="agent",
+                    index=index,
+                    seed=seed,
+                    text="",
+                    tool_calls=[],
+                    format_error=None,
+                    dropped_text="",
+                    dropped_calls=0,
+                    finish_reason="context_overflow",
+                    prompt_tokens=overflow.prompt_tokens,
+                    completion_tokens=0,
+                    wall_ms=(time.perf_counter() - started) * 1000,
+                    load_ms=0.0,
+                    prompt_eval_ms=0.0,
+                    eval_ms=0.0,
+                )
+            )
+            return TurnResult(None, "context_limit")
         state.agent_calls += 1
         problem = format_problem(response)
         calls = response.tool_calls
@@ -332,9 +360,11 @@ def agent_turn(
                 eval_ms=usage.eval_ms,
             )
         )
-        # Ollama는 프롬프트가 num_ctx를 넘으면 오류 없이 앞부분(시스템 프롬프트 포함)을 잘라 버린다. 0단계에서
-        # prompt_eval_count가 캐시된 토큰까지 포함한 전체 길이임을 확인했으므로 이 값으로 95%를 넘기 전에
-        # 멈춘다(docs/experiments.md 0단계).
+        # Ollama는 truncate 필드 없이 받은 프롬프트가 num_ctx를 넘으면 오류 없이 앞부분(시스템 프롬프트
+        # 포함)을 잘라 버린다. 0단계에서 prompt_eval_count가 캐시된 토큰까지 포함한 전체 길이임을 확인했으므로
+        # 이 값으로 95%를 넘기 전에 멈춘다(docs/experiments.md 0단계). 2026-10-15부터는 ollama.py가 truncate:
+        # false를 보내, 한 번에 넘친 요청도 잘리지 않고 위의 ContextOverflowError로 끝난다. 이 95% 검사는
+        # 넘치기 전에 미리 멈추는 기존 규칙이라 그대로 둔다.
         if usage.prompt_tokens > 0.95 * config.num_ctx:
             return TurnResult(None, "context_limit")
 

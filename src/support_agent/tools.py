@@ -27,7 +27,7 @@ from datetime import timedelta
 from typing import Annotated
 
 from pydantic import Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 # db: 쇼핑몰 테이블과 enum. rules: 반품 기한·환불액·보상 금액 같은 규정 계산(순수 함수). clock: 시각을 KST로
@@ -162,9 +162,15 @@ def _own_customer(session: Session, ctx: ToolContext, customer_id: str) -> db.Cu
 
 
 # 본인 확인 → 주문 존재 → 확인된 고객의 주문인지. 주문을 다루는 모든 도구가 처음에 부른다.
-def _own_order(session: Session, ctx: ToolContext, order_id: str) -> db.Order:
+# lock=True(주문을 바꾸거나 주문에 딸린 행을 만드는 쓰기 도구): 주문 행을 SELECT … FOR UPDATE로 읽어 이
+# 트랜잭션이 끝날 때까지 잠근다. PostgreSQL(서비스)에서 두 세션이 같은 주문을 같은 순간에 바꾸면 늦은 쪽이
+# 앞쪽의 커밋을 기다린 뒤 바뀐 상태(이미 접수된 줄, 이미 취소된 주문, 이미 발급된 쿠폰)를 보고 판단한다.
+# 잠금 뒤의 줄·결제·접수 조회는 지연 로딩이라 잠금을 얻은 다음에 읽힌다(READ COMMITTED). SQLite(평가)는
+# FOR UPDATE를 SQL에 넣지 않으므로(SQLAlchemy의 SQLite 방언) 평가가 보내는 SQL과 결과는 그대로다. 잠금
+# 순서는 늘 주문 → 고객이라 두 도구가 서로를 기다리는 교착이 생기지 않는다.
+def _own_order(session: Session, ctx: ToolContext, order_id: str, *, lock: bool = False) -> db.Order:
     verified = _verified(ctx)
-    order = session.get(db.Order, order_id)
+    order = session.get(db.Order, order_id, with_for_update=True if lock else None)
     ctx.require(order is not None, "order_not_found", "주문을 찾을 수 없습니다.")
     ctx.require(order.customer_id == verified, "not_order_owner", "본인 확인된 고객의 주문이 아닙니다.")
     return order
@@ -533,7 +539,7 @@ def track_shipment(session: Session, ctx: ToolContext, args: OrderArgs) -> dict:
 @tool(write=True)
 def cancel_order(session: Session, ctx: ToolContext, args: CancelOrderArgs) -> dict:
     """주문 전체를 취소하고 결제 금액 전액을 원 결제 수단으로 환불 처리한다."""
-    order = _own_order(session, ctx, args.order_id)
+    order = _own_order(session, ctx, args.order_id, lock=True)
     _require_open(ctx, order)
     ctx.check_policy(
         order.status in CANCELLABLE,
@@ -564,7 +570,10 @@ def cancel_order(session: Session, ctx: ToolContext, args: CancelOrderArgs) -> d
 @tool(write=True, unordered_args=("line_nos",))
 def request_return(session: Session, ctx: ToolContext, args: RequestReturnArgs) -> dict:
     """배송완료된 주문의 상품 줄을 반품 접수한다. 환불액과 반품 배송비는 규정대로 계산된다."""
-    order = _own_order(session, ctx, args.order_id)
+    # 주문 행 잠금: 같은 주문의 줄 [1, 3]과 [3]을 두 세션이 같은 순간에 반품해도 접수 id(첫 줄 번호)가 달라
+    # 둘 다 통과하던 경합을 막는다. 늦은 쪽은 3번 줄이 이미 접수된 것을 보고 already_requested로 거절된다.
+    # 서비스의 승인 관문이 같은 주문의 반품 합계를 셀 때도 앞쪽의 접수를 본다(service/core.py).
+    order = _own_order(session, ctx, args.order_id, lock=True)
     line_nos = sorted(args.line_nos)
     items = [_line(ctx, order, line_no) for line_no in line_nos]
     _require_open(ctx, order)
@@ -611,7 +620,7 @@ def request_return(session: Session, ctx: ToolContext, args: RequestReturnArgs) 
 @tool(write=True)
 def request_exchange(session: Session, ctx: ToolContext, args: RequestExchangeArgs) -> dict:
     """배송완료된 주문의 상품 줄 하나를 같은 상품의 다른 옵션으로 교환 접수한다."""
-    order = _own_order(session, ctx, args.order_id)
+    order = _own_order(session, ctx, args.order_id, lock=True)
     item = _line(ctx, order, args.line_no)
     new_variant = session.get(db.ProductVariant, args.new_variant_id)
     ctx.require(new_variant is not None, "variant_not_found", "옵션을 찾을 수 없습니다.")
@@ -650,7 +659,18 @@ def request_exchange(session: Session, ctx: ToolContext, args: RequestExchangeAr
         )
     )
     item.status = db.ItemStatus.EXCHANGE_REQUESTED
-    new_variant.stock -= item.quantity
+    # 재고는 읽고-빼서-쓰지 않고 조건부 UPDATE 한 번으로 줄인다: "재고가 수량 이상일 때만 수량만큼 뺀다".
+    # 같은 옵션을 두 세션이 같은 순간에 교환하면, 읽고-빼기는 둘 다 같은 재고를 읽어 하나의 차감이 사라졌다
+    # (갱신 유실). 이 UPDATE는 늦은 쪽이 앞쪽의 커밋을 기다린 뒤 새 재고로 조건을 다시 보므로, 차감이 모두
+    # 남고 재고가 모자라면 바뀐 행이 0이라 out_of_stock으로 거절된다. 위의 재고 검사(같은 코드)는 오류의
+    # 순서를 지금과 같게 두려고 그대로 둔다. 한 세션만 쓰는 평가(SQLite)에서는 그 검사를 통과했으면 이
+    # UPDATE도 반드시 한 행을 바꾸므로 결과가 같다.
+    taken = session.execute(
+        update(db.ProductVariant)
+        .where(db.ProductVariant.id == new_variant.id, db.ProductVariant.stock >= item.quantity)
+        .values(stock=db.ProductVariant.stock - item.quantity)
+    ).rowcount
+    ctx.require(taken == 1, "out_of_stock", "해당 옵션의 재고가 부족합니다.")
     return {
         "request_id": request_id,
         "order_id": order.id,
@@ -665,7 +685,7 @@ def request_exchange(session: Session, ctx: ToolContext, args: RequestExchangeAr
 @tool(write=True)
 def change_shipping_address(session: Session, ctx: ToolContext, args: ChangeAddressArgs) -> dict:
     """아직 출고되지 않은 주문의 배송지를 고객 주소록에 있는 다른 주소로 바꾼다."""
-    order = _own_order(session, ctx, args.order_id)
+    order = _own_order(session, ctx, args.order_id, lock=True)
     address = session.get(db.CustomerAddress, args.address_id)
     ctx.require(address is not None, "address_not_found", "주소를 찾을 수 없습니다.")
     ctx.require(
@@ -697,7 +717,11 @@ def change_shipping_address(session: Session, ctx: ToolContext, args: ChangeAddr
 @tool(write=True)
 def issue_compensation_coupon(session: Session, ctx: ToolContext, args: IssueCouponArgs) -> dict:
     """배송 지연이나 상품 불량을 겪은 주문에 보상 쿠폰을 발급한다. 금액은 규정이 정한다."""
-    order = _own_order(session, ctx, args.order_id)
+    order = _own_order(session, ctx, args.order_id, lock=True)
+    # 주문 다음에 고객 행도 잠근다(잠금 순서: 주문 → 고객). "고객당 최근 30일 2장" 한도는 고객의 여러 주문에
+    # 걸치므로, 한 고객의 다른 주문 두 개에 같은 순간 발급하면 둘 다 1장만 보고 3장째를 냈다. 이제 늦은 쪽은
+    # 앞쪽의 쿠폰이 커밋된 뒤에 센다. 평가(SQLite)에서는 고객 행을 한 번 더 읽을 뿐이다.
+    session.get(db.Customer, order.customer_id, with_for_update=True)
     ctx.check_policy(
         order.status != db.OrderStatus.CANCELLED,
         "coupon_order_cancelled",
@@ -767,6 +791,10 @@ def create_ticket(session: Session, ctx: ToolContext, args: CreateTicketArgs) ->
     order_id = args.order_id.strip()
     if order_id:
         _own_order(session, ctx, order_id)
+    # 티켓 id는 고객의 티켓 수로 만든다(TK-고객-n). 같은 고객의 두 세션이 같은 순간에 티켓을 남기면 같은 n을
+    # 골라 기본 키가 겹쳐 늦은 쪽이 DB 오류로 실패했다. 고객 행을 잠가 늦은 쪽이 앞쪽의 티켓을 본 뒤 센다.
+    # 주문은 읽기만 하므로 잠그지 않는다(주문 → 고객 순서를 지키는 다른 도구와 교착하지 않는다).
+    session.get(db.Customer, customer_id, with_for_update=True)
     count = len(list(session.scalars(select(db.Ticket.id).filter_by(customer_id=customer_id))))
     ticket = db.Ticket(
         id=_free_id(session, db.Ticket, f"TK-{customer_id}-", count + 1),

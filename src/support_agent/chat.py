@@ -120,6 +120,23 @@ class ProviderError(RuntimeError):
     """모델 서버가 실패했다(시간 초과, HTTP 오류, 깨진 JSON). 에이전트의 잘못이 아니다."""
 
 
+# 프롬프트가 모델의 컨텍스트(num_ctx)보다 길어 서버가 요청을 거절했다는 오류. ProviderError의 하위
+# 클래스라서, 이것을 따로 다루지 않는 호출자(시뮬레이터 호출 → episode.py)는 지금처럼 infra_error로 기록한다.
+# 에이전트 루프(agent.py)만 이것을 잡아 컨텍스트 한도 종료(context_limit)로 바꾼다. 평가에서는 실패로 세고,
+# 서비스는 세션을 닫으며 새 상담을 권한다.
+# [왜 따로 두나] Ollama는 요청에 truncate: false를 주지 않으면 넘친 프롬프트의 앞부분(시스템 프롬프트 포함)을
+# 조용히 잘라 HTTP 200으로 답한다. ollama.py는 2026-10-15부터 truncate: false를 보내 넘침을 오류로 받는다.
+# 같은 PC·같은 Ollama 0.35.1에서 이 동작을 확인한 기록이 rag-doc-qa 프로젝트의 v11 스모크에 있다(HTTP 400,
+# type exceed_context_size_error). prompt_tokens·num_ctx는 서버가 알려 준 값이고, 모르면 0이다.
+class ContextOverflowError(ProviderError):
+    """프롬프트가 모델의 컨텍스트보다 길어 서버가 요청을 거절했다(잘라서 답하지 않았다)."""
+
+    def __init__(self, message: str, *, prompt_tokens: int = 0, num_ctx: int = 0):
+        super().__init__(message)
+        self.prompt_tokens = prompt_tokens
+        self.num_ctx = num_ctx
+
+
 # LLM 제공자 인터페이스. 구현은 대화 전체와 도구 목록을 받아 한 턴을 돌려주는 chat() 하나와, 실행 manifest에
 # 남길 정보를 주는 describe()다.
 # 대화 상태를 제공자 쪽에 두지 않고 매번 전체 기록을 보내는 방식이라, 같은 기록으로 같은 요청을 다시 만들 수

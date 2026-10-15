@@ -27,10 +27,12 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 
 import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
+from factories import add_address, add_compensation_coupon, add_customer, add_order, add_product, kst
 from sqlalchemy import create_engine, make_url, select, text
 from sqlalchemy.orm import Session
 from test_service import (
@@ -54,6 +56,8 @@ from support_agent.service import core, store
 from support_agent.service.bootstrap import prepare_database
 from support_agent.service.core import ApprovalStateError, ChatService
 from support_agent.service.settings import Settings
+from support_agent.toolkit import ConversationState, ToolBugError, ToolContext, ToolResult, execute
+from support_agent.tools import build_registry
 
 # 서버 주소가 없으면 이 파일 전체를 건너뛴다. 테스트용 데이터베이스 이름은 서비스의 데이터베이스와 따로 둔다.
 SERVER_URL = os.environ.get("SUPPORT_AGENT_TEST_PG_URL", "")
@@ -167,3 +171,168 @@ def test_of_two_deciders_one_carries_the_write_out_on_postgresql(engine):
         calls = session.scalars(select(store.AuditEvent).where(store.AuditEvent.kind == "tool_call")).all()
         assert [e.payload["ok"] for e in calls if e.payload.get("approval")] == [True]
     assert order_status(engine, "O-10097") == "cancelled"
+
+
+# ---------------------------------------------------------------- 두 세션이 같은 순간에 쓰기 (2026-10-15)
+# 쓰기 도구의 행 잠금(주문 → 고객 순)과 재고 조건부 갱신을 실제 PostgreSQL의 두 트랜잭션으로 확인한다.
+# 방법: 첫 호출을 on_success 훅 안에서(변경을 flush해 행 잠금을 쥔 채) 멈춰 두고, 둘째 호출을 시작해 1초 둔 뒤
+# 첫 호출을 커밋시킨다. 잠금이 없던 코드에서는 둘째 호출이 첫째의 커밋 전 상태를 읽고 통과해 네 테스트가 모두
+# 실패했다(고치기 전 코드로 돌려 확인). 고객·주문 행은 seed와 겹치지 않는 번호로 이 테스트가 직접 넣는다.
+
+NOW = kst(9, 14, 10)  # 9월 12일에 받은 주문의 반품 기한(9월 19일) 안
+REGISTRY = build_registry()
+
+
+# 이 묶음이 쓰는 가게: 고객 셋(C-PG1·2·3), 상품 P-PG의 옵션 둘(재고 5씩), 9월 12일에 받은 주문들.
+# O-PG1은 세 줄(반품 경합), O-PG2·O-PG3은 다른 고객의 같은 옵션 한 줄(교환 재고 경합), O-PG4·O-PG5는 C-PG3의
+# 도착 예정보다 이틀 늦은 주문(쿠폰 한도 경합. C-PG3은 9월 5일에 이미 한 장을 받음, O-PG6).
+def add_race_rows(engine) -> None:
+    with Session(engine) as session:
+        for number, name in ((1, "도시아"), (2, "모하진"), (3, "편세율")):
+            add_customer(session, f"C-PG{number}", name, f"0109999000{number}", f"pg{number}@example.com")
+            add_address(
+                session, f"AD-C-PG{number}-1", f"C-PG{number}", "집", "가상시 시험구 1", is_default=True
+            )
+        add_product(
+            session, "P-PG", "시험 머그", [("V-PG-01", "흰색", 9000, 5), ("V-PG-02", "검정", 9000, 5)]
+        )
+        delivered = {
+            "ordered_at": kst(9, 9),
+            "promised_by": kst(9, 10).date(),
+            "delivered_at": kst(9, 12, 15),
+        }
+        rows = [
+            ("O-PG1", "C-PG1", [("V-PG-01", 1)] * 3),
+            ("O-PG2", "C-PG1", [("V-PG-01", 1)]),
+            ("O-PG3", "C-PG2", [("V-PG-01", 1)]),
+            ("O-PG4", "C-PG3", [("V-PG-01", 1)]),
+            ("O-PG5", "C-PG3", [("V-PG-01", 1)]),
+            ("O-PG6", "C-PG3", [("V-PG-01", 1)]),
+        ]
+        for order_id, customer_id, lines in rows:
+            add_order(
+                session,
+                order_id,
+                customer_id,
+                f"AD-{customer_id}-1",
+                db.OrderStatus.DELIVERED,
+                lines,
+                **delivered,
+            )
+        add_compensation_coupon(session, "CP-O-PG6-1", "C-PG3", "O-PG6", issued_at=kst(9, 5))
+        session.commit()
+
+
+def as_customer(customer_id: str) -> ToolContext:
+    return ToolContext(
+        now=NOW, enforce_policy=True, state=ConversationState(verified_customer_id=customer_id)
+    )
+
+
+def race(engine, first: tuple, second: tuple) -> tuple[ToolResult | Exception, ToolResult | Exception]:
+    """first=(고객, 도구, 인자)를 커밋 직전에 멈춰 둔 사이에 second를 시작하고, 1초 뒤 first를 커밋시킨다."""
+    inside, release = threading.Event(), threading.Event()
+    results: dict[str, ToolResult | Exception] = {}
+
+    def hold(session, spec, clean, answer) -> None:
+        session.flush()  # 변경을 DB에 보내 행 잠금을 쥔다
+        inside.set()
+        release.wait(30)
+
+    def call(slot: str, customer: str, tool: str, arguments: dict, **hooks) -> None:
+        try:
+            results[slot] = execute(REGISTRY, engine, as_customer(customer), tool, arguments, **hooks)
+        except ToolBugError as error:  # 기본 키가 겹친 쓰기 같은 DB 오류
+            results[slot] = error
+
+    one = threading.Thread(target=call, args=("first", *first), kwargs={"on_success": hold})
+    one.start()
+    assert inside.wait(30)
+    two = threading.Thread(target=call, args=("second", *second))
+    two.start()
+    time.sleep(1.0)  # 둘째가 잠금에서 기다리거나(고친 코드) 커밋 전 상태를 읽고 지나가게(옛 코드) 둔다
+    release.set()
+    one.join(60)
+    two.join(60)
+    return results["first"], results["second"]
+
+
+# 같은 주문의 줄 [1, 3]과 [3]을 같은 순간에 반품: 접수 id(첫 줄 번호)가 달라 둘 다 통과하던 경합. 주문 행
+# 잠금으로 늦은 쪽은 3번 줄이 이미 접수된 것을 보고 거절된다.
+def test_overlapping_returns_of_one_order_cannot_both_go_through(engine):
+    add_race_rows(engine)
+    first, second = race(
+        engine,
+        ("C-PG1", "request_return", {"order_id": "O-PG1", "line_nos": [1, 3], "reason": "changed_mind"}),
+        ("C-PG1", "request_return", {"order_id": "O-PG1", "line_nos": [3], "reason": "changed_mind"}),
+    )
+    assert first.ok
+    assert (second.ok, second.error_code) == (False, "already_requested")
+    with Session(engine) as session:
+        lines = session.scalars(
+            select(db.ServiceRequestItem.line_no)
+            .join(db.ServiceRequest)
+            .where(db.ServiceRequest.order_id == "O-PG1")
+        ).all()
+    assert sorted(lines) == [1, 3]
+
+
+# 같은 옵션으로 두 주문을 같은 순간에 교환: 읽고-빼기는 둘 다 재고 5를 읽어 4로 썼다(차감 하나가 사라짐).
+# 조건부 UPDATE는 늦은 쪽이 새 재고로 다시 계산해 3이 된다.
+def test_two_exchanges_to_one_option_keep_both_stock_decrements(engine):
+    add_race_rows(engine)
+    arguments = {"line_no": 1, "new_variant_id": "V-PG-02", "reason": "changed_mind"}
+    first, second = race(
+        engine,
+        ("C-PG1", "request_exchange", {"order_id": "O-PG2", **arguments}),
+        ("C-PG2", "request_exchange", {"order_id": "O-PG3", **arguments}),
+    )
+    assert first.ok and second.ok
+    with Session(engine) as session:
+        assert session.get(db.ProductVariant, "V-PG-02").stock == 3
+
+
+# 재고가 하나뿐인 옵션으로 같은 순간에 두 번 교환하면 늦은 쪽은 out_of_stock으로 거절되고 재고는 0 아래로 가지
+# 않는다(조건부 UPDATE가 바꾼 행이 0).
+def test_the_last_unit_of_stock_goes_to_one_exchange_only(engine):
+    add_race_rows(engine)
+    with Session(engine) as session:
+        session.get(db.ProductVariant, "V-PG-02").stock = 1
+        session.commit()
+    arguments = {"line_no": 1, "new_variant_id": "V-PG-02", "reason": "changed_mind"}
+    first, second = race(
+        engine,
+        ("C-PG1", "request_exchange", {"order_id": "O-PG2", **arguments}),
+        ("C-PG2", "request_exchange", {"order_id": "O-PG3", **arguments}),
+    )
+    assert first.ok
+    assert (second.ok, second.error_code) == (False, "out_of_stock")
+    with Session(engine) as session:
+        assert session.get(db.ProductVariant, "V-PG-02").stock == 0
+        assert session.get(db.ServiceRequest, "EX-O-PG3-1") is None
+
+
+# 한 고객의 다른 주문 두 개에 같은 순간 보상 쿠폰: 둘 다 최근 30일 1장만 보고 3장째를 냈다. 고객 행 잠금으로
+# 늦은 쪽은 2장을 보고 coupon_limit_exceeded로 거절된다.
+def test_two_coupons_for_one_customer_at_once_respect_the_thirty_day_limit(engine):
+    add_race_rows(engine)
+    first, second = race(
+        engine,
+        ("C-PG3", "issue_compensation_coupon", {"order_id": "O-PG4", "reason": "delivery_delay"}),
+        ("C-PG3", "issue_compensation_coupon", {"order_id": "O-PG5", "reason": "delivery_delay"}),
+    )
+    assert first.ok
+    assert (second.ok, second.error_code) == (False, "coupon_limit_exceeded")
+    with Session(engine) as session:
+        coupons = session.scalars(select(db.Coupon.id).where(db.Coupon.customer_id == "C-PG3")).all()
+    assert sorted(coupons) == ["CP-O-PG4-1", "CP-O-PG6-1"]
+
+
+# 한 고객이 두 세션에서 같은 순간 티켓을 남기면 같은 번호(TK-고객-1)를 골라 늦은 쪽이 기본 키 충돌로
+# 실패했다. 고객 행 잠금으로 늦은 쪽은 2번을 쓴다.
+def test_two_tickets_for_one_customer_at_once_get_different_numbers(engine):
+    add_race_rows(engine)
+    ticket = {"category": "other", "body": "문의"}
+    first, second = race(engine, ("C-PG1", "create_ticket", ticket), ("C-PG1", "create_ticket", ticket))
+    assert first.ok and second.ok
+    assert {json.loads(r.content)["ticket_id"] for r in (first, second)} == {"TK-C-PG1-1", "TK-C-PG1-2"}

@@ -105,6 +105,8 @@ def test_request_body_basics():
     assert body["model"] == MODEL
     assert body["stream"] is False
     assert body["keep_alive"] == "60m"
+    # 2026-10-15부터 넘친 프롬프트를 잘라 답하지 말고 거절하게 한다(ollama.py chat).
+    assert body["truncate"] is False
     assert body["options"] == {"num_ctx": 16384, "temperature": 0.7, "seed": 42, "num_predict": 1024}
     assert body["messages"] == [
         {"role": "system", "content": "규정"},
@@ -415,6 +417,7 @@ def test_describe_with_server():
         "base_url": DEFAULT_BASE_URL,
         "num_ctx": 8192,
         "keep_alive": "60m",
+        "truncate": False,
         "think": False,
         "num_gpu": None,
         "digest": f"sha-{MODEL}",
