@@ -64,8 +64,12 @@ REPORT_DIR=$(native "$out")
 # ZAP 실행: 힙 2 GB, 화면 없는 명령 모드(-cmd), 원격 측정 끔(-notel), 스캔마다 새 ZAP 홈 폴더(-dir), 업데이트
 # 확인 끔, 계획 자동 실행(-autorun). 출력은 모두 zap.log 파일로 보낸다.
 # || status=$? 로 실패 코드를 받아 두어, set -e로 바로 끝나지 않고 결과 위치를 알린 뒤 같은 코드로 끝난다.
+# ZAP_PORT(선택): ZAP 자신의 프록시 포트(기본 8080)를 바꾼다. 같은 PC에서 다른 ZAP 스캔이 8080을 쥐고 있으면 ZAP이
+# "Address already in use"로 바로 끝나기 때문이다(2026-10-15 11차 첫 시도). 스캔 대상(TARGET)과는 상관없다.
+port_args=()
+if [ -n "${ZAP_PORT:-}" ]; then port_args=(-port "$ZAP_PORT"); fi
 status=0
-java -Xmx2g -jar "$(native "${jars[0]}")" -cmd -notel -dir "$(native "$out/home")" \
+java -Xmx2g -jar "$(native "${jars[0]}")" -cmd -notel "${port_args[@]}" -dir "$(native "$out/home")" \
   -config start.checkForUpdates=false -autorun "$(native "$root/zap/automation.yaml")" \
   > "$out/zap.log" 2>&1 || status=$?
 echo "ZAP exit status $status, reports and log in $out"
