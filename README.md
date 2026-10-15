@@ -178,7 +178,7 @@ uv run python -m support_agent.analyze compare reports/<기준 실행> outputs/r
 
 - 발화와 도구 호출의 seed는 (기본 seed, 과제, 시도, 역할, 호출 순번)에서 나오므로 같은 명령은 같은 seed로 돈다. 그래도 GPU 연산 순서 때문에 에피소드가 글자 단위로 같지는 않다
 - 실행마다 `manifest.json`에 커밋, 설정, 모델 digest, Ollama 버전, 프롬프트·과제·seed DB의 해시가 남는다. 두 실행을 짝지어도 되는지는 `analyze same-setup <실행 A> <실행 B>`가 확인한다
-- 이 저장소의 수치는 모두 `reports/`의 기록에서 다시 계산된다: `analyze table`, `compare`, `voice`, `claims`. 모델 없이 된다
+- 이 저장소의 수치는 모두 `reports/`의 기록에서 다시 계산된다: `analyze table`, `compare`, `voice`, `claims`. 모델 없이 된다. 위 측정 결과 표(2·5·7·8·9·11·12단계)의 수치는 `tests/test_recorded_numbers.py`가 기록에서 다시 계산해 이 README의 글자와 맞춰 보므로, 기록과 문장이 어긋나면 CI가 실패한다 (2026-10-15부터)
 - 새 클론에서 모델 없이 확인한 것(설치, 린트·테스트, Compose 빌드와 기동, 모델 대역으로 상담 하나, 기록에서 수치 다시 계산)과 확인하지 않은 것(실제 모델로 다시 재기)은 [docs/plan.md](docs/plan.md)의 "새 클론 확인"에 있다 (2026-10-02)
 - 후보별 옵션: `--policy P1`, `--reasoning R1|R2`(R2는 10단계의 쓰기 전 고객 확인), `--guard G1|G2`, `--rescue F1`, `--claims C1|C2`, `--model qwen2.5:14b-instruct --user-on-cpu --num-ctx 8192`, `--voice V1|V2|V4`(`uv sync --group voice` 필요. V4는 9단계의 발신 번호 본인 확인). 시험용 과제는 `--tasks test --allow-test`이고 단계마다 한 번만 잰다
 - 8단계 옵션: `--model qwen3:4b-instruct-2507-q4_K_M --think off --num-ctx 12288 --user-num-ctx 12288` (`--think`는 에이전트에만, `--user-num-ctx`는 시뮬레이터의 컨텍스트, `--user-num-gpu N`은 시뮬레이터 층 N개만 GPU에). 에이전트와 시뮬레이터가 같은 모델이면 실행기 옵션이 같아야 한다 (다르면 Ollama가 턴마다 모델을 다시 읽으므로 시작하지 않는다). 표는 `analyze smoke`, `select`, `verdict`, 시뮬레이터 점검은 `analyze blind`·`unblind`
