@@ -334,6 +334,14 @@ def test_stage12_table():
         )
 
 
+# 13단계 B(보고만): 7B 기준을 qwen3 4B 고객으로 한 번. 7B가 고객 모델에 기대는 차이와, 그 고객에서
+# qwen3.5:4b − 7B의 차이를 README 12단계 절의 문장과 맞춘다.
+def test_stage13b_sentence():
+    b = "20261018-051104-qwen2.5-7b-instruct-P1-R0-G0-F0-p1-7b-u1"
+    assert_in_readme(f"7B는 {pass_k(DEV_P1_7B, 1)} → {pass_k(b, 1)} ({paired(DEV_P1_7B, b)})")
+    assert_in_readme(f"`qwen3.5:4b` − 7B는 {paired(b, DEV_U1)}이다")
+
+
 # ---------------------------------------------------------------- 13단계 (4B 에이전트의 가드 네 팔)
 
 STAGE13_DEV = {
