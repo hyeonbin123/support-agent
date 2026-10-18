@@ -334,6 +334,51 @@ def test_stage12_table():
         )
 
 
+# ---------------------------------------------------------------- 13단계 (4B 에이전트의 가드 네 팔)
+
+STAGE13_DEV = {
+    "C1: 근거 없는 완료 주장을 돌려보냄": "20261018-021911-qwen3.5-4b-P1-R0-G0-F0-C1-s13-c1",
+    'G1: "확인해 보겠습니다"만 하는 답을 돌려보냄': "20261018-024318-qwen3.5-4b-P1-R0-G1-F0-s13-g1",
+    "E1: 규정 거절 오류에 검사가 쓴 사실을 붙임": "20261018-030602-qwen3.5-4b-P1-R0-G0-F0-E1-s13-e1",
+    "D1: 바로 앞 답의 되풀이를 한 번 다시 시킴": "20261018-032917-qwen3.5-4b-P1-R0-G0-F0-D1-s13-d1",
+}
+STAGE13_TEST = "20261018-035645-qwen3.5-4b-P1-R0-G0-F0-E1-s13-test"
+
+
+# 개발용 표: pass^1, 8단계 M2b와 짝지은 차이, 정답에 없는 쓰기, 고객에게 간 거짓 완료, 선택 조건(13단계 규칙,
+# guard_report.dev_conditions)을 다시 계산한다.
+def test_stage13_development_table():
+    from support_agent import guard_report
+
+    base = guard_report.run_stats(REPORTS / DEV_M2B)
+    assert_in_readme(
+        f"| 기준: 8단계 `qwen3.5:4b` | {pass_k(DEV_M2B, 1)} | | {unexpected_writes(DEV_M2B)} "
+        f"| {claims(DEV_M2B)[0]} | |"
+    )
+    for label, run in STAGE13_DEV.items():
+        checks = guard_report.dev_conditions(base, guard_report.run_stats(REPORTS / run), label[:2])
+        verdict = "만족" if all(ok for _, ok in checks) else "불만족"
+        assert_in_readme(
+            f"| {label} | {pass_k(run, 1)} | {paired(DEV_M2B, run)} | {unexpected_writes(run)} "
+            f"| {claims(run)[0]} | {verdict} |"
+        )
+
+
+# 시험용 표와 판정: 고른 구성(E1) 한 번. 거절 유형과 그 밖 세 유형의 pass^1을 따로 낸다.
+def test_stage13_test_row_and_verdict():
+    from support_agent import guard_report
+
+    stats = {run: guard_report.run_stats(REPORTS / run) for run in (TEST_M2B, STAGE13_TEST)}
+    for label, run in (("기준: 8단계 `qwen3.5:4b`", TEST_M2B), ("E1", STAGE13_TEST)):
+        diff = f" {paired(TEST_M2B, run)} " if run != TEST_M2B else " "
+        assert_in_readme(
+            f"| {label} | {pass_k(run, 1)} |{diff}| {pct(stats[run]['by_kind']['refusal'])} "
+            f"| {pct(stats[run]['not_refusal'])} | {unexpected_writes(run)} |"
+        )
+    _, result = guard_report.verdict(REPORTS / TEST_M2B, REPORTS / STAGE13_TEST)
+    assert_in_readme(f"**판정: {result}.**")
+
+
 # ---------------------------------------------------------------- 기록된 프롬프트가 잘린 흔적이 없다
 
 

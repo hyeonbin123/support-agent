@@ -90,6 +90,7 @@ def test_recorded_tool_calls_replay_to_the_same_results_and_database(run):
             now=task.now,
             enforce_policy=config.get("policy") == "P1",
             caller_phone=caller_number(task, seed) if caller_id else None,
+            error_facts=config.get("errors") == "E1",  # 13단계 E1 실행은 거절 오류에 사실이 붙어 있다
         )
         where = (episode["task_id"], episode["trial"])
         for call in episode["tool_calls"]:
