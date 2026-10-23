@@ -164,6 +164,24 @@ async def test_writes_are_carried_out_audited_and_gated_like_in_the_chat(service
         assert session.get(db.Order, "O-10097").status == db.OrderStatus.CANCELLED
 
 
+# MCP 호출도 채팅과 같은 세션 잠금을 거치고(ChatService.call_tool, 30초까지 기다림), 호출이 끝나면 그 상담의
+# 잠금을 남기지 않는다. 상담마다 잠금이 남으면 오래 도는 HTTP 서버의 메모리가 상담 수만큼 늘기만 한다. 같은
+# 상담의 승인을 결정한 뒤에도 남지 않는다.
+async def test_mcp_calls_leave_no_session_lock_behind(service):
+    async with Client(build_server(service, "write")) as client:
+        await client.call_tool("find_customer", {"name": "정예준", "contact": "01000009005"})
+        assert not (await client.call_tool("get_order", {"order_id": "O-90005"})).is_error
+        await client.call_tool("new_conversation", {})
+        await client.call_tool("find_customer", {"name": "강정우", "contact": "01000006189"})
+        big = await client.call_tool("cancel_order", {"order_id": "O-10097", "reason": "changed_mind"})
+        assert big.is_error and "approval_required" in text_of(big)
+    assert service._locks == {}
+    with Session(service.engine) as session:
+        approval = session.scalars(select(store.Approval)).one()
+    assert service.decide(approval.id, approve=False, by="kim")["status"] == "rejected"
+    assert service._locks == {}
+
+
 # HTTP로 띄울 때 모든 요청에 'Authorization: Bearer <토큰>'이 있어야 한다. 토큰이 없거나 틀리면 401이고,
 # 맞으면 안쪽 앱(여기서는 204를 돌려주는 가짜)까지 간다.
 async def test_the_http_wrapper_wants_the_bearer_token():

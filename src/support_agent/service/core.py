@@ -14,14 +14,16 @@ from __future__ import annotations
 
 # copy: 승인 결과를 대화에 덧붙일 때 저장된 상태 dict를 깊은 복사해 고친다(SQLAlchemy가 JSON 열의 변경을
 # 알아채도록 새 객체로 바꿔 넣음). secrets: 세션 id 난수. threading: 세션별 잠금과 승인 결정 잠금. traceback:
-# 예상 못 한 예외의 위치를 감사 로그에 남긴다.
+# 예상 못 한 예외의 위치를 감사 로그에 남긴다. contextmanager: 세션별 잠금을 얻고 놓고 다 쓴 잠금을 지우는
+# 일을 with 블록 하나(ChatService._hold)로 묶는다.
 import copy
 import json
 import re
 import secrets
 import threading
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
@@ -78,9 +80,17 @@ TOOL_LABELS = {
     "think": "검토",
 }
 # 턴이 한도(LLM 호출 수, 형식 재시도, 도구 오류 수)에 닿거나 예외가 났을 때 고객에게 가는 고정 안내. 모델이
-# 아무 말도 못 했을 때도 고객이 다음에 할 일을 알게 한다.
+# 아무 말도 못 했을 때도 고객이 다음에 할 일을 알게 한다. 그 턴에 승인 대기에 걸린 쓰기가 있으면 이것 대신
+# 아래 HELD_FALLBACK_REPLY와 그 쓰기의 안내가 간다.
 FALLBACK_REPLY = (
     "죄송합니다. 방금 요청을 처리하지 못했습니다. 다시 한 번 말씀해 주시거나 상담원 연결을 요청해 주세요."
+)
+# 한도·예외로 끝난 턴인데 그 턴에 승인 대기에 걸린 쓰기가 있을 때의 고정 문장. 뒤에 그 쓰기의 서비스
+# 안내(HELD_NOTICE)가 붙는다. FALLBACK_REPLY의 '처리하지 못했습니다'만 가면, 실제로는 담당자 승인을 기다리는
+# 쓰기가 올라가 있는데 고객은 아무것도 되지 않았다고 읽는다. 그래서 턴이 끝까지 가지 못했다고만 말한다.
+HELD_FALLBACK_REPLY = (
+    "죄송합니다. 방금 요청을 끝까지 처리하지 못했습니다. "
+    "다시 한 번 말씀해 주시거나 상담원 연결을 요청해 주세요."
 )
 # 컨텍스트가 차거나 세션당 턴 한도(기본 40)에 닿아 세션을 닫을 때의 고정 안내.
 CLOSED_REPLY = "대화가 길어져 이 상담은 여기서 마칩니다. 이어서 도움이 필요하시면 새 상담을 시작해 주세요."
@@ -291,6 +301,16 @@ def visible_messages(state: dict[str, Any]) -> list[dict[str, str]]:
     return out
 
 
+# 세션 하나의 잠금과, 그 잠금을 지금 쥐고 있거나 기다리는(또는 바로 얻어 보려는) 요청의 수. users는
+# ChatService._hold가 _locks_guard 안에서만 고치고, 0이 되면 그 항목을 세션별 잠금 dict에서 지운다.
+class _SessionLock:
+    __slots__ = ("lock", "users")
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.users = 0
+
+
 # 서비스 하나를 이루는 상태: 설정, DB 엔진, 모델 제공자, 도구 등록부, 규정 문서, 실행 설정(RunConfig), 잠금들.
 class ChatService:
     def __init__(
@@ -322,10 +342,11 @@ class ChatService:
             repeat=settings.repeat,
         )
         # 잠금 셋: 세션별 잠금(한 세션은 한 번에 메시지 하나), 승인 결정 잠금(승인된 쓰기는 세션과 상관없이 한
-        # 번에 하나), 그리고 세션별 잠금 dict 자체를 보호하는 잠금. 프로세스 안의 잠금이라 앱은 프로세스
-        # 하나로 띄운다(여러 프로세스로 늘리려면 DB 행 잠금이 필요하다). 프로세스 하나가 채팅을 맡으므로
-        # 세션별 잠금으로 충분하다(docs/service.md "한 세션은 한 번에 메시지 하나").
-        self._locks: dict[str, threading.Lock] = {}
+        # 번에 하나), 그리고 세션별 잠금 dict와 그 항목의 참조 수(users)를 보호하는 잠금. 세션별 잠금은 그
+        # 세션의 요청이 쥐거나 기다리는 동안만 dict에 있고 마지막 요청이 끝나면 지운다(_hold). 프로세스 안의
+        # 잠금이라 앱은 프로세스 하나로 띄운다(여러 프로세스로 늘리려면 DB 행 잠금이 필요하다). 프로세스
+        # 하나가 채팅을 맡으므로 세션별 잠금으로 충분하다(docs/service.md "한 세션은 한 번에 메시지 하나").
+        self._locks: dict[str, _SessionLock] = {}
         self._decisions = threading.Lock()
         self._locks_guard = threading.Lock()
 
@@ -383,7 +404,7 @@ class ChatService:
 
     # 고객 메시지 하나에 답한다(웹의 글·음성 메시지가 모두 여기로 온다). 빈 메시지나 한도를 넘는 메시지는
     # ValueError다.
-    # 세션 잠금은 기다리지 않고 바로 시도한다(blocking=False). 같은 세션에서 메시지가 겹치면 뒤의 것은
+    # 세션 잠금은 기다리지 않고 바로 시도한다(_hold의 wait=0). 같은 세션에서 메시지가 겹치면 뒤의 것은
     # BusyError로 돌려보낸다.
     def handle(self, session_id: str, text: str, emit: Emit, *, via: dict[str, Any] | None = None) -> None:
         """고객 메시지 하나에 답한다. 진행 상황은 `emit(event, data)`로 보내고 마지막 이벤트는 `end`다.
@@ -391,19 +412,15 @@ class ChatService:
         text = text.strip()
         if not text or len(text) > self.settings.max_message_chars:
             raise ValueError("the message is empty or too long")
-        lock = self._lock(session_id)
-        if not lock.acquire(blocking=False):
-            raise BusyError(session_id)
-        try:
+        with self._hold(session_id):  # 기다리지 않는다: 겹친 메시지는 바로 BusyError
             self._handle_locked(session_id, text, emit, via)
-        finally:
-            lock.release()
 
     # 잠금을 쥔 채 한 턴을 처리한다.
     # 1) 세션을 읽어 열려 있는지 확인하고 에이전트 상태를 되살린다 2) 고객 메시지를 감사 로그에 남긴다 3)
     #    평가와 같은 agent_turn을 돌리되 도구 실행은 self._run_tool(승인 관문 + 감사 행)을 거치게 한다 4) 종료
-    #    사유에 따라 고객에게 보낼 답을 정한다 5) LLM 호출·오류·답을 감사 로그에 남기고 대화 상태를 저장한다
-    #    6) 마지막에 reply·end 이벤트를 보낸다.
+    #    사유에 따라 고객에게 보낼 답을 정한다(이번 턴에 승인 대기에 걸린 쓰기가 있으면 어느 사유로 끝나든 그
+    #    안내를 붙인다) 5) LLM 호출·오류·답을 감사 로그에 남기고 대화 상태를 저장한다 6) 마지막에 reply·end
+    #    이벤트를 보낸다.
     def _handle_locked(
         self, session_id: str, text: str, emit: Emit, via: dict[str, Any] | None = None
     ) -> None:
@@ -442,7 +459,8 @@ class ChatService:
             )
             # 종료 사유별 처리: handoff는 세션을 상담원 연결로 닫고, context_limit는 세션을 닫으며 닫는 안내를
             # 보내고, 그 밖의 사유(호출·재시도·도구 오류 한도)는 오류로 기록하고 고정 안내를 보낸다. 사유 없이
-            # 끝났는데 승인 대기가 있으면 모델 답에서 지시를 빼고 서비스 안내를 붙인다.
+            # 끝났는데 승인 대기가 있으면 모델 답에서 지시를 빼고 서비스 안내를 붙인다. 사유가 있는데 승인
+            # 대기가 있으면 아래(try 뒤)에서 그 사유의 고정 문장 뒤에 서비스 안내를 붙인다.
             reply = turn.reply
             if turn.stop == "handoff":
                 status = SessionStatus.HANDOFF
@@ -470,6 +488,19 @@ class ChatService:
             # 한다.
             if state.messages[-1].tool_calls:  # 실패한 호출에는 답이 없다: 반쪽만 남기지 않는다
                 state.messages.pop()
+        # 정상 답이 아닌 사유(상담원 연결, 컨텍스트 한도, 호출·재시도·도구 오류 한도, 예외)로 끝난 턴에도 이번
+        # 턴에 승인 대기에 걸린 쓰기가 있으면, 그 사유의 고정 문장 뒤에 서비스 안내(held)를 붙인다. 고객이 꼭
+        # 들어야 하는 것(주문, 금액, 승인 번호, 결과를 이 대화창으로 알린다는 것)은 턴이 어떻게 끝나든 정해진
+        # 문장으로 간다(docs/service.md "사람 승인"). 승인 행은 대기열에 올릴 때 이미 커밋됐으므로 예외로 끝난
+        # 턴에서도 안내가 사실이다. 한도·예외의 고정 문장은 FALLBACK_REPLY 대신 HELD_FALLBACK_REPLY다.
+        # 저장된 대화가 고객이 본 글과 같아야 하므로, 상담원 연결은 agent_turn이 대화 끝에 이미 넣은 이관
+        # 안내(HANDOFF_MESSAGE)를 합친 글로 바꾸고, 한도·예외·닫힘은 아래 append가 합친 글을 넣는다. error
+        # 감사 행과 error 이벤트는 그대로 둔다(예전에는 이 경우들에 안내가 빠지고 한도·예외에는 '처리하지
+        # 못했습니다'만 갔다).
+        if held and (error or status is not SessionStatus.OPEN):
+            reply = "\n".join([HELD_FALLBACK_REPLY if error else reply, *held.values()])
+            if status is SessionStatus.HANDOFF:
+                state.messages[-1] = Message("assistant", reply)
         state.tool_errors += earlier_errors  # 저장하는 상태에는 세션 누계를 둔다
         # 고정 안내(오류·닫힘)는 agent_turn이 대화에 넣지 않았으므로 여기서 상담원 답으로 넣는다. 저장된
         # 대화가 고객이 본 것과 같아야 하기 때문이다.
@@ -638,10 +669,7 @@ class ChatService:
     # 채팅과 달리 잠금을 30초까지 기다린다. 본인 확인 결과는 세션에 저장되고, 호출 하나를 턴 하나로 센다.
     def call_tool(self, session_id: str, name: str, arguments: dict[str, Any]) -> ToolResult:
         """에이전트 루프 밖(MCP 서버)에서 온 도구 호출. 관문도 감사도 같다."""
-        lock = self._lock(session_id)
-        if not lock.acquire(timeout=30):
-            raise BusyError(session_id)
-        try:
+        with self._hold(session_id, wait=30):
             with Session(self.engine) as db_session:
                 customer_id = self._row(db_session, session_id).verified_customer_id
             ctx = self._context(customer_id)
@@ -653,8 +681,6 @@ class ChatService:
                 row.updated_at = wall_clock()
                 db_session.commit()
             return result
-        finally:
-            lock.release()
 
     # ---------------------------------------------------------------- 승인 (approvals)
 
@@ -726,8 +752,8 @@ class ChatService:
         result = ToolResult.error("approval_required", held_for_agent(refund, order_total, code), args=clean)
         return result, {code: notice}
 
-    # 관리자의 승인·거절. 그 세션의 잠금을 먼저 잡는다(진행 중인 턴이 대화 상태를 덮어쓰지 않게). 이어 결정
-    # 잠금으로 승인된 쓰기를 프로세스 안에서 한 번에 하나만 실행한다.
+    # 관리자의 승인·거절. 그 세션의 잠금을 먼저 잡는다(30초까지 기다림. 진행 중인 턴이 대화 상태를 덮어쓰지
+    # 않게). 이어 결정 잠금으로 승인된 쓰기를 프로세스 안에서 한 번에 하나만 실행한다.
     def decide(self, approval_id: int, *, approve: bool, by: str, note: str = "") -> dict[str, Any]:
         """기다리는 쓰기를 승인(하고 실행)하거나 거절한다. 고객은 결과를 채팅에서 읽는다."""
         with Session(self.engine) as db_session:
@@ -735,14 +761,9 @@ class ChatService:
             if approval is None:
                 raise ApprovalStateError("no such approval")
             session_id = approval.session_id
-        lock = self._lock(session_id)  # 그 세션에서 도는 턴이 대화를 덮어쓰지 않게
-        if not lock.acquire(timeout=30):
-            raise BusyError(session_id)
-        try:
+        with self._hold(session_id, wait=30):  # 그 세션에서 도는 턴이 대화를 덮어쓰지 않게
             with self._decisions:  # 세션과 상관없이 승인된 쓰기는 한 번에 하나
                 return self._decide_locked(approval_id, approve=approve, by=by, note=note.strip())
-        finally:
-            lock.release()
 
     # 결정을 처리한다: 선점 → (승인이면) 도구 실행 → 결과 문장을 대화에 추가 → 감사 로그.
     def _decide_locked(self, approval_id: int, *, approve: bool, by: str, note: str) -> dict[str, Any]:
@@ -914,11 +935,39 @@ class ChatService:
             raise SessionNotFoundError(session_id)
         return row
 
-    # 세션별 잠금을 처음 쓸 때 만든다. dict를 고치는 동안 다른 스레드가 같은 세션의 잠금을 따로 만들지 않게
-    # _locks_guard 안에서 한다.
-    def _lock(self, session_id: str) -> threading.Lock:
+    # 세션별 잠금을 쥔 채 with 블록을 실행한다. 한 턴(handle), MCP 호출(call_tool), 승인 결정(decide)이 모두
+    # 이것을 지난다. `wait`가 0이면 기다리지 않고(채팅: 겹친 메시지는 바로 BusyError), 0보다 크면 그 초만큼
+    # 기다린 뒤에도 못 얻으면 BusyError를 낸다. 블록이 예외로 끝나도 잠금을 풀고 참조 수를 돌려준다.
+    # 잠금은 그 세션을 처음 쓰는 요청이 만들고, 그 세션의 마지막 요청(잠금을 쥔 것도 기다리는 것도 없음)이
+    # 끝나면 dict에서 지운다. 세션 id는 다시 쓰이지 않는 난수라서, 예전처럼 setdefault로 만들기만 하면 닫힌
+    # 세션·MCP 상담·없는 세션 번호의 잠금까지 프로세스가 사는 동안 늘기만 했다.
+    # 지워도 한 세션의 직렬화가 깨지지 않는 이유: 요청은 _locks_guard 안에서 잠금 항목을 얻으며 users를 하나
+    # 늘리고, 잠금을 푼 뒤 _locks_guard 안에서 하나 줄인다. 그래서 users가 0이 되어 지울 때는 그 잠금을 쥐거나
+    # 기다리는 요청이 없고, 그 뒤에 온 요청은 새 항목을 만든다. 한 세션에서 쓰이는 잠금 객체는 언제나 하나다.
+    # 턴이 끝날 때 승인 결정이 그 잠금을 기다리고 있으면 users가 남아 있으므로 지우지 않고 결정이 이어받는다.
+    # 같은 승인을 두 결정자가 함께 실행하는 경합은 이 잠금이 아니라 _decide_locked의 조건부 UPDATE(pending →
+    # executing, 다른 프로세스와도)가 막는다. 이 잠금이 지키는 것은 한 세션의 대화 상태를 두 요청이 함께
+    # 고치지 않는 것이다.
+    @contextmanager
+    def _hold(self, session_id: str, *, wait: float = 0) -> Iterator[None]:
         with self._locks_guard:
-            return self._locks.setdefault(session_id, threading.Lock())
+            entry = self._locks.get(session_id)
+            if entry is None:
+                entry = self._locks[session_id] = _SessionLock()
+            entry.users += 1
+        try:
+            got = entry.lock.acquire(timeout=wait) if wait > 0 else entry.lock.acquire(blocking=False)
+            if not got:
+                raise BusyError(session_id)
+            try:
+                yield
+            finally:
+                entry.lock.release()
+        finally:
+            with self._locks_guard:
+                entry.users -= 1
+                if entry.users == 0:  # 쥔 요청도 기다리는 요청도 없다
+                    self._locks.pop(session_id, None)
 
     # 감사 행 하나를 자기 트랜잭션으로 추가한다(추가만 하고 고치지 않는다). 도구 성공 행은 이것이 아니라
     # in_transaction이 도구와 같은 트랜잭션에 넣는다.

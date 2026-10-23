@@ -1,9 +1,10 @@
 """마이그레이션한 SQLite 파일 위의 채팅 서비스를 대본 모델로 시험한다."""
 
 # [테스트 묶음] 3단계 채팅 서비스를 마이그레이션한 SQLite 파일과 대본대로 답하는 가짜 모델로 확인한다: DB
-# 준비와 설정, SSE 채팅 한 턴과 감사 로그, 규정 차단, 이관, 모델 장애, 요청 검증과 한도, 큰 환불의 사람
-# 승인(대기, 실행, 거절, 늦은 승인, 반품 합계), 승인 대기 턴에 에이전트용 지시가 고객에게 새지 않게 하는 처리,
-# 음성 끝점, 모델 없는 오프라인 앱, 완료 주장 가드 (docs/service.md "테스트").
+# 준비와 설정, SSE 채팅 한 턴과 감사 로그, 규정 차단, 이관, 모델 장애, 요청 검증과 한도, 세션 잠금(한 세션은
+# 한 번에 메시지 하나, 다 쓴 잠금은 지움), 큰 환불의 사람 승인(대기, 실행, 거절, 늦은 승인, 반품 합계), 승인
+# 대기 턴에 에이전트용 지시가 고객에게 새지 않게 하는 처리, 승인 대기 뒤 이관·한도·오류·컨텍스트 한도로 끝난
+# 턴의 안내, 음성 끝점, 모델 없는 오프라인 앱, 완료 주장 가드 (docs/service.md "테스트").
 # [왜 중요한가] 서비스에서 잘못된 처리는 돈이 나가는 일이다. 평가와 같은 에이전트 루프·도구가 서비스에서도
 # 규정을 막고, 큰 환불은 사람을 거치며, 모든 일이 감사 로그에 남는다는 약속을 GPU 없이 확인한다.
 # [연결] 여기의 도우미(ADMIN, BIG, SMALL, verify_and_cancel, make_client, say, ask_for_big_cancel,
@@ -14,8 +15,11 @@ from __future__ import annotations
 # httpx: 서비스가 직접 만드는 Ollama 제공자 앞에 가짜 서버(MockTransport)를 끼운다. yaml: compose.yaml의 기본
 # 모델 설정을 읽는다. alembic compare_metadata: 마이그레이션 결과와 테이블 선언 비교. TestClient: 서버 없이
 # FastAPI 앱을 부른다. 서비스 모듈에서는 앱, DB 준비, 한 턴 처리(ChatService)와 고정 안내 문장, 오프라인 대역,
-# 설정, 음성 앞단을 가져온다.
+# 설정, 음성 앞단을 가져온다. threading·time: 세션 잠금 테스트에서 한 턴이나 승인 결정을 작업 스레드로 돌려
+# 잠금을 쥔 채 멈춰 두고(Event), 다른 요청이 그 잠금을 기다리기 시작할 때까지 짧게 되풀이해 확인한다.
 import json
+import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -29,7 +33,8 @@ from sqlalchemy import func, inspect, select
 from sqlalchemy.orm import Session
 
 from support_agent import db
-from support_agent.chat import ChatResponse, ProviderError, ScriptedProvider, ToolCall
+from support_agent.chat import ChatResponse, ContextOverflowError, ProviderError, ScriptedProvider, ToolCall
+from support_agent.config import HANDOFF_MESSAGE
 from support_agent.seed import build_seed_engine
 from support_agent.service import app as app_module
 from support_agent.service import store
@@ -38,8 +43,11 @@ from support_agent.service.bootstrap import copy_seed, prepare_database
 from support_agent.service.core import (
     CLOSED_REPLY,
     FALLBACK_REPLY,
+    HELD_FALLBACK_REPLY,
     BusyError,
     ChatService,
+    SessionClosedError,
+    SessionNotFoundError,
     without_agent_only,
 )
 from support_agent.service.offline import OfflineProvider, create_offline_app
@@ -399,13 +407,137 @@ def test_tool_errors_of_earlier_turns_do_not_end_a_later_turn(engine):
 
 
 # 한 세션은 한 번에 메시지 하나만 처리한다. 세션 잠금을 미리 잡아 두면 다음 처리는 BusyError다. 프로세스 안의
-# 잠금이라 앱은 프로세스 하나로 띄운다 (docs/service.md).
+# 잠금이라 앱은 프로세스 하나로 띄운다 (docs/service.md). 잠금을 놓으면 그 세션의 잠금 항목도 남지 않는다.
 def test_one_session_answers_one_message_at_a_time(engine):
     service = ChatService(Settings(), engine, ScriptedProvider([]))
     session_id = service.new_session()["session_id"]
-    service._lock(session_id).acquire()
+    with service._hold(session_id):
+        with pytest.raises(BusyError):
+            service.handle(session_id, "안녕하세요", lambda *_: None)
+        assert service._locks[session_id].users == 1  # 실패한 시도는 참조 수를 돌려줬다
+    assert service._locks == {}
+
+
+# 세션 잠금 테스트용 대역: `at`번째 호출에서 `go`가 켜질 때까지 멈춰 있다가(멈춘 동안 `inside`가 켜짐)
+# 대본대로 답한다. 한 턴이 세션 잠금을 쥔 채 모델을 기다리는 상태를 만든다. 테스트가 잘못돼도 10초 뒤에는
+# 풀린다.
+class PausesOnCall(ScriptedProvider):
+    def __init__(self, script, at: int):
+        super().__init__(script)
+        self.at, self.calls = at, 0
+        self.inside, self.go = threading.Event(), threading.Event()
+
+    def chat(self, *args, **kwargs):
+        self.calls += 1
+        if self.calls == self.at:
+            self.inside.set()
+            self.go.wait(10)
+        return super().chat(*args, **kwargs)
+
+
+# 고객 메시지 하나를 작업 스레드에서 처리하기 시작한다(웹의 turn_stream처럼). 이벤트는 버린다.
+def turn_in_thread(service: ChatService, session_id: str, text: str) -> threading.Thread:
+    thread = threading.Thread(target=service.handle, args=(session_id, text, lambda *_: None), daemon=True)
+    thread.start()
+    return thread
+
+
+# 조건이 참이 될 때까지 짧게 되풀이해 본다. 10초 안에 안 되면 테스트 실패다.
+def wait_until(condition, seconds: float = 10.0) -> None:
+    deadline = time.monotonic() + seconds
+    while not condition():
+        assert time.monotonic() < deadline, "the condition never came true"
+        time.sleep(0.01)
+
+
+# 세션별 잠금은 그 세션의 요청이 끝나면 메모리에 남지 않는다. 세션 id는 다시 쓰이지 않으므로(난수), 남기면
+# 프로세스가 사는 동안 세션 수만큼 는다. 정상 턴, 세션당 턴 한도로 닫히는 턴, 닫힌 세션·없는 세션에 온
+# 메시지(예외로 끝남), 승인 결정 뒤를 모두 본다.
+def test_session_locks_do_not_outlive_their_requests(engine):
+    service = ChatService(Settings(max_turns_per_session=2), engine, ScriptedProvider(["네."] * 6))
+    sessions = [service.new_session()["session_id"] for _ in range(3)]
+    for session_id in sessions:
+        for text in ("하나", "둘"):
+            service.handle(session_id, text, lambda *_: None)
+    assert [service.transcript(s)["status"] for s in sessions] == ["closed"] * 3
+    assert service._locks == {}
+    with pytest.raises(SessionClosedError):
+        service.handle(sessions[0], "셋", lambda *_: None)
+    with pytest.raises(SessionNotFoundError):
+        service.handle("no-such-session", "안녕하세요", lambda *_: None)
+    assert service._locks == {}
+
+    held = ChatService(
+        Settings(), engine, ScriptedProvider([*verify_and_cancel(BIG), "확인 후 안내드립니다."])
+    )
+    session_id = held.new_session()["session_id"]
+    held.handle(session_id, "강정우, 01000006189입니다. O-10097 취소해 주세요.", lambda *_: None)
+    assert held.decide(1, approve=False, by="kim")["status"] == "rejected"
+    assert held._locks == {}
+
+
+# 잠금을 지우게 된 뒤에도 한 세션은 한 번에 메시지 하나다: 앞 턴이 모델을 기다리는 동안 같은 세션의 둘째
+# 메시지는 BusyError이고, 그동안 잠금은 남아 있다가 앞 턴이 끝나면 지워진다. 대화에는 첫 메시지와 그 답만
+# 있다.
+def test_two_messages_to_one_session_still_take_turns(engine):
+    provider = PausesOnCall(["첫 메시지에 대한 답입니다."], at=1)
+    service = ChatService(Settings(), engine, provider)
+    session_id = service.new_session()["session_id"]
+    first = turn_in_thread(service, session_id, "첫 메시지")
+    assert provider.inside.wait(10)
     with pytest.raises(BusyError):
-        service.handle(session_id, "안녕하세요", lambda *_: None)
+        service.handle(session_id, "둘째 메시지", lambda *_: None)
+    assert list(service._locks) == [session_id]  # 앞 턴이 쥐고 있는 동안은 있다
+    provider.go.set()
+    first.join(10)
+    assert not first.is_alive() and service._locks == {}
+    shown = [m["text"] for m in service.transcript(session_id)["messages"]]
+    assert shown[1:] == ["첫 메시지", "첫 메시지에 대한 답입니다."]
+
+
+# 턴과 승인 결정이 같은 세션에서 겹칠 때: 결정은 턴의 잠금을 기다렸다가 이어받고, 턴이 끝날 때 기다리던 결정이
+# 있으면 잠금을 지우지 않는다. 지웠다가 새로 만들면 결정이 도는 동안 같은 세션의 새 메시지가 그 새 잠금으로
+# 통과해 둘이 함께 대화 상태를 고친다. 모두 끝나면 잠금이 남지 않고, 승인 결과는 턴이 저장한 대화 뒤에 붙는다.
+def test_a_decision_waits_for_the_turn_and_the_lock_survives_the_handover(engine, monkeypatch):
+    # 첫 턴은 큰 취소를 승인 대기(AP-1)에 올리고, 둘째 턴은 그 턴의 첫 모델 호출(대본 넷째)에서 멈춘다.
+    script = [*verify_and_cancel(BIG), "확인 후 안내드립니다.", "기다려 주세요."]
+    provider = PausesOnCall(script, at=4)
+    service = ChatService(Settings(), engine, provider)
+    session_id = service.new_session()["session_id"]
+    service.handle(session_id, "강정우, 01000006189입니다. O-10097 취소해 주세요.", lambda *_: None)
+    assert service._locks == {}  # 끝난 턴의 잠금은 남지 않는다
+    turn = turn_in_thread(service, session_id, "언제 처리되나요?")
+    assert provider.inside.wait(10)
+
+    # 결정은 잠금을 잡은 뒤 멈춰 두어(deciding), 그동안 같은 세션의 새 메시지가 막히는지 본다.
+    deciding, finish = threading.Event(), threading.Event()
+    decide_locked = service._decide_locked
+
+    def paused_decision(*args, **kwargs):
+        deciding.set()
+        finish.wait(10)
+        return decide_locked(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_decide_locked", paused_decision)
+    decided: dict = {}
+    decision = threading.Thread(
+        target=lambda: decided.update(service.decide(1, approve=True, by="kim")), daemon=True
+    )
+    decision.start()
+    wait_until(lambda: getattr(service._locks.get(session_id), "users", 0) == 2)  # 결정이 기다린다
+    provider.go.set()  # 턴이 끝나며 잠금을 넘긴다
+    assert deciding.wait(10)
+    turn.join(10)
+    assert not turn.is_alive()
+    assert service._locks[session_id].users == 1  # 결정이 쥐고 있으므로 지우지 않았다
+    with pytest.raises(BusyError):  # 지웠다가 새로 만들었다면 이 메시지가 결정과 함께 돌았다
+        service.handle(session_id, "여보세요?", lambda *_: None)
+    finish.set()
+    decision.join(10)
+    assert not decision.is_alive() and decided["status"] == "approved"
+    assert service._locks == {}
+    shown = [m["text"] for m in service.transcript(session_id)["messages"]]
+    assert shown[-3:-1] == ["언제 처리되나요?", "기다려 주세요."] and "처리되었습니다" in shown[-1]
 
 
 # -------------------------------------------------------------------- approvals
@@ -816,6 +948,82 @@ def test_the_notice_the_agent_reads_is_unchanged():
     assert held_for_agent(36_700, 127_100, "AP-2").startswith(
         "환불액 36,700원(같은 주문의 반품 환불액 합계 127,100원)은 담당자 승인이 필요해"
     )
+
+
+# 대본을 다 쓴 다음 호출에서 정해진 오류를 내는 대역. 모델 연결 오류(ProviderError)는 서비스의 예외 경로를,
+# 컨텍스트 넘침(ContextOverflowError)은 에이전트 루프의 context_limit 종료를 만든다.
+class FailsAfterTheScript(ScriptedProvider):
+    def __init__(self, script, error: Exception):
+        super().__init__(script)
+        self.left, self.error = len(script), error
+
+    def chat(self, *args, **kwargs):
+        if self.left == 0:
+            raise self.error
+        self.left -= 1
+        return super().chat(*args, **kwargs)
+
+
+# 큰 취소(BIG)가 승인 대기에 걸린 뒤 같은 턴이 `ending`으로 끝나게 하는 (제공자, 설정 덮어쓰기, 안내 앞에 오는
+# 고정 문장, 끝난 세션 상태). get_order 되풀이는 턴당 LLM 호출 한도(4)를 다 쓰게 한다. 한도·오류 종료의 고정
+# 문장은 '처리하지 못했습니다'(FALLBACK_REPLY)가 아니라 턴이 끝까지 가지 못했다는 HELD_FALLBACK_REPLY다.
+def held_then(ending: str):
+    held = verify_and_cancel(BIG)
+    stopped = HELD_FALLBACK_REPLY
+    if ending == "handoff":
+        transfer = ToolCall(
+            "transfer_to_human", {"reason": "customer_request", "summary": "상담원 연결 요청"}
+        )
+        return ScriptedProvider([*held, transfer]), {}, HANDOFF_MESSAGE, "handoff"
+    if ending == "max_agent_calls":
+        look = ToolCall("get_order", {"order_id": BIG[2]})
+        return ScriptedProvider([*held, look, look]), {"max_agent_calls_per_turn": 4}, stopped, "open"
+    if ending == "provider_error":
+        return FailsAfterTheScript(held, ProviderError("connection reset")), {}, stopped, "open"
+    overflow = ContextOverflowError("ollama: context overflow", prompt_tokens=16_500, num_ctx=16_384)
+    return FailsAfterTheScript(held, overflow), {}, CLOSED_REPLY, "closed"
+
+
+# 회귀 테스트: 승인 대기에 쓰기를 올린 턴이 정상 답이 아니라 상담원 연결, 호출 한도, 모델 오류, 컨텍스트
+# 한도로 끝나면 정해진 안내가 버려지고, 한도·오류 종료에는 '처리하지 못했습니다'만 갔다(승인 대기는 그대로
+# 올라가 있음). 이제 어느 종료든 고객은 그 종료의 고정 문장 뒤에 정해진 안내를 받고, 조회한 대화·저장된
+# 대화·감사 로그의 답이 모두 그 글과 같다. 승인은 하나뿐이고, 안내대로 결과는 닫힌 세션이라도 이 대화창에
+# 들어간다. 한도·오류 종료의 오류 기록과 error 이벤트는 그대로 남는다.
+@pytest.mark.parametrize("ending", ["handoff", "max_agent_calls", "provider_error", "context_limit"])
+def test_a_held_write_is_announced_however_the_turn_ends(engine, ending):
+    provider, overrides, lead, status = held_then(ending)
+    settings = Settings(admin_token="test-token", **overrides)
+    with TestClient(create_app(settings, provider=provider, engine=engine)) as client:
+        session_id, events = ask_for_big_cancel(client)
+        transcript = client.get(f"/api/sessions/{session_id}").json()
+        approvals = client.get("/api/admin/approvals", headers=ADMIN).json()
+        audit = client.get(f"/api/admin/sessions/{session_id}", headers=ADMIN).json()["audit"]
+        with Session(engine) as session:
+            kept = session.get(store.ChatSession, session_id).state["messages"]
+        decided = client.post("/api/admin/approvals/1/decision", headers=ADMIN, json={"approve": True})
+        later = client.get(f"/api/sessions/{session_id}").json()["messages"][-1]["text"]
+
+    expected = f"{lead}\n{BIG_NOTICE}"
+    replies = [d["text"] for n, d in events if n == "reply"]
+    assert replies == [expected]  # 고정 문장만 가지 않고(FALLBACK_REPLY 단독 등) 안내가 붙는다
+    assert FALLBACK_REPLY not in replies and events[-1][1] == {"status": status}
+    # 고객이 조회한 대화와 다음 턴의 모델이 읽을 저장 대화의 마지막 상담원 말이 고객이 받은 글과 같고, 고정
+    # 문장만 든 상담원 말은 따로 남지 않는다.
+    assert transcript["messages"][-1] == {"role": "agent", "text": expected}
+    told = [m["content"] for m in kept if m["role"] == "assistant" and m["content"]]
+    assert told[-1] == expected and lead not in told
+    # 승인은 하나(AP-1)뿐이고 고객 화면의 대기 칩에도 그것만 있다.
+    assert [a["code"] for a in approvals] == ["AP-1"]
+    assert transcript["pending_approvals"] == [{"code": "AP-1", "tool": "cancel_order", "refund_won": BIG[3]}]
+    # 감사 로그의 답도 같은 글이다. 한도·오류 종료의 오류 기록과 error 이벤트는 그대로다.
+    assert next(e["payload"]["text"] for e in audit if e["kind"] == "agent_reply") == expected
+    failed = {"max_agent_calls": "max_agent_calls", "provider_error": "ProviderError: connection reset"}
+    assert [e["payload"]["error"] for e in audit if e["kind"] == "error"] == (
+        [failed[ending]] if ending in failed else []
+    )
+    assert ("error" in [n for n, _ in events]) == (ending in failed)
+    # 안내가 약속한 대로 담당자의 결정 결과가 이 대화창에 들어간다(닫힌 세션도).
+    assert decided.json()["status"] == "approved" and "처리되었습니다" in later
 
 
 # 정적 화면(index.html, admin.html)에는 인라인 style·onclick·인라인 스크립트가 없고 스크립트는 모두 src로
