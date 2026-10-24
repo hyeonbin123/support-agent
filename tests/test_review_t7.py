@@ -25,6 +25,8 @@ from test_service import (
     ADMIN,
     BIG,
     SMALL,
+    FakeListener,
+    FakeSpeaker,
     ask_for_big_cancel,
     engine,  # noqa: F401 - fixture
     events_of,
@@ -44,6 +46,7 @@ from support_agent.service import core, store
 from support_agent.service.app import create_app
 from support_agent.service.core import ApprovalStateError, ChatService
 from support_agent.service.settings import Settings
+from support_agent.service.voice_frontend import VoiceFrontEnd
 from support_agent.toolkit import ToolBugError, ToolContext, ToolError, execute
 from support_agent.voice import metrics
 from support_agent.voice.speech import AudioTooLongError
@@ -266,6 +269,45 @@ def test_turns_over_the_limit_are_turned_away(engine):  # noqa: F811
         assert say(client, second, "안녕하세요")[-1][0] == "end"  # 자리가 돌아왔다
 
 
+# 답 읽어 주기(/speech)의 동시 합성 한도(2026-10-24 추가, 위 턴 한도와 같은 꼴): 한도 1에서 첫 요청이 합성에
+# 머무는 동안 둘째 요청은 기다리지 않고 429와 Retry-After: 2로 거절된다. 503이 아닌 이유: 화면(chat.js)은
+# 503을 '음성 기능 꺼짐'으로 읽어 음성 막대를 숨긴다. 합성이 끝나면 자리가 돌아와 첫 요청은 200(WAV)이고 다음
+# 요청도 처리되며, 합성기가 예외로 끝난 요청(500) 뒤에도 자리는 돌아온다. 턴 한도(동시 턴 4개)는 /speech를
+# 세지 않으므로 이 한도가 없으면 겹친 /speech 요청이 모두 작업 스레드를 쥔 채 음성 모델의 잠금(한 번에
+# 하나)을 기다려, 같은 스레드 풀을 쓰는 채팅·대화 조회·관리자 API까지 멈출 수 있었다 (docs/service.md "한도").
+def test_speech_over_the_limit_is_turned_away(engine):  # noqa: F811
+    release, entered = threading.Event(), threading.Event()
+
+    class Slow(FakeSpeaker):
+        def synthesize(self, spoken_text: str, seed: int = 0):
+            if "고장" in spoken_text:
+                raise RuntimeError("the synthesiser failed")
+            entered.set()
+            release.wait(timeout=10)
+            return super().synthesize(spoken_text, seed)
+
+    settings = Settings(max_concurrent_speech=1)
+    front_end = VoiceFrontEnd(Slow(), FakeListener())
+    app = create_app(settings, provider=ScriptedProvider(["고장입니다."]), engine=engine, voice=front_end)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        session_id = client.post("/api/sessions").json()["session_id"]
+        url = f"/api/sessions/{session_id}/speech"
+        greeting = {"text": "안녕하세요"}  # 고정 첫 인사의 일부라 모델 답 없이도 합성 대상이다
+        done: list = []
+        worker = threading.Thread(target=lambda: done.append(client.post(url, json=greeting)))
+        worker.start()
+        assert entered.wait(timeout=30)
+        refused = client.post(url, json=greeting)
+        assert refused.status_code == 429 and refused.headers["Retry-After"] == "2"
+        release.set()
+        worker.join(timeout=30)
+        assert done[0].status_code == 200 and done[0].headers["content-type"] == "audio/wav"
+        assert client.post(url, json=greeting).status_code == 200  # 자리가 돌아왔다
+        say(client, session_id, "고장")  # 상담원 답 "고장입니다."가 생겨 합성 대상이 된다
+        assert client.post(url, json={"text": "고장입니다."}).status_code == 500  # 합성기의 예외
+        assert client.post(url, json=greeting).status_code == 200  # 예외로 끝나도 자리는 돌아왔다
+
+
 # 인식된 문장이 메시지 길이 한도를 넘으면 자르지 않고 다시 말해 달라고 하며, 턴을 쓰지 않는다. 문장 끝의
 # '취소하지 마세요'가 잘리면 뜻이 뒤집히기 때문이다 (docs/service.md "한도"). 가짜 인식기는 녹음 바이트를 글로
 # 그대로 돌려준다.
@@ -293,13 +335,15 @@ def test_a_recording_that_is_too_long_is_refused(engine, monkeypatch):  # noqa: 
         assert "너무 깁니다" in dict(events)["error"]["message"]
 
 
-# 지킬 수 없는 설정(메시지 한도 4,000자 초과, 음성 합성 글자 한도 0)은 서비스가 시작할 때 거절한다. 실행 중에
-# 이상하게 동작하기보다 처음에 멈추는 편이 낫다.
+# 지킬 수 없는 설정(메시지 한도 4,000자 초과, 음성 합성 글자 한도 0, 동시 합성 수 0 = 모든 /speech를 거절)은
+# 서비스가 시작할 때 거절한다. 실행 중에 이상하게 동작하기보다 처음에 멈추는 편이 낫다.
 def test_limits_the_request_model_cannot_honour_are_refused_at_start():
     with pytest.raises(ValueError):
         Settings(max_message_chars=5000)
     with pytest.raises(ValueError):
         Settings(max_tts_chars=0)
+    with pytest.raises(ValueError):
+        Settings(max_concurrent_speech=0)
 
 
 # -------------------------------------------------------------------- 8-9: MCP

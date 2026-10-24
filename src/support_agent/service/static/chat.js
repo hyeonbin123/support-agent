@@ -25,6 +25,9 @@
     handoff: '상담원 연결을 요청했습니다. 이 대화는 종료되었습니다.',
     closed: '이 상담은 종료되었습니다. 이어서 도움이 필요하시면 새 상담을 시작해 주세요.',
   };
+  // 동시에 도는 턴이 한도에 닿아 자리가 없다는 503(Retry-After가 붙음, app.py turn_stream)의 안내. 글 메시지와
+  // 녹음에 같이 쓴다.
+  const SERVER_BUSY = '지금 상담이 많아 자리가 없습니다. 잠시 후 다시 보내 주세요.';
 
   const $ = (id) => document.getElementById(id);
   const els = {
@@ -390,9 +393,13 @@
         if (!ended) throw new Error('the stream stopped before its end event');
       } else if (response.status === 404) sessionGone = true;
       else {
-        showError(refusal(response.status, Boolean(audio)));
-        // 서버가 음성을 쓸 수 없다고 하면(503) 음성 막대와 마이크 버튼을 숨긴다.
-        if (audio && response.status === 503) setVoice(false);
+        // 503이 둘이다. Retry-After가 붙은 것은 동시에 도는 턴이 한도에 닿아 자리가 없다는 뜻이고(글·녹음 모두,
+        // app.py turn_stream), 붙지 않은 것은 음성 기능이 꺼져 있다는 뜻이다(app.py voice_front_end). 앞의 것은
+        // 잠시 뒤 다시 보내면 되므로 음성 막대와 마이크 버튼을 그대로 둔다. 전에는 둘을 가리지 않아 붐빌 때
+        // 음성 모드가 꺼졌다.
+        const noRoom = response.status === 503 && response.headers.has('Retry-After');
+        showError(noRoom ? SERVER_BUSY : refusal(response.status, Boolean(audio)));
+        if (audio && response.status === 503 && !noRoom) setVoice(false);
       }
     } catch {
       if (mine !== epoch) return; // 그 사이 새 상담이 시작됐다
@@ -445,7 +452,9 @@
   const MIC_STOP = '녹음 중… 눌러서 전송';
   const NO_MIC = '마이크를 사용할 수 없습니다. 브라우저의 마이크 권한을 확인해 주세요.';
   const NO_AUTOPLAY = '브라우저가 소리 재생을 막았습니다. 화면을 한 번 누르면 다음 답변부터 읽어 드립니다.';
-  // 음성 끝점의 HTTP 오류별 안내: 413 너무 긺, 422 빈 녹음, 503 음성 기능 꺼짐.
+  // 음성 끝점의 HTTP 오류별 안내: 413 너무 긺, 422 빈 녹음, 503 음성 기능 꺼짐. 503은 Retry-After가 없을 때만
+  // 이 뜻이다: Retry-After가 붙은 503은 동시에 도는 턴이 한도에 닿았다는 뜻이라 runTurn이 SERVER_BUSY로
+  // 안내하고 음성 막대를 숨기지 않는다.
   const VOICE_REFUSALS = {
     413: '녹음이 너무 깁니다. 짧게 나누어 다시 말씀해 주세요.',
     422: '녹음된 소리가 없습니다. 다시 말씀해 주세요.',
@@ -639,16 +648,18 @@
   }
 
   // 조각 하나를 서버에서 WAV로 받아 재생한다. 서버는 이 세션의 상담원 답에 있는 글만 합성하고(app.py speak),
-  // 204면 소리로 낼 것이 없다는 뜻이다.
+  // 204면 소리로 낼 것이 없다는 뜻이다. 동시에 읽어 주는 수가 한도에 닿으면 서버는 기다리게 하지 않고 429와
+  // Retry-After로 돌려보내므로(app.py speak), 그 시간만큼 기다려 한 번만 다시 청한다. 그래도 429면 이 조각은
+  // 건너뛴다(글은 어차피 화면에 있다). 503은 음성 기능이 꺼졌다는 뜻이라 음성 막대를 숨긴다.
   async function sayPiece(text, run) {
     speech.abort = new AbortController();
     try {
-      const response = await fetch(`${sessionUrl(sessionId)}/speech`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-        signal: speech.abort.signal,
-      });
+      let response = await requestSpeech(text);
+      if (response.status === 429) {
+        await pause(retryAfterMs(response), speech.abort.signal);
+        if (run !== speech.run) return; // 기다리는 사이 읽기를 멈췄다
+        response = await requestSpeech(text);
+      }
       if (response.status === 503) setVoice(false);
       if (response.status !== 200) return; // 204: 소리로 낼 수 있는 것이 없다
       const sound = await response.blob();
@@ -656,6 +667,38 @@
     } catch {
       // 멈췄거나 서버에 닿지 못했다: 글은 어차피 화면에 있다
     }
+  }
+
+  // /speech 요청 하나. 읽기를 멈추면(stopSpeaking) speech.abort로 끊는다.
+  function requestSpeech(text) {
+    return fetch(`${sessionUrl(sessionId)}/speech`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+      signal: speech.abort.signal,
+    });
+  }
+
+  // 429 응답의 Retry-After(초)를 밀리초로. 없거나 숫자가 아니면 서버가 보내는 값과 같은 2초로 보고, 10초를
+  // 넘기지 않는다.
+  function retryAfterMs(response) {
+    const seconds = Number(response.headers.get('Retry-After'));
+    return (Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 10) : 2) * 1000;
+  }
+
+  // ms 동안 기다린다. 그 사이 읽기를 멈추면(signal이 끊김) 바로 끝난다.
+  function pause(ms, signal) {
+    return new Promise((resolve) => {
+      let timer = null;
+      const done = () => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', done);
+        resolve();
+      };
+      timer = setTimeout(done, ms);
+      if (signal.aborted) done();
+      else signal.addEventListener('abort', done);
+    });
   }
 
   // Blob을 blob: 주소로 재생하고 끝나면 주소를 해제한다. 소리가 끝나거나, 실패하거나, 멈추면 resolve된다.

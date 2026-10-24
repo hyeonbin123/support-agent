@@ -16,7 +16,10 @@ from __future__ import annotations
 # 모델 설정을 읽는다. alembic compare_metadata: 마이그레이션 결과와 테이블 선언 비교. TestClient: 서버 없이
 # FastAPI 앱을 부른다. 서비스 모듈에서는 앱, DB 준비, 한 턴 처리(ChatService)와 고정 안내 문장, 오프라인 대역,
 # 설정, 음성 앞단을 가져온다. threading·time: 세션 잠금 테스트에서 한 턴이나 승인 결정을 작업 스레드로 돌려
-# 잠금을 쥔 채 멈춰 두고(Event), 다른 요청이 그 잠금을 기다리기 시작할 때까지 짧게 되풀이해 확인한다.
+# 잠금을 쥔 채 멈춰 두고(Event), 다른 요청이 그 잠금을 기다리기 시작할 때까지 짧게 되풀이해 확인한다. asyncio:
+# 음성 끝점이 세션 확인(DB 조회)을 이벤트 루프 스레드 밖에서 하는지 본다(그 스레드에서는 get_running_loop가
+# 실패한다). sqlalchemy.event: 한 요청이 실행한 SQL을 before_cursor_execute로 받아 적는다.
+import asyncio
 import json
 import threading
 import time
@@ -29,7 +32,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-from sqlalchemy import func, inspect, select
+from sqlalchemy import event, func, inspect, select
 from sqlalchemy.orm import Session
 
 from support_agent import db
@@ -379,6 +382,35 @@ def test_a_long_session_is_closed(engine):
         shown = client.get(f"/api/sessions/{session_id}").json()["messages"]
         assert [m["text"] for m in shown[-2:]] == ["네.", CLOSED_REPLY]
         assert client.post(f"/api/sessions/{session_id}/messages", json={"text": "셋"}).status_code == 409
+
+
+# 메시지를 받기 전의 세션 확인(app.py open_session)은 세션 상태 한 열만 읽는다(ChatService.session_status).
+# 전에는 대화 전체(state JSON)와 승인 대기열까지 읽어 고객 화면용 대화를 만드는 transcript를 불러 그 가운데
+# status 하나만 썼으므로, 턴마다 대화 길이에 비례한 읽기가 한 번 더 있었다. 닫힌 세션에 보낸 메시지는 409로
+# 끝나 그 확인이 그 요청의 유일한 DB 접근이라, 그 요청에서 실행된 SQL을 그대로 받아 적어 본다.
+def test_the_session_check_before_a_turn_reads_only_its_status(engine):
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(" ".join(statement.split()))
+
+    with make_client(engine, []) as client:
+        session_id = client.post("/api/sessions").json()["session_id"]
+        with Session(engine) as session:
+            session.get(store.ChatSession, session_id).status = "closed"
+            session.commit()
+        service = client.app.state.service
+        assert service.session_status(session_id) == "closed"
+        with pytest.raises(SessionNotFoundError):
+            service.session_status("nope")
+        event.listen(engine, "before_cursor_execute", record)
+        try:
+            assert client.post(f"/api/sessions/{session_id}/messages", json={"text": "셋"}).status_code == 409
+        finally:
+            event.remove(engine, "before_cursor_execute", record)
+    assert len(statements) == 1, statements
+    assert "chat_sessions.status" in statements[0]
+    assert "chat_sessions.state" not in statements[0] and "approvals" not in statements[0]
 
 
 # 도구 오류 한도는 턴마다 센다. 없는 주문을 11턴 동안 조회해 거절이 쌓여도(세션 전체 누계 11) 각 턴은 오류
@@ -1116,6 +1148,34 @@ def test_voice_requests_are_validated(engine):
         long_piece = {"text": "안녕하세요, 고객센터"}  # 인사의 일부지만 한도 5를 넘는다
         assert client.post(f"/api/sessions/{session_id}/speech", json=long_piece).status_code == 422
         assert client.post("/api/sessions/nope/speech", json={"text": "네"}).status_code == 404
+
+
+# 녹음 끝점(post_voice)은 본문을 조각마다 읽어 크기 한도에서 바로 멈추려고 async 처리기다. 그 안에서 세션
+# 확인(DB 조회)을 그대로 부르면 이벤트 루프 스레드가 DB 왕복 동안 멈춰, 다른 세션의 SSE 이벤트 전달과 음성
+# 본문 수신까지 함께 멈춘다. 세션 확인은 작업 스레드(run_in_threadpool)에서 돌아야 한다: 거기에는 돌고 있는
+# 이벤트 루프가 없다(asyncio.get_running_loop가 RuntimeError). 있는 세션(턴이 끝까지 돈다)과 없는 세션(404)
+# 모두 본다.
+def test_the_voice_endpoint_checks_the_session_off_the_event_loop(engine, monkeypatch):
+    on_the_loop: list[bool] = []
+    with voice_client(engine, ["네."]) as client:
+        service = client.app.state.service
+        real = service.session_status
+
+        def probe(session_id: str) -> str:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                on_the_loop.append(False)  # 작업 스레드다
+            else:
+                on_the_loop.append(True)  # 이벤트 루프 위에서 DB를 읽고 있다
+            return real(session_id)
+
+        monkeypatch.setattr(service, "session_status", probe)
+        session_id = client.post("/api/sessions").json()["session_id"]
+        events = events_of(client.post(f"/api/sessions/{session_id}/voice", content="안녕하세요".encode()))
+        assert events[-1][0] == "end"
+        assert client.post("/api/sessions/nope/voice", content=b"x").status_code == 404
+    assert on_the_loop == [False, False]
 
 
 # 답 읽어 주기: 합성 전에 말로 풀어 쓰고('38,900원' → '삼만 팔천구백 원'), WAV로 돌려준다. 이 세션에서

@@ -37,8 +37,8 @@ _THINK = {"on": True, "off": False, "omit": None}
 # - num_ctx: 서비스는 16384. 8단계 측정은 12288로 쟀으므로 잰 구성과 다른 점이다(docs/service.md)
 # - approval_refund_won: 이 금액 이상 환불되는 취소·반품은 관리 화면에서 사람이 승인해야 실행된다
 # - admin_token: 빈 문자열이면 관리자 API가 꺼진다
-# - max_*: 메시지 길이, 턴당 LLM 호출, 세션당 턴, 음성 파일 크기·길이, 동시에 도는 턴 수의
-#   한도(docs/service.md "한도")
+# - max_*: 메시지 길이, 턴당 LLM 호출, 세션당 턴, 음성 파일 크기·길이, 동시에 도는 턴 수, 동시에 도는 답
+#   읽어 주기(합성) 수의 한도(docs/service.md "한도")
 class Settings(BaseModel):
     database_url: str = "sqlite:///outputs/service.db"
     ollama_url: str = "http://127.0.0.1:11434"
@@ -76,6 +76,12 @@ class Settings(BaseModel):
     max_tts_chars: int = Field(default=600, ge=1, le=4000)
     max_audio_seconds: int = 60  # 낮은 비트레이트면 작은 파일에도 몇 시간 분량의 말이 들어갈 수 있다
     max_concurrent_turns: int = 4  # 모든 세션을 통틀어 동시에 도는 턴(과 인식) 수
+    # 모든 세션을 통틀어 동시에 도는 답 읽어 주기(/speech 합성) 수. 턴 자리와는 따로 센다: 합성은 턴을 쓰지
+    # 않으므로 위 한도가 /speech를 막지 못했고, 음성 모델은 한 번에 하나만 돌리므로(voice_frontend의 잠금)
+    # 겹친 합성 요청은 모두 작업 스레드를 쥔 채 그 잠금을 기다렸다. 넘으면 기다리지 않고 429와 Retry-After로
+    # 돌려보낸다(app.py speak). 기본 2 = 하나는 합성 중, 하나는 그 뒤에 줄 서기(화면은 조각을 한 번에 하나씩만
+    # 청한다). 0이면 모든 요청을 거절하게 되므로 받지 않는다(ge=1).
+    max_concurrent_speech: int = Field(default=2, ge=1)
 
     # THINK를 비워 두면 모델에 맞춰 채운다: 기본 모델(qwen3.5:4b)은 잰 그대로 "off", 다른 모델은 "omit"(보내지
     # 않음).

@@ -400,6 +400,18 @@ class ChatService:
                 ],
             }
 
+    # 세션의 상태 값(open·handoff·closed) 하나만 읽는다. 웹 계층이 글·음성 메시지를 받기 전에 세션이 있고 열려
+    # 있는지 확인하는 데 쓴다(app.py open_session). transcript는 대화 전체(state JSON. 시스템 프롬프트와 도구
+    # 결과까지 들어 있어 세션이 길수록 커진다)와 승인 대기열까지 읽으므로, 상태 하나를 보려고 그것을 부르면
+    # 턴마다 대화 길이에 비례한 읽기가 한 번 더 생긴다(2026-10-24까지 그랬다). 이 질의는 status 열 하나뿐이다.
+    # 없는 세션이면 SessionNotFoundError.
+    def session_status(self, session_id: str) -> str:
+        with Session(self.engine) as db_session:
+            status = db_session.scalar(select(ChatSession.status).where(ChatSession.id == session_id))
+        if status is None:
+            raise SessionNotFoundError(session_id)
+        return status
+
     # ---------------------------------------------------------------- 한 턴 (one turn)
 
     # 고객 메시지 하나에 답한다(웹의 글·음성 메시지가 모두 여기로 온다). 빈 메시지나 한도를 넘는 메시지는

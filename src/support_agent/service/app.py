@@ -35,6 +35,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import Engine
 
+# run_in_threadpool: async 처리기(post_voice) 안의 동기 DB 조회를, FastAPI가 동기 처리기를 돌리는 것과 같은
+# 작업 스레드 풀로 보낸다. 이벤트 루프 스레드에서 DB를 읽으면 그동안 모든 세션의 SSE 전달과 본문 수신이
+# 멈춘다.
+from starlette.concurrency import run_in_threadpool
+
 # 프로젝트 내부: 모델 제공자(기본 OllamaProvider), DB 준비(bootstrap), 대화 처리와 그 예외(core), 설정, 음성
 # 앞단.
 from support_agent.chat import ChatProvider
@@ -220,10 +225,12 @@ def create_app(
             raise HTTPException(404, "no such session") from None
 
     # 스트림을 시작하기 전에 세션이 있고(404) 열려 있는지(409) 확인한다. 이 오류들을 SSE 이벤트가 아니라 HTTP
-    # 상태 코드로 돌려주려는 것이다.
+    # 상태 코드로 돌려주려는 것이다. 상태 열 하나만 읽는다(core.ChatService.session_status): 전에는 대화
+    # 전체와 승인 대기열까지 읽는 transcript로 상태를 봤다. 동기 함수라 글 메시지(post_message)에서는
+    # FastAPI가 작업 스레드에서 돌리고, async인 post_voice는 run_in_threadpool로 같은 풀에 보낸다.
     def open_session(svc: ChatService, session_id: str) -> None:
         try:
-            status = svc.transcript(session_id)["status"]
+            status = svc.session_status(session_id)
         except SessionNotFoundError:
             raise HTTPException(404, "no such session") from None
         if status != "open":
@@ -321,11 +328,16 @@ def create_app(
     # 녹음 한 개를 받아 인식한 뒤 글 메시지와 같은 턴으로 처리한다(인식된 문장은 heard 이벤트로 먼저 보냄).
     # async로 두고 본문을 조각마다 읽어, 크기 한도(기본 5 MB)를 넘는 순간 413으로 멈춘다. 다 받은 뒤에 재면 큰
     # 파일이 메모리에 다 올라온다.
+    # 턴 자리(slots)는 본문을 다 받은 뒤 turn_stream에서 잡는다. 자리를 먼저 잡으면 느린 업로드가 턴 자리를
+    # 쥐어 글 채팅까지 막는 새 경로가 생기므로 순서를 바꾸지 않는다. 그래서 동시 연결 수 × 5 MB까지 메모리에
+    # 오를 수 있고, 이것은 다른 끝점의 본문과 함께 앞단 프록시가 막을 일이다(docs/service.md "하지 않은 것").
     @app.post("/api/sessions/{session_id}/voice")
     async def post_voice(session_id: str, request: Request, svc: ChatService = Depends(service)):
         """본문은 녹음한 발화 하나다(브라우저가 녹음하는 형식 무엇이든: webm, ogg, wav, mp4)."""
         front_end = voice_front_end(request)
-        open_session(svc, session_id)
+        # 세션 확인은 DB 조회라 이벤트 루프 스레드에서 하지 않는다: 루프가 DB 왕복 동안 멈추면 다른 세션의 SSE
+        # 이벤트 전달과 음성 본문 수신까지 함께 멈춘다(2026-10-24 고침, tests/test_service.py).
+        await run_in_threadpool(open_session, svc, session_id)
         audio = bytearray()
         async for chunk in request.stream():  # 한도를 넘는 순간 읽기를 멈춘다
             audio += chunk
@@ -362,6 +374,12 @@ def create_app(
 
         return turn_stream(svc, session_id, read_message, first_stage="listening")
 
+    # 동시에 도는 답 읽어 주기(합성) 수의 한도. 턴 자리(slots)와 따로 둔다: /speech는 턴을 쓰지 않아 그 한도에
+    # 걸리지 않았고, 음성 모델은 한 번에 하나만 돌리므로(VoiceFrontEnd의 잠금) 겹친 합성 요청이 모두 작업
+    # 스레드를 쥔 채 그 잠금을 기다렸다. 세션 하나로 /speech를 수십 개 겹쳐 보내면 같은 스레드 풀(기본 40)을
+    # 쓰는 채팅·대화 조회·관리자 API·SSE 생성기까지 멈출 수 있었다(2026-10-24 고침, tests/test_review_t7.py).
+    speech_slots = threading.BoundedSemaphore(settings.max_concurrent_speech)
+
     # 이 세션에서 에이전트가 한 답(또는 그 일부)만 소리로 만들어 준다. 공백을 모두 뺀 뒤 어느 답의 부분
     # 문자열인지 확인해, 아니면 403이다. 세션 번호만 있으면 아무 글이나 합성하는 음성 서비스가 되지 않게
     # 하려는 것이다(docs/voice.md).
@@ -380,7 +398,18 @@ def create_app(
         wanted = "".join(body.text.split())
         if not wanted or not any(wanted in "".join(text.split()) for text in said):
             raise HTTPException(403, "only replies of this session are read aloud")
-        wav = front_end.speak(body.text)
+        # 합성 자리가 없으면 기다리지 않고 바로 429와 Retry-After(2초)로 돌려보낸다. 503이 아닌 이유:
+        # 화면(chat.js)은 503을 '음성 기능이 꺼졌다'로 읽어 음성 막대를 숨기므로, 잠깐 붐빈 것으로 고객의 음성
+        # 모드가 꺼진다. 화면은 그 시간 뒤 한 번만 다시 청한다. 자리는 합성이 예외로 끝나도 finally에서 반드시
+        # 돌려준다.
+        if not speech_slots.acquire(blocking=False):
+            raise HTTPException(
+                429, "too many replies are being read aloud at once, try again", {"Retry-After": "2"}
+            )
+        try:
+            wav = front_end.speak(body.text)
+        finally:
+            speech_slots.release()
         if not wav:
             return Response(status_code=204)
         return Response(wav, media_type="audio/wav")
