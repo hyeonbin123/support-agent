@@ -150,10 +150,26 @@ def build_server(service: ChatService, scope: Scope = "read") -> Server:
             hidden = name in service.registry and name != THINK_TOOL
             reason = "쓰기 권한(--scope write)이 없습니다" if hidden else "그런 도구는 없습니다"
             return _text(f"Error: [not_allowed] {name}: {reason}.", is_error=True)
-        # 인자 크기 제한. UTF-8 바이트로 재므로 한글은 글자당 3바이트로 센다.
-        if len(json.dumps(arguments, ensure_ascii=False).encode()) > MAX_ARGUMENT_BYTES:
+        # 인자 크기 제한. UTF-8 바이트로 재므로 한글은 글자당 3바이트로 센다. surrogatepass: 짝 없는
+        # 서로게이트(JSON 이스케이프 "\ud800"이 파이썬 문자열로 그대로 넘어온 글)도 3바이트로 세어 크기만
+        # 잰다. 전에는 여기의 strict 인코딩이 UnicodeEncodeError를 내서, 설계된 invalid_arguments 오류 대신
+        # SDK의 일반 오류("Internal server error")가 돌아갔다(2026-10-24 고침, tests/test_mcp_server.py).
+        encoded = json.dumps(arguments, ensure_ascii=False)
+        if len(encoded.encode("utf-8", "surrogatepass")) > MAX_ARGUMENT_BYTES:
             return _text(
                 f"Error: [invalid_arguments] 인자가 너무 큽니다 ({MAX_ARGUMENT_BYTES}바이트까지).",
+                is_error=True,
+            )
+        # 저장할 수 없는 글(짝 없는 서로게이트)은 세션과 감사 행을 만들기 전에 여기서 거절한다. 도구 인자
+        # 모델(toolkit.ToolArgs)도 같은 이유로 거절하지만, 그 거절은 _run_tool이 인자 원문을 담은 감사 행을
+        # 남긴 뒤라 그 세션의 관리자 대화 조회(JSON 응답)가 인코딩에서 500이 된다. stdio·HTTP 전송에서는 SDK의
+        # JSON 파서(pydantic)가 이 이스케이프를 거절해 여기까지 오지 않고, 메모리 전송이나 서버 객체를 직접
+        # 쓰는 코드에서만 닿는다.
+        try:
+            encoded.encode("utf-8")
+        except UnicodeEncodeError:
+            return _text(
+                "Error: [invalid_arguments] 인자에 올바르지 않은 문자(짝 없는 서로게이트)가 있습니다.",
                 is_error=True,
             )
         # 세션 id를 잠금 안에서 읽어 두고 잠금 밖에서 호출한다. 호출 도중 new_conversation이 목록을 비워도 이

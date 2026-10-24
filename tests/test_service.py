@@ -370,6 +370,57 @@ def test_requests_are_validated(engine):
         assert client.get(f"/api/sessions/{session_id}").headers["Cache-Control"] == "no-store"
 
 
+# 요청 본문에 짝 없는 서로게이트(JSON 이스케이프 "\ud800")가 있으면 422다 (2026-10-24 고침). pydantic은 이런
+# 글을 거절하는데, 전에는 FastAPI의 기본 검증 오류 응답이 오류마다 입력 원문(`input`)을 되돌려 보내다가 UTF-8
+# 인코딩에서 UnicodeEncodeError가 나 500과 트레이스백이 남았다(글 메시지·답 읽어 주기·관리자 결정 본문 모두.
+# 보안 스캔은 이런 입력을 보내지 않아 '5xx 0건'에 잡히지 않았다). 지금은 앱의 검증 오류 처리기가 입력 원문을
+# 빼고 어느 칸이 왜 틀렸는지(loc·msg·type)만 돌려준다. 세션은 그대로 쓸 수 있다.
+# raise_server_exceptions=False라서 처리되지 않은 예외가 다시 생기면 테스트가 터지는 대신 500으로 보인다.
+def test_a_lone_surrogate_in_the_body_is_a_client_error(engine):
+    settings = Settings(admin_token="test-token")
+    front_end = VoiceFrontEnd(FakeSpeaker(), FakeListener())
+    app = create_app(settings, provider=ScriptedProvider(["네."]), engine=engine, voice=front_end)
+    as_json = {"Content-Type": "application/json"}
+    with TestClient(app, raise_server_exceptions=False) as client:
+        session_id = client.post("/api/sessions").json()["session_id"]
+        body = b'{"text": "\\ud800 marker"}'
+        answers = {
+            "messages": client.post(f"/api/sessions/{session_id}/messages", content=body, headers=as_json),
+            "speech": client.post(f"/api/sessions/{session_id}/speech", content=body, headers=as_json),
+            "decision": client.post(
+                "/api/admin/approvals/1/decision",
+                content=b'{"approve": false, "note": "\\ud800 marker"}',
+                headers={**ADMIN, **as_json},
+            ),
+        }
+        for name, answer in answers.items():
+            assert answer.status_code == 422, (name, answer.text)
+            assert answer.headers["content-type"].startswith("application/json"), name
+            assert "marker" not in answer.text, name  # 입력 원문은 되돌려 보내지 않는다
+            detail = answer.json()["detail"]
+            assert detail and all({"loc", "msg", "type"} <= set(e) and "input" not in e for e in detail), name
+        assert answers["messages"].json()["detail"][0]["loc"] == ["body", "text"]
+        assert answers["decision"].json()["detail"][0]["loc"] == ["body", "note"]
+        assert say(client, session_id, "안녕하세요")[-1] == ("end", {"status": "open"})  # 세션은 멀쩡하다
+
+
+# 보통의 검증 오류도 같은 처리기를 지난다: 어느 칸이 왜 틀렸는지(loc·msg·type)는 알려 주되 FastAPI 기본 응답에
+# 있던 입력 원문(`input`)은 없다. 고객이 보낸 글을 오류 응답에 그대로 되돌려 보낼 이유가 없다
+# (2026-10-24부터).
+def test_validation_errors_name_the_field_but_do_not_echo_the_input(engine):
+    with make_client(engine, []) as client:
+        session_id = client.post("/api/sessions").json()["session_id"]
+        url = f"/api/sessions/{session_id}/messages"
+        missing = client.post(url, json={"txt": "안녕"})
+        assert missing.status_code == 422
+        assert [(e["loc"], e["type"]) for e in missing.json()["detail"]] == [(["body", "text"], "missing")]
+        too_long = client.post(url, json={"text": "가나다라" * 1001})  # 요청 모델의 상한 4,000자를 넘는다
+        assert too_long.status_code == 422
+        (error,) = too_long.json()["detail"]
+        assert (error["loc"], error["type"]) == (["body", "text"], "string_too_long")
+        assert "input" not in error and "가나다라" not in too_long.text
+
+
 # 세션당 턴 한도에 닿으면 그 턴의 답 뒤에 고정 안내(CLOSED_REPLY)를 붙이고 세션을 닫는다. 닫힌 세션의 메시지는
 # 409다 (docs/service.md "한도": 세션당 40턴, 닫으면 새 상담을 권한다).
 def test_a_long_session_is_closed(engine):

@@ -19,6 +19,7 @@ import threading
 import pytest
 from conftest import NOW
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from test_service import (
@@ -344,6 +345,34 @@ def test_limits_the_request_model_cannot_honour_are_refused_at_start():
         Settings(max_tts_chars=0)
     with pytest.raises(ValueError):
         Settings(max_concurrent_speech=0)
+
+
+# 0이나 음수를 받으면 서비스가 /healthz는 정상인 채 쓸 수 없는 상태로 뜨던 정수 설정들도 시작할 때 거절한다
+# (2026-10-24 고침): 세션당 턴 0은 모든 세션이 첫 메시지 뒤 닫히고, 턴당 호출 0은 모든 메시지가 고정 안내로
+# 끝나며, 동시 턴 0은 모든 메시지가 503(−1은 create_app의 BoundedSemaphore가 ValueError), num_ctx 0은 모든
+# 대화가 컨텍스트 한도, 음성 한도 0은 모든 녹음 거절이었다. 경계값은 받는다: 환불 기준 0(취소·반품이 모두 승인
+# 대기), num_ctx 4096(첫 호출의 프롬프트 약 3,500토큰보다 큼), 동시 턴 16(스레드 풀 40 안, docs/service.md
+# "한도"), 세션당 턴 100000(보안 스캔이 띄우는 값, 상한 없음). 환경 변수로 와도 같은 검증을 지난다.
+@pytest.mark.parametrize(
+    ("field", "refused", "accepted"),
+    [
+        ("num_ctx", (0, -1, 4095), (4096,)),
+        ("approval_refund_won", (-1,), (0,)),
+        ("max_agent_calls_per_turn", (0, -1), (1,)),
+        ("max_turns_per_session", (0, -1), (1, 100_000)),
+        ("max_audio_bytes", (0, -1), (1,)),
+        ("max_audio_seconds", (0, -1), (1,)),
+        ("max_concurrent_turns", (0, -1, 17), (1, 16)),
+    ],
+)
+def test_integer_limits_out_of_range_are_refused_at_start(field, refused, accepted):
+    for value in refused:
+        with pytest.raises(ValidationError):
+            Settings(**{field: value})
+    with pytest.raises(ValidationError):
+        Settings.from_env({f"SUPPORT_AGENT_{field.upper()}": str(refused[0])})
+    for value in accepted:
+        assert getattr(Settings(**{field: value}), field) == value
 
 
 # -------------------------------------------------------------------- 8-9: MCP

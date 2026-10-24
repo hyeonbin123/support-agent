@@ -39,6 +39,10 @@ _THINK = {"on": True, "off": False, "omit": None}
 # - admin_token: 빈 문자열이면 관리자 API가 꺼진다
 # - max_*: 메시지 길이, 턴당 LLM 호출, 세션당 턴, 음성 파일 크기·길이, 동시에 도는 턴 수, 동시에 도는 답
 #   읽어 주기(합성) 수의 한도(docs/service.md "한도")
+# 정수 설정에는 모두 범위(Field의 ge/le)를 둔다. 범위 밖 값(0, 음수, 너무 작은 num_ctx, 너무 큰 동시 턴 수)은
+# 서비스가 시작할 때 ValidationError로 멈춘다: 전에는 글자 한도 둘만 검사해, 예컨대
+# MAX_TURNS_PER_SESSION=0으로 띄우면 /healthz는 정상인데 모든 상담이 첫 메시지 뒤 닫히는 상태가
+# 됐다(2026-10-24 고침, tests/test_review_t7.py).
 class Settings(BaseModel):
     database_url: str = "sqlite:///outputs/service.db"
     ollama_url: str = "http://127.0.0.1:11434"
@@ -46,7 +50,11 @@ class Settings(BaseModel):
     # 모든 에이전트 요청에 넣는 Ollama의 `think` 필드. 비워 두면 기본 모델은 "off"(그렇게 쟀다), 다른 모델은
     # "omit"(보내지 않음)이 된다: 사고 모드가 없는 모델은 이 필드를 거절한다.
     think: Literal["on", "off", "omit"] = "off"
-    num_ctx: int = 16384
+    # 에이전트 호출의 컨텍스트 길이(Ollama의 num_ctx). 서비스는 16384(8단계 측정은 12288, docs/service.md).
+    # 하한 4096: 시스템 프롬프트(규정·지침)와 도구 설명만으로 첫 에이전트 호출의 프롬프트가 이미 약
+    # 3,500토큰이라(실제 모델로 확인한 상담의 첫 호출이 3,526토큰, docs/service.md) 그보다 작으면 모든 상담이
+    # 첫 턴에 컨텍스트 한도로 닫힌다. 0·음수도 전에는 그대로 받아들여졌다(2026-10-24 고침).
+    num_ctx: int = Field(default=16384, ge=4096)
     # 서비스는 규정이 금지하는 것을 거절한다(P1). 그것이 성공률을 올리는지는 docs/experiments.md의 질문이고,
     # 여기서는 잘못된 환불이 돈을 잃게 하므로 코드가 검사할 수 있는 것은 도구가 모두 검사한다.
     policy: Literal["P0", "P1"] = "P1"
@@ -62,20 +70,37 @@ class Settings(BaseModel):
     errors: Literal["E0", "E1"] = "E0"
     repeat: Literal["D0", "D1"] = "D0"
     now: AwareDatetime | Literal["real"] = Field(default_factory=lambda: datetime.fromisoformat(DEMO_NOW))
-    approval_refund_won: int = 100_000  # 이 금액 이상의 환불은 사람을 기다린다
+    # 이 금액 이상 환불되는 취소·반품은 사람이 승인해야 실행된다(core.py의 승인 관문, docs/service.md "사람
+    # 승인"). 0이면 환불액과 상관없이 취소·반품이 모두 승인 대기에 오른다('전부 승인' 구성이라 받는다). 음수는
+    # 뜻이 없어 거절한다.
+    approval_refund_won: int = Field(default=100_000, ge=0)
     admin_token: str = ""  # ""이면 관리자 API가 꺼진다
     max_message_chars: int = Field(default=1000, ge=1, le=4000)  # 요청 모델(MessageIn)의 상한이 4000이다
-    max_agent_calls_per_turn: int = 12
-    max_turns_per_session: int = 40
+    # 턴당 LLM 호출 수와 세션당 턴 수는 1 이상이어야 한다. 0이면 모든 턴이 호출 한도의 고정 안내로 끝나거나
+    # 모든 세션이 첫 메시지 뒤 닫히는데, 서비스는 /healthz가 정상인 채 떠서 설정이 원인이라는 신호가
+    # 없었다(2026-10-24 고침). 세션당 턴 수에 상한은 두지 않는다: 보안 스캔은 세션이 닫히지 않게 100000으로
+    # 띄운다(docs/service.md "모델 없이 띄우기, 보안 스캔").
+    max_agent_calls_per_turn: int = Field(default=12, ge=1)
+    max_turns_per_session: int = Field(default=40, ge=1)
     load_seed: bool = True  # 빈 쇼핑몰 DB를 생성 데이터로 채운다
     expose_openapi: bool = False  # /openapi.json을 내놓는다(API 스캐너와 클라이언트용, 기본은 꺼짐)
     voice: bool = False  # 음성 입출력(`voice` 의존성 그룹이 필요하다)
     tts_device: Literal["cuda", "cpu"] = "cuda"
     stt_device: Literal["cuda", "cpu"] = "cuda"
-    max_audio_bytes: int = 5_000_000  # 브라우저로 녹음한 말 약 5분 분량
+    # 녹음 파일 크기와 풀었을 때 길이의 한도. 기본 5 MB는 브라우저로 녹음한 말 약 5분 분량이고, 길이 한도가
+    # 따로 있는 것은 낮은 비트레이트면 작은 파일에도 몇 시간 분량의 말이 들어갈 수 있어서다. 둘 다 0이면 모든
+    # 녹음이 거절되므로 1 이상만 받는다.
+    max_audio_bytes: int = Field(default=5_000_000, ge=1)
     max_tts_chars: int = Field(default=600, ge=1, le=4000)
-    max_audio_seconds: int = 60  # 낮은 비트레이트면 작은 파일에도 몇 시간 분량의 말이 들어갈 수 있다
-    max_concurrent_turns: int = 4  # 모든 세션을 통틀어 동시에 도는 턴(과 인식) 수
+    max_audio_seconds: int = Field(default=60, ge=1)
+    # 모든 세션을 통틀어 동시에 도는 턴(과 인식) 수. 0이면 모든 메시지가 503이고 음수는 create_app의
+    # BoundedSemaphore가 ValueError를 내므로 1 이상만 받는다. 상한 16을 두는 이유: 턴의 SSE 응답 생성기는 동기
+    # 함수라 Starlette가 이벤트를 하나 꺼낼 때마다 anyio 스레드 풀(기본 40자리)에서 돌리는데, 다음 이벤트를
+    # 기다리는 동안(모델이 답할 때까지) 그 자리를 쥔 채 멈춰 있다(app.py turn_stream의 stream). 같은 풀을
+    # /healthz·글 메시지 수신·대화 조회·관리자 API의 동기 처리기가 쓰므로, 이 값을 40 가까이 올리면 턴이
+    # 자리를 모두 차지해 /healthz가 답하지 못하고 Docker의 HEALTHCHECK가 실패해 재시작될 수 있다. 16이면 턴이
+    # 모두 차도 자리 24개가 남는다(docs/service.md "한도").
+    max_concurrent_turns: int = Field(default=4, ge=1, le=16)
     # 모든 세션을 통틀어 동시에 도는 답 읽어 주기(/speech 합성) 수. 턴 자리와는 따로 센다: 합성은 턴을 쓰지
     # 않으므로 위 한도가 /speech를 막지 못했고, 음성 모델은 한 번에 하나만 돌리므로(voice_frontend의 잠금)
     # 겹친 합성 요청은 모두 작업 스레드를 쥔 채 그 잠금을 기다렸다. 넘으면 기다리지 않고 429와 Retry-After로

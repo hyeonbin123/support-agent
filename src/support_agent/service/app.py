@@ -28,9 +28,12 @@ from importlib.resources import files
 from typing import Any
 
 # FastAPI: 라우팅, 의존성 주입(Depends), 요청 본문 검증(pydantic). StreamingResponse로 SSE를, StaticFiles로
-# 화면의 js·css를 내보낸다.
+# 화면의 js·css를 내보낸다. RequestValidationError·jsonable_encoder·JSONResponse는 본문 검증 오류(422)의
+# 응답을 직접 만들 때 쓴다(create_app의 validation_error).
 from fastapi import Depends, FastAPI, Header, HTTPException, Path, Request
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import Engine
@@ -168,6 +171,18 @@ def create_app(
         if request.url.path.startswith("/api/"):
             response.headers.setdefault("Cache-Control", "no-store")
         return response
+
+    # 요청 본문·경로·질의가 모델(MessageIn, SpeakIn, DecisionIn, 경로의 승인 번호 등)에 맞지 않을 때의 422
+    # 응답. FastAPI 기본 처리기와 같은 꼴({"detail": [{loc, msg, type, ...}]})이지만 오류마다 들어 있던 입력
+    # 원문(`input`)을 뺀다. 이유 둘: (1) 본문에 짝 없는 서로게이트(JSON 이스케이프 "\ud800")가 있으면
+    # pydantic이 거절한 뒤 기본 처리기가 그 원문을 담은 JSON을 UTF-8로 인코딩하다 UnicodeEncodeError를 내서,
+    # 클라이언트 오류가 500과 트레이스백으로 기록됐다(2026-10-24 고침, tests/test_service.py). (2) 고객이 보낸
+    # 글을 오류 응답에 그대로 되돌려 보낼 이유가 없다. 어느 칸이 왜 틀렸는지는 그대로 알려 준다.
+    # jsonable_encoder는 기본 처리기와 같이 loc의 튜플이나 ctx의 예외 객체를 JSON으로 바꾼다.
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
+        errors = [{key: value for key, value in error.items() if key != "input"} for error in exc.errors()]
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
 
     # 의존성: lifespan에서 만든 ChatService를 꺼낸다.
     def service(request: Request) -> ChatService:

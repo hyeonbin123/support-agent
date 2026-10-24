@@ -123,6 +123,28 @@ async def test_a_read_only_server_refuses_writes_and_unknown_tools(service):
         assert session.get(db.Order, "O-90005").status == db.OrderStatus.PREPARING
 
 
+# 인자에 짝 없는 서로게이트가 있으면(JSON 이스케이프 "\ud800"이 파이썬 문자열로 그대로 넘어온 경우) 설계된
+# invalid_arguments 오류다 (2026-10-24 고침). 전에는 인자 크기 검사의 UTF-8 인코딩이 UnicodeEncodeError를 내서
+# SDK의 일반 오류("Internal server error")가 돌아갔다. 크기는 surrogatepass로 재므로 서로게이트만으로
+# 20,000바이트를 넘는 인자는 '너무 큽니다'다. 둘 다 세션도 감사 행도 만들기 전에 거절한다: 이런 글은 DB에
+# 저장할 수 없어 (toolkit.ToolArgs가 거절하는 이유와 같다) 거절된 호출의 감사 행에 인자 원문으로 들어가면 그
+# 세션의 관리자 대화 조회(JSON 응답)가 500이 된다. stdio·HTTP 전송에서는 SDK의 JSON 파서가 이 이스케이프를
+# 거절해 처리기에 닿지 않고, 메모리 전송이나 서버 객체를 직접 쓰는 코드에서만 닿는다. 서버는 그 뒤에도 그대로
+# 쓸 수 있다.
+async def test_a_lone_surrogate_in_the_arguments_is_an_invalid_arguments_error(service):
+    async with Client(build_server(service, "read")) as client:
+        bad = await client.call_tool("get_order", {"order_id": "\ud800 marker"})
+        assert bad.is_error and text_of(bad).startswith("Error: [invalid_arguments]")
+        assert "marker" not in text_of(bad)  # 인자 원문은 되돌려 보내지 않는다
+        # 서로게이트 7,000개는 surrogatepass로 21,000바이트라 크기 한도(20,000)를 넘는다.
+        huge = await client.call_tool("get_order", {"order_id": "\ud800" * 7000})
+        assert huge.is_error and "너무 큽니다" in text_of(huge)
+        with Session(service.engine) as session:
+            assert session.scalars(select(store.ChatSession)).all() == []  # 세션조차 만들어지지 않았다
+        found = await client.call_tool("find_customer", {"name": "정예준", "contact": "01000009005"})
+        assert not found.is_error
+
+
 # 쓰기 서버에서: 작은 취소는 바로 실행되고 다시 취소하면 규정으로 거절된다. 한 상담은 고객 한 명이라 다른
 # 고객을 확인하려면 new_conversation이 필요하다. 환불액 10만 원 이상인 큰 취소(O-10097, 108,200원)는
 # approval_required로 승인 대기열에 올라가고 주문은 그대로다.
