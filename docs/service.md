@@ -18,6 +18,7 @@ docker compose up --build
 - DB: `127.0.0.1:55462` (PostgreSQL 16)
 - 포트는 모두 127.0.0.1에만 연다. 기본 비밀번호와 토큰은 로컬 시연용이다. 바꾸려면 `.env.example`을 `.env`로 복사해 값을 넣는다. DB 비밀번호는 앱의 DB 주소에 그대로 들어가므로 영문·숫자와 `- _ . ~`만 쓴다 (`@`나 `%`가 들어가면 주소가 잘못 읽혀 앱이 DB에 붙지 못한다)
 - 처음 뜰 때 마이그레이션(Alembic)을 돌리고, 쇼핑몰 테이블이 비어 있으면 평가와 같은 생성 데이터를 넣는다. 채팅 화면 아래에 시험해 볼 고객 이름과 전화번호가 나온다
+- 모델은 처음 쓸 때 Ollama가 올린다. 그래서 띄운 직후의 첫 메시지와, 모델이 `KEEP_ALIVE`(기본 60분) 동안 쓰이지 않아 내려간 뒤의 첫 메시지는 모델을 올리는 시간만큼 늦다 (이 PC의 D: HDD에서 첫 호출 55초. 아래 "qwen2.5 7B로 써 보면" 절의 `qwen3.5:4b` 확인. 그동안 화면에는 진행 표시가 뜨고, 호출 하나의 제한 시간은 10분이다). 다른 프로그램이 같은 Ollama에 다른 모델을 올리면 그보다 일찍 내려갈 수 있다. 시작할 때 미리 올리려면 `PRELOAD=1`(`.env`. 호스트에서는 `SUPPORT_AGENT_PRELOAD=1`): 서비스가 뜨면서 작업 스레드에서 모델을 한 번 올리고 걸린 시간을 서버 로그(`docker compose logs app`)에 한 줄 남긴다. 시작은 그것을 기다리지 않고, 실패해도(Ollama가 꺼져 있음 등) 경고 한 줄만 남기고 그대로 뜬다. 오래 두려면 `KEEP_ALIVE`: Ollama의 `keep_alive` 형식 그대로다(단위가 붙은 기간 `24h`·`1h30m`, 초 단위 정수 `3600`, 음수 `-1`은 내리지 않음, `0`은 답한 뒤 바로 내림). 읽을 수 없는 값은 서비스가 시작할 때 거절한다. 기본값(60분, 미리 올리지 않음)은 이 설정이 생기기 전과 같다: GPU를 다른 작업과 나눠 쓰므로 고객이 없을 때 모델이 자리를 오래 쥐지 않게 한다 (2026-10-30 추가)
 - 앱 컨테이너는 권한을 줄여 뜬다 (`compose.yaml`, 2026-10-30부터): Linux capability를 모두 빼고(`cap_drop: ALL`. 비루트 사용자가 8000번에서 듣는 데 필요한 것이 없다), setuid 실행 파일로 권한을 얻지 못하게 하며(`no-new-privileges`), 루트 파일 시스템은 읽기 전용이다(쓸 수 있는 곳은 메모리 위의 `/tmp`뿐. 이 구성의 앱은 저장할 것을 모두 PostgreSQL에 쓴다). 메모리 한도는 2 GB다. 빈 DB에서 처음 뜨기(마이그레이션과 생성 데이터)와, 같은 설정의 컨테이너에서 오프라인 대역(아래)으로 본인 확인·취소·사람 승인을 한 번씩 지나 보는 것까지 확인했다. 서버는 접근 로그를 끄고 뜬다 (아래 "세션 id가 곧 열쇠다")
 
 Docker 없이 SQLite 파일로도 돈다.
@@ -26,7 +27,7 @@ Docker 없이 SQLite 파일로도 돈다.
 uv run uvicorn support_agent.service.app:create_app --factory --port 8062 --no-access-log
 ```
 
-설정은 환경 변수로 한다 (`SUPPORT_AGENT_` 접두사, `service/settings.py`): `DATABASE_URL`, `OLLAMA_URL`, `MODEL`, `THINK`, `NUM_CTX`, `POLICY`, `CLAIMS`, `GUARD`, `ERRORS`, `REPEAT`, `NOW`, `APPROVAL_REFUND_WON`, `ADMIN_TOKEN`, `MAX_MESSAGE_CHARS`, `MAX_AGENT_CALLS_PER_TURN`, `MAX_TURNS_PER_SESSION`, `VOICE`, `TTS_DEVICE`, `STT_DEVICE`, `MAX_AUDIO_BYTES`, `MAX_AUDIO_SECONDS`, `MAX_TTS_CHARS`, `MAX_CONCURRENT_TURNS`, `MAX_CONCURRENT_SPEECH`. 범위 밖 값은 서비스가 시작할 때 거절한다 (아래 "한도"의 설정 범위).
+설정은 환경 변수로 한다 (`SUPPORT_AGENT_` 접두사, `service/settings.py`): `DATABASE_URL`, `OLLAMA_URL`, `MODEL`, `THINK`, `NUM_CTX`, `KEEP_ALIVE`, `PRELOAD`, `POLICY`, `CLAIMS`, `GUARD`, `ERRORS`, `REPEAT`, `NOW`, `APPROVAL_REFUND_WON`, `ADMIN_TOKEN`, `MAX_MESSAGE_CHARS`, `MAX_AGENT_CALLS_PER_TURN`, `MAX_TURNS_PER_SESSION`, `VOICE`, `TTS_DEVICE`, `STT_DEVICE`, `MAX_AUDIO_BYTES`, `MAX_AUDIO_SECONDS`, `MAX_TTS_CHARS`, `MAX_CONCURRENT_TURNS`, `MAX_CONCURRENT_SPEECH`. 범위 밖 값은 서비스가 시작할 때 거절한다 (아래 "한도"의 설정 범위).
 
 ## 구성
 
@@ -143,7 +144,7 @@ ZAP_DIR=<폴더> ADMIN_TOKEN=<같은 토큰> SCAN_SESSION_ID=<세션 번호> SCA
 새 기본 모델 `qwen3.5:4b`로는 2026-10-04에 서비스를 호스트에서 띄워(새 SQLite DB, 고정 시계, 기본 설정 그대로: P1, `think: false`, `/healthz`가 `"model":"qwen3.5:4b","think":"off"`) 실제 모델로 상담 두 개를 해 봤다. Ollama 0.35.1, RTX 2080 Ti, 끝날 때 모델은 100% GPU였다. 측정이 아니라 동작 확인이고(대화 둘), 시간은 GPU가 쉬지 않을 때(데스크톱 앱이 사용률 약 25%, 메모리 약 1.0~1.4 GiB) 본 참고값이다. 모델 없이 확인한 것(서비스가 보내는 모든 에이전트 요청에 `"model": "qwen3.5:4b"`와 `"think": false`가 들어가고, 이전 모델을 고르면 `think`를 보내지 않음. `tests/test_service.py`)은 그대로다.
 - 작은 취소(정예준, O-90005, 89,100원): 첫 메시지에 이름·전화번호·주문 번호·요청을 함께 보내자 `find_customer` → `list_orders`를 부르고 "취소하시겠습니까?"라고 물었다. "네, 진행해 주세요"에 `cancel_order`를 불러 DB의 주문이 `cancelled`, 결제가 환불 대기 89,100원이 됐고, 답의 금액과 환불 수단(간편결제)이 DB와 같았다. 다만 동의를 묻기 전에 환불액을 말하지 않았다 (규정 3은 대상과 환불액을 말하고 동의를 받으라고 한다)
 - 큰 취소(강정우, O-10097, 108,200원): 본인 확인 뒤 주문을 조회하지 않고 "취소하시겠습니까?"를 먼저 물었고, "네"에 `get_order`로 조회해 금액(108,200원)과 환불 수단(계좌이체)을 말하고 다시 물었다. 두 번째 "네"에 `cancel_order`가 승인 관문에 걸려 승인 대기 AP-1이 생기고 주문은 그대로였다. 이때의 답은 도구가 에이전트에게 돌려준 안내문(`service/core.py`의 `approval_required` 문구)을 거의 그대로 고객에게 옮겼다: "…담당자 확인 후 처리되며 결과는 이 대화창으로 안내된다고 알려드리겠습니다. 같은 요청을 다시 호출하지 마세요." 승인 번호는 말하지 않았다. 한 번 본 것이라 얼마나 자주 그러는지는 모르고, 고치지 않았다. **2026-10-05 고침** (`972317b`): 이제 승인 대기에 걸린 턴에 고객이 읽는 답은 서비스의 정해진 문장(주문, 금액, 승인 번호)이고 모델의 답은 전달하지 않는다 (위 "사람 승인". 이 대화를 대본으로 다시 재생하는 테스트가 `tests/test_service.py`에 있다. 모델 없는 오프라인 앱으로도 HTTP를 거쳐 확인했다: 대역은 도구 결과를 그대로 답으로 옮기는데, 고객에게는 정해진 문장이 갔고 지시가 든 대역의 답은 감사 로그의 `not_delivered`에만 남았다 (8차 스캔 준비). 실제 모델로 다시 확인하지는 않았다). **같은 날 다시 고침**: 모델 답을 통째로 버리면 같은 턴의 조회 결과와 질문도 사라져서, 지시를 옮긴 부분만 빼고 정해진 문장을 뒤에 붙인다 (위 "사람 승인")
-- 7B에서 본 멈춤("확인해 보겠습니다")과 도구 없이 끝났다고 말하는 답은 이 두 대화에서는 나오지 않았다. 에이전트 호출 11번 모두 형식 오류(언어 가드 포함) 0이고, 감사 로그에 호출마다 토큰(프롬프트 3,526~4,314)과 시간이 남았다. 첫 호출은 D: HDD에서 모델을 읽느라 55초, 그 뒤는 0.4~1.4초였다
+- 7B에서 본 멈춤("확인해 보겠습니다")과 도구 없이 끝났다고 말하는 답은 이 두 대화에서는 나오지 않았다. 에이전트 호출 11번 모두 형식 오류(언어 가드 포함) 0이고, 감사 로그에 호출마다 토큰(프롬프트 3,526~4,314)과 시간이 남았다. 첫 호출은 D: HDD에서 모델을 읽느라 55초, 그 뒤는 0.4~1.4초였다 (2026-10-30 추가: 띄운 직후의 이 적재를 시작할 때 미리 하려면 `SUPPORT_AGENT_PRELOAD=1`, 위 "실행")
 - 하지 않은 것: Compose(PostgreSQL) 스택, 음성 모드, 승인 뒤의 대화, 여러 턴에 걸친 다른 업무(반품·교환 등)
 
 ## 하지 않은 것

@@ -18,9 +18,11 @@ from __future__ import annotations
 # 설정, 음성 앞단을 가져온다. threading·time: 세션 잠금 테스트에서 한 턴이나 승인 결정을 작업 스레드로 돌려
 # 잠금을 쥔 채 멈춰 두고(Event), 다른 요청이 그 잠금을 기다리기 시작할 때까지 짧게 되풀이해 확인한다. asyncio:
 # 음성 끝점이 세션 확인(DB 조회)을 이벤트 루프 스레드 밖에서 하는지 본다(그 스레드에서는 get_running_loop가
-# 실패한다). sqlalchemy.event: 한 요청이 실행한 SQL을 before_cursor_execute로 받아 적는다.
+# 실패한다). sqlalchemy.event: 한 요청이 실행한 SQL을 before_cursor_execute로 받아 적는다. logging: 시작 때
+# 모델 예열의 결과가 서버 로그에 남는지 본다.
 import asyncio
 import json
+import logging
 import threading
 import time
 from pathlib import Path
@@ -238,6 +240,187 @@ def test_compose_and_the_env_example_name_the_service_default_model():
     assert app_env["SUPPORT_AGENT_THINK"] == "${THINK:-}"  # 비어 있으면 think 값은 모델을 따른다
     example = (root / ".env.example").read_text(encoding="utf-8").splitlines()
     assert f"MODEL={DEFAULT_MODEL}" in example and "THINK=" in example
+
+
+# 모델을 메모리에 두는 시간(KEEP_ALIVE)과 시작 때 미리 올리기(PRELOAD)는 설정으로만 열고, 기본값은 그 전
+# 동작 그대로다: 60분, 미리 올리지 않음(GPU를 다른 작업과 나눠 쓰므로 고객이 없을 때 모델이 자리를 오래 쥐지
+# 않게, docs/service.md "실행"). compose.yaml과 .env.example의 기본값도 코드와 같아야 Docker로 띄운 서비스가
+# 같은 동작을 한다.
+def test_keep_alive_and_preload_keep_the_old_behaviour_by_default():
+    settings = Settings.from_env({})
+    assert (settings.keep_alive, settings.agent_keep_alive(), settings.preload) == ("60m", "60m", False)
+    root = Path(__file__).resolve().parents[1]
+    compose = yaml.safe_load((root / "compose.yaml").read_text(encoding="utf-8"))
+    app_env = compose["services"]["app"]["environment"]
+    assert app_env["SUPPORT_AGENT_KEEP_ALIVE"] == "${KEEP_ALIVE:-60m}"
+    assert app_env["SUPPORT_AGENT_PRELOAD"] == "${PRELOAD:-0}"
+    assert Settings.from_env({"SUPPORT_AGENT_PRELOAD": "0"}).preload is False
+    example = (root / ".env.example").read_text(encoding="utf-8").splitlines()
+    assert "KEEP_ALIVE=60m" in example and "PRELOAD=0" in example
+
+
+# KEEP_ALIVE는 Ollama 요청의 keep_alive로 간다. Ollama(0.35.1의 api/types.go Duration)는 JSON 숫자를 초로
+# 읽고(음수는 내리지 않음), 문자열은 Go의 기간 형식(단위가 붙은 60m·24h·1h30m·-1m, 또는 0)으로만 읽으며 그
+# 밖의 문자열은 요청째 거절한다. 환경 변수는 늘 문자열이라 Ollama 안내에 나오는 3600·-1을 그대로 보내면 모든
+# 에이전트 호출이 실패하는데 서비스는 멀쩡히 떠 있게 된다. 그래서 정수는 숫자로 바꿔 보낸다.
+@pytest.mark.parametrize(
+    ("value", "sent"),
+    [
+        *[(v, v) for v in ("60m", "24h", "1h30m", "1.5h", ".5h", "90s", "300ms", "-1m", "+5m")],
+        ("0", 0),
+        ("-0", 0),
+        ("3600", 3600),
+        ("-1", -1),
+        ("+5", 5),
+    ],
+)
+def test_keep_alive_is_sent_in_a_form_ollama_reads(value, sent):
+    assert Settings.from_env({"SUPPORT_AGENT_KEEP_ALIVE": value}).agent_keep_alive() == sent
+
+
+# 어느 쪽으로도 읽을 수 없는 값(단위 없는 소수, 모르는 단위, 공백, 대문자 단위, ASCII가 아닌 숫자)은 서비스가
+# 시작할 때 거절한다. 그대로 떴다면 모든 상담이 대체 안내로만 끝났을 것이다.
+@pytest.mark.parametrize(
+    "value", ["60 minutes", "1d", "60M", "1h 30m", "m", "--1m", "3600.5", "abc", "٣٦٠٠m"]
+)
+def test_a_keep_alive_ollama_cannot_read_is_refused_at_start(value):
+    with pytest.raises(ValidationError):
+        Settings.from_env({"SUPPORT_AGENT_KEEP_ALIVE": value})
+
+
+# 서비스가 직접 만드는 OllamaProvider(대역 없음)로: KEEP_ALIVE가 시작 때의 예열 요청과 모든 에이전트 요청의
+# keep_alive에 같은 값으로 실린다(비우면 60m). 예열 요청은 빈 메시지로 모델만 올리는 /api/chat이고(ollama.py
+# preload), 에이전트 호출과 같은 num_ctx를 보내야 첫 메시지에서 모델을 다시 읽지 않는다.
+@pytest.mark.parametrize(("value", "sent"), [(None, "60m"), ("24h", "24h"), ("3600", 3600), ("-1", -1)])
+def test_the_keep_alive_setting_reaches_every_ollama_request(engine, monkeypatch, value, sent):
+    server = RecordingOllama()
+    real = app_module.OllamaProvider
+    monkeypatch.setattr(
+        app_module,
+        "OllamaProvider",
+        lambda *args, **kwargs: real(*args, transport=httpx.MockTransport(server), **kwargs),
+    )
+    env = {"SUPPORT_AGENT_PRELOAD": "1"} | ({} if value is None else {"SUPPORT_AGENT_KEEP_ALIVE": value})
+    with TestClient(create_app(Settings.from_env(env), engine=engine)) as client:
+        client.app.state.preload_thread.join(5)
+        session_id = client.post("/api/sessions").json()["session_id"]
+        assert dict(say(client, session_id, "안녕하세요"))["reply"]["text"] == "무엇을 도와드릴까요?"
+    preload, *agent = server.bodies
+    assert preload["messages"] == [] and agent, "expected the preload and then the agent's calls"
+    assert {body["options"]["num_ctx"] for body in server.bodies} == {16384}
+    assert [body["keep_alive"] for body in server.bodies] == [sent] * len(server.bodies)
+
+
+# create_app이 직접 만드는 OllamaProvider 자리에 끼우는 기록용 가짜. 만들 때 받은 인자, preload 호출 수, close
+# 여부를 남긴다. hold=True면 preload가 release가 설정될 때까지 기다리고(시작이 예열을 기다리지 않는지 보려고)
+# started로 시작을 알린다. fail을 주면 preload가 그 예외를 낸다.
+class OllamaStandIn:
+    """`OllamaProvider(...)` 호출 자리. 만들어진 제공자는 이 객체 자신이다."""
+
+    def __init__(self, *, hold: bool = False, fail: Exception | None = None):
+        self.made: list[dict] = []
+        self.model = ""
+        self.preloads = 0
+        self.closed = False
+        self.fail = fail
+        self.started = threading.Event()
+        self.release = threading.Event()
+        if not hold:
+            self.release.set()
+
+    def __call__(self, model: str, **kwargs) -> OllamaStandIn:
+        self.made.append({"model": model, **kwargs})
+        self.model = model
+        return self
+
+    def preload(self) -> float:
+        self.preloads += 1
+        self.started.set()
+        self.release.wait(5)
+        if self.fail is not None:
+            raise self.fail
+        return 1234.5  # ms
+
+    def close(self) -> None:
+        self.closed = True
+
+
+# 서버 로그(app.py의 log)에 남은 기록을 모은다. 처리기를 그 로거에 직접 단다: 서버 안에서는 uvicorn의 로그
+# 설정이 그 위(uvicorn)에서 전파를 끊으므로, 루트 로거를 보는 caplog에 기대면 앞서 돈 것(uvicorn을 띄운
+# 테스트가 있었는지)에 따라 결과가 달라진다.
+@pytest.fixture
+def server_log():
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler(logging.INFO)
+    handler.emit = records.append
+    logger = app_module.log
+    level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    yield records
+    logger.removeHandler(handler)
+    logger.setLevel(level)
+
+
+# PRELOAD=1이고 서비스가 제공자를 직접 만들 때만, 시작할 때 모델을 한 번 미리 올린다. 작업 스레드에서 하므로
+# 시작은 예열을 기다리지 않고(이 PC의 HDD에서는 55초가 걸렸다. 그동안에도 /healthz와 채팅은 답한다), 끝나면
+# 걸린 시간을 서버 로그에 한 줄 남긴다. 그 로거는 uvicorn이 출력하는 이름이어야 서버 출력(docker compose
+# logs)에 보인다. 만드는 제공자에는 KEEP_ALIVE가 그대로 간다.
+def test_preload_runs_once_in_the_background_when_the_service_makes_the_provider(
+    engine, monkeypatch, server_log
+):
+    assert app_module.log.name == "uvicorn.error"
+    ollama = OllamaStandIn(hold=True)
+    monkeypatch.setattr(app_module, "OllamaProvider", ollama)
+    with TestClient(create_app(Settings(preload=True, keep_alive="24h"), engine=engine)) as client:
+        assert ollama.started.wait(5)
+        assert client.get("/healthz").status_code == 200  # 예열이 끝나기 전
+        assert server_log == []
+        ollama.release.set()
+        client.app.state.preload_thread.join(5)
+        assert not client.app.state.preload_thread.is_alive()
+    assert (ollama.preloads, len(ollama.made), ollama.closed) == (1, 1, True)
+    assert ollama.made[0]["keep_alive"] == "24h"
+    [record] = server_log
+    assert record.levelno == logging.INFO
+    assert DEFAULT_MODEL in record.getMessage() and "1.2 s" in record.getMessage()
+
+
+# 예열하지 않는 경우: PRELOAD가 꺼져 있을 때(기본), 제공자를 밖에서 넘겼을 때(대본 모델 등. 호출한 쪽의
+# 제공자다), 오프라인 앱(모델 대역이라 올릴 모델이 없다). 세 경우 모두 예열 스레드가 없다.
+def test_no_preload_when_it_is_off_or_the_provider_is_not_the_services_own(engine, monkeypatch, tmp_path):
+    ollama = OllamaStandIn()
+    monkeypatch.setattr(app_module, "OllamaProvider", ollama)
+    with TestClient(create_app(Settings(), engine=engine)) as client:
+        assert client.app.state.preload_thread is None
+    given = create_app(Settings(preload=True), provider=ScriptedProvider([]), engine=engine)
+    with TestClient(given) as client:
+        assert client.app.state.preload_thread is None
+    monkeypatch.setenv("SUPPORT_AGENT_DATABASE_URL", f"sqlite:///{(tmp_path / 'offline.db').as_posix()}")
+    monkeypatch.setenv("SUPPORT_AGENT_PRELOAD", "1")
+    with TestClient(create_offline_app()) as client:
+        assert client.app.state.preload_thread is None
+    assert (len(ollama.made), ollama.preloads) == (1, 0)  # 첫 앱만 제공자를 만들었고, 아무도 올리지 않았다
+
+
+# 예열이 실패해도(Ollama가 꺼져 있음, 종료 중에 연결이 닫힘 등) 서비스는 그대로 뜨고 답하며, 서버 로그에
+# 경고 한 줄만 남긴다. 그러면 첫 메시지가 모델을 올린다(예열이 없던 때와 같은 동작).
+@pytest.mark.parametrize(
+    "error",
+    [
+        ProviderError("ollama: POST /api/chat failed: ConnectError: connection refused"),
+        RuntimeError("closed"),
+    ],
+)
+def test_a_failed_preload_is_logged_and_the_service_still_answers(engine, monkeypatch, server_log, error):
+    ollama = OllamaStandIn(fail=error)
+    monkeypatch.setattr(app_module, "OllamaProvider", ollama)
+    with TestClient(create_app(Settings(preload=True), engine=engine)) as client:
+        client.app.state.preload_thread.join(5)
+        assert client.get("/healthz").status_code == 200
+    assert ollama.preloads == 1
+    [record] = server_log
+    assert record.levelno == logging.WARNING and str(error) in record.getMessage()
 
 
 # -------------------------------------------------------------------- chat

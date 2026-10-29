@@ -35,6 +35,12 @@ services:
       SUPPORT_AGENT_THINK: ${THINK:-}
       SUPPORT_AGENT_ADMIN_TOKEN: ${ADMIN_TOKEN:-local-admin}
       SUPPORT_AGENT_APPROVAL_REFUND_WON: ${APPROVAL_REFUND_WON:-100000}
+      # 모델을 메모리(GPU)에 두는 시간과 시작 때 미리 올리기(service/settings.py의 keep_alive·preload). 기본은
+      # 이 설정이 생기기 전 동작 그대로(60분, 미리 올리지 않음): GPU를 다른 작업과 나눠 쓰므로 고객이 없을 때
+      # 모델이 자리를 오래 쥐지 않게 한다. 그래서 띄운 직후와 오래 쉰 뒤의 첫 메시지는 모델을 올리는 시간만큼
+      # 늦다(docs/service.md "실행")
+      SUPPORT_AGENT_KEEP_ALIVE: ${KEEP_ALIVE:-60m}
+      SUPPORT_AGENT_PRELOAD: ${PRELOAD:-0}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

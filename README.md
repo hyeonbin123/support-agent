@@ -246,6 +246,7 @@ docker compose up --build        # 채팅 http://127.0.0.1:8062, 관리 화면 /
 
 - 에이전트 모델은 `qwen3.5:4b`(비사고 모드, Ollama 0.35.1에서 쟀다)다. 2026-10-04까지는 qwen2.5 7B였다. 바꾼 이유와 알려진 위험(과제가 요구하지 않은 쓰기 6 → 13건)은 위 8단계 결과에 있다. 이전 모델은 `.env`에 `MODEL=qwen2.5:7b-instruct`
 - 평가와 같은 에이전트 루프와 도구가 PostgreSQL 위에서 돈다. 도구가 규정을 막고, 환불액 10만 원 이상인 취소·반품(반품은 같은 주문에 접수된 반품과의 합계)은 관리 화면에서 사람이 승인해야 실행된다. 고객 메시지, LLM 호출, 도구 호출, 승인 결정은 감사 로그에 남는다
+- 띄운 직후와 모델이 60분 동안 쓰이지 않아 내려간 뒤의 첫 메시지는 모델을 올리는 시간만큼 늦다 (이 PC의 D: HDD에서 첫 호출 55초). 시작할 때 미리 올리려면 `.env`에 `PRELOAD=1`, 더 오래 두려면 `KEEP_ALIVE`(예: `24h`, `-1`은 내리지 않음). 기본값(60분, 미리 올리지 않음)은 GPU를 다른 작업과 나눠 쓰기 때문이다 ([docs/service.md](docs/service.md) "실행")
 - Docker 없이: `uv run uvicorn support_agent.service.app:create_app --factory --port 8062 --no-access-log` (SQLite 파일. 고객 API 경로에 든 세션 id를 로그에 남기지 않게 접근 로그를 끈다, [docs/service.md](docs/service.md) "세션 id가 곧 열쇠다")
 - MCP 서버: `uv run python -m support_agent.mcp_server` (읽기 도구만), `--scope write`(쓰기 포함), `--http`(토큰 필요). MCP로 호출해도 규정 검사, 사람 승인, 감사 로그를 똑같이 지난다
 

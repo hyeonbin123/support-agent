@@ -11,12 +11,14 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 # pydantic: 환경 변수 문자열을 타입(int, bool, Literal, 시간대 있는 datetime)으로 바꾸고 범위(ge/le)를
 # 검사한다. AwareDatetime은 시간대 없는 시각을 거절해, 고정 시계가 KST/UTC를 헷갈리지 않게 한다.
-from pydantic import AwareDatetime, BaseModel, Field, model_validator
+# field_validator는 한 필드의 형식(KEEP_ALIVE)을 따로 검사한다.
+from pydantic import AwareDatetime, BaseModel, Field, field_validator, model_validator
 
 # 환경 변수 접두사. 필드 이름을 대문자로 바꿔 붙인다(model → SUPPORT_AGENT_MODEL).
 PREFIX = "SUPPORT_AGENT_"
@@ -30,11 +32,21 @@ DEFAULT_MODEL = "qwen3.5:4b"
 # THINK 설정 문자열 → Ollama 요청의 think 값. None은 요청에 think 필드를 아예 넣지 않는다는 뜻이다(사고 모드가
 # 없는 모델은 이 필드를 거부할 수 있어서, docs/service.md).
 _THINK = {"on": True, "off": False, "omit": None}
+# KEEP_ALIVE 값이 Ollama가 읽을 수 있는 꼴인지 보는 두 패턴(Settings._keep_alive_ollama_can_read). Ollama
+# 0.35.1의 api/types.go `Duration.UnmarshalJSON`은 JSON 숫자를 초로 읽고(음수는 '내리지 않음'), 문자열은 Go의
+# time.ParseDuration으로 읽어 형식이 틀리면 오류를 돌려줘 요청이 처리되지 않는다(2026-10-30 원본으로 확인).
+# - _KEEP_ALIVE_SECONDS: 부호 있는 정수. 숫자로 바꿔 보내면 초다(agent_keep_alive)
+# - _KEEP_ALIVE_DURATION: ParseDuration의 꼴. 앞에 부호 하나, 숫자(소수 가능)와 단위(ns, us, µs, μs, ms, s, m,
+#   h)의 이어 붙임(1h30m), 또는 "0". 숫자는 ASCII만 받는다(re의 \d는 다른 문자권의 숫자도 받지만 Go는 0~9만
+#   읽으므로 [0-9]로 쓴다). 단위는 대소문자를 가린다("60M"은 틀림)
+_KEEP_ALIVE_SECONDS = re.compile(r"[-+]?[0-9]+")
+_KEEP_ALIVE_DURATION = re.compile(r"[-+]?(0|(([0-9]+(\.[0-9]*)?|\.[0-9]+)(ns|us|µs|μs|ms|s|m|h))+)")
 
 
 # 서비스 설정 한 묶음. 필드 기본값이 곧 시연용 기본 구성이다.
 # - database_url: 기본은 SQLite 파일(outputs/service.db). Compose는 PostgreSQL 주소를 넣는다
 # - num_ctx: 서비스는 16384. 8단계 측정은 12288로 쟀으므로 잰 구성과 다른 점이다(docs/service.md)
+# - keep_alive·preload: 모델을 메모리에 두는 시간(기본 60분)과 시작 때 미리 올리기(기본 끔)
 # - approval_refund_won: 이 금액 이상 환불되는 취소·반품은 관리 화면에서 사람이 승인해야 실행된다
 # - admin_token: 빈 문자열이면 관리자 API가 꺼진다
 # - max_*: 메시지 길이, 턴당 LLM 호출, 세션당 턴, 음성 파일 크기·길이, 동시에 도는 턴 수, 동시에 도는 답
@@ -55,6 +67,17 @@ class Settings(BaseModel):
     # 3,500토큰이라(실제 모델로 확인한 상담의 첫 호출이 3,526토큰, docs/service.md) 그보다 작으면 모든 상담이
     # 첫 턴에 컨텍스트 한도로 닫힌다. 0·음수도 전에는 그대로 받아들여졌다(2026-10-24 고침).
     num_ctx: int = Field(default=16384, ge=4096)
+    # 요청 뒤 Ollama가 모델을 메모리(GPU)에 두는 시간. 모든 에이전트 요청과 예열 요청의 keep_alive로 가고,
+    # 요청에 실린 값이 Ollama 서버의 OLLAMA_KEEP_ALIVE보다 앞선다. 기본 60m은 이 설정이 생기기 전에 서비스가
+    # 늘 보내던 값이다(OllamaProvider의 기본값). GPU를 다른 작업과 나눠 쓰므로 고객이 없을 때 모델이 자리를
+    # 오래 쥐지 않게 그대로 둔다. 그래서 띄운 직후와 60분 넘게 쉰 뒤의 첫 메시지는 모델을 올리는 시간만큼
+    # 늦다(docs/service.md "실행"). 값은 Ollama의 형식 그대로다: 단위가 붙은 기간(60m, 24h, 1h30m), 초 단위
+    # 정수(3600), 음수(-1, -1m: 내리지 않음), 0(답한 뒤 바로 내림). 읽을 수 없는 값은 시작할 때 거절한다.
+    keep_alive: str = "60m"
+    # 서비스가 시작할 때 모델을 한 번 미리 올린다(예열). 작업 스레드에서 하므로 시작을 막지 않고, 실패해도
+    # 서비스는 그대로 뜬다(app.py의 start_preload). 기본은 끔: 예열은 고객이 오기 전부터 GPU 메모리를 쓴다.
+    # 켜도 빨라지는 것은 띄운 직후의 첫 메시지뿐이고, keep_alive보다 오래 쉬면 모델은 다시 내려간다.
+    preload: bool = False
     # 서비스는 규정이 금지하는 것을 거절한다(P1). 그것이 성공률을 올리는지는 docs/experiments.md의 질문이고,
     # 여기서는 잘못된 환불이 돈을 잃게 하므로 코드가 검사할 수 있는 것은 도구가 모두 검사한다.
     policy: Literal["P0", "P1"] = "P1"
@@ -122,10 +145,30 @@ class Settings(BaseModel):
             data = {**data, "think": "off" if model == DEFAULT_MODEL else "omit"}
         return data
 
+    # KEEP_ALIVE가 Ollama가 읽을 수 있는 꼴인지 시작할 때 본다. 읽을 수 없는 값을 그대로 보내면 Ollama가 모든
+    # 에이전트 요청을 처리하지 않아 상담이 모두 대체 안내로 끝나는데 /healthz는 정상이라, 설정이 원인이라는
+    # 신호가 없다(위의 정수 설정 범위와 같은 이유). 단위 없는 소수("3600.5")는 받지 않는다: 문자열로는
+    # Ollama가 읽지 못하고, 숫자로 바꿔 줄 만큼 쓸모 있는 값도 아니다.
+    @field_validator("keep_alive")
+    @classmethod
+    def _keep_alive_ollama_can_read(cls, value: str) -> str:
+        if _KEEP_ALIVE_SECONDS.fullmatch(value) or _KEEP_ALIVE_DURATION.fullmatch(value):
+            return value
+        raise ValueError(
+            "keep_alive must be whole seconds (3600, -1) or a duration with a unit (60m, 24h, 1h30m, -1m, 0)"
+        )
+
     # OllamaProvider에 넘길 think 값(True/False/None). app.py의 create_app이 제공자를 만들 때 쓴다.
     def agent_think(self) -> bool | None:
         """OllamaProvider가 `think`로 보낼 값. None이면 아무것도 보내지 않는다."""
         return _THINK[self.think]
+
+    # OllamaProvider에 넘길 keep_alive 값. 정수 문자열은 정수로 바꾼다: Ollama는 JSON 숫자만 초로 읽고, 단위
+    # 없는 숫자 문자열("3600")은 기간으로 읽지 못한다. 나머지(60m 등)는 문자열 그대로라, 기본값이면 요청
+    # 본문이 이 설정이 생기기 전과 같다("keep_alive": "60m").
+    def agent_keep_alive(self) -> str | int:
+        """OllamaProvider가 `keep_alive`로 보낼 값."""
+        return int(self.keep_alive) if _KEEP_ALIVE_SECONDS.fullmatch(self.keep_alive) else self.keep_alive
 
     # 도구와 규정이 보는 "쇼핑몰의 지금". 기본은 고정 시각(DEMO_NOW)이고, NOW=real일 때만 실제 UTC 시각이다.
     # 세션·감사 로그·승인 기록의 시각은 이것이 아니라 항상 실제 시각을 쓴다(core.py의 wall_clock,

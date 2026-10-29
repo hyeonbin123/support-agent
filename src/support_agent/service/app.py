@@ -16,9 +16,11 @@
 from __future__ import annotations
 
 # queue·threading: 한 턴을 작업 스레드에서 돌리고, 그 스레드가 넣는 이벤트를 큐로 받아 SSE 응답으로 흘린다.
-# secrets: 관리자 토큰을 상수 시간으로 비교한다. importlib.resources.files: 패키지 안의 static/ 폴더를 설치
-# 위치와 상관없이 찾는다.
+# 시작 때의 모델 예열도 작업 스레드에서 한다. secrets: 관리자 토큰을 상수 시간으로 비교한다.
+# importlib.resources.files: 패키지 안의 static/ 폴더를 설치 위치와 상관없이 찾는다. logging: 예열 결과를 서버
+# 로그에 한 줄 남긴다.
 import json
+import logging
 import queue
 import secrets
 import threading
@@ -106,6 +108,39 @@ def sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+# 서버 로그. uvicorn의 기본 로그 설정(uvicorn/config.py의 LOGGING_CONFIG)은 uvicorn·uvicorn.error·
+# uvicorn.access 로거에만 처리기와 INFO 수준을 준다. 그래서 이 이름으로 쓰면 "INFO:     Application startup
+# complete." 같은 uvicorn의 시작 줄과 같은 꼴로 서버 출력(stderr, docker compose logs)에 나오고, 다른 이름의
+# 로거로 쓴 INFO는 처리기가 없어 버려진다. 지금은 시작 때 모델 예열의 결과 한 줄에만 쓴다.
+log = logging.getLogger("uvicorn.error")
+
+
+# 시작 때 모델 예열(SUPPORT_AGENT_PRELOAD=1)을 작업 스레드 하나에서 한다. provider.preload()는 빈 메시지로
+# /api/chat을 불러 모델만 올리고(에이전트 호출과 같은 num_ctx·keep_alive) 걸린 ms를 돌려준다(ollama.py).
+# - 스레드로 하는 이유: 모델 적재는 이 PC의 D: HDD에서 55초가 걸렸다(docs/service.md). lifespan 안에서
+#   기다리면 그동안 서버가 요청을 받지 않아 /healthz도 답하지 못한다. 예열이 끝나기 전에 온 메시지가
+#   Ollama에서 그 적재를 기다리는지는 재지 않았다
+# - daemon: 종료할 때 예열이 끝나기를 기다리지 않는다. 예열 중에 종료하면 lifespan이 제공자의 연결을 닫으므로
+#   예열 요청은 실패해 경고 한 줄로 끝나거나, 그 전에 프로세스와 함께 끝난다
+# - 무엇이 실패해도(Ollama가 꺼져 있음, 모델 이름이 틀림, 연결이 닫힘) 잡아서 경고만 남긴다. 예열은 덤이라
+#   서비스를 멈출 이유가 없고, 그러면 첫 메시지가 모델을 올린다(예열이 없던 때의 동작)
+# 돌려준 스레드는 lifespan이 app.state.preload_thread에 두어, 테스트가 끝나기를 기다릴 수 있게 한다.
+def start_preload(provider: OllamaProvider) -> threading.Thread:
+    def preload() -> None:
+        try:
+            ms = provider.preload()
+        except Exception as e:
+            log.warning(
+                "model preload failed, the first message will load the model: %s: %s", type(e).__name__, e
+            )
+            return
+        log.info("model %s preloaded in %.1f s", provider.model, ms / 1000)
+
+    thread = threading.Thread(target=preload, name="model-preload", daemon=True)
+    thread.start()
+    return thread
+
+
 # 앱을 만드는 팩토리. 인자를 주지 않으면 환경 변수 설정으로 실제 DB·Ollama·음성 모델을 쓴다.
 # provider·engine·voice를 넘기면 그것을 쓴다: 테스트는 대본대로 답하는 가짜 모델과 임시 DB를, offline.py는
 # 규칙 대역을 넣는다.
@@ -125,8 +160,8 @@ def create_app(
         # 소리로 읽어 주는 답은 WAV로 받아 blob: 주소로 재생한다.
         headers["Content-Security-Policy"] += "; media-src 'self' blob:"
 
-    # 앱 시작 시 DB(마이그레이션·생성 데이터 포함), 모델 제공자, ChatService, 음성 앞단을 만들고 끝날 때
-    # 정리한다.
+    # 앱 시작 시 DB(마이그레이션·생성 데이터 포함), 모델 제공자, ChatService, 음성 앞단을 만들고(PRELOAD=1이면
+    # 모델 예열도 시작하고) 끝날 때 정리한다.
     # 밖에서 넘겨받은 provider·engine은 호출한 쪽 것이므로 닫지 않고, 여기서 만든 것만 닫는다.
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -134,6 +169,7 @@ def create_app(
         own_provider = provider or OllamaProvider(
             settings.model,
             num_ctx=settings.num_ctx,
+            keep_alive=settings.agent_keep_alive(),
             think=settings.agent_think(),
             base_url=settings.ollama_url,
         )
@@ -143,6 +179,12 @@ def create_app(
             app.state.voice = load_voice_front_end(
                 settings.tts_device, settings.stt_device, settings.max_audio_seconds
             )
+        # 예열은 여기서 만든 OllamaProvider에만 한다. 밖에서 넘겨받은 제공자(테스트의 대본 모델, offline.py의
+        # 규칙 대역)는 올릴 모델이 없거나 호출한 쪽 것이다. 음성 모델을 올린 뒤에 시작해서, GPU에 올라가는
+        # 순서가 예열이 없을 때(음성 모델이 먼저, 에이전트 모델은 첫 메시지 때)와 같다.
+        app.state.preload_thread = None
+        if settings.preload and provider is None:
+            app.state.preload_thread = start_preload(own_provider)
         yield
         # yield 뒤는 서버 종료 시점이다. 직접 만든 Ollama 연결과 DB 연결 풀만 닫는다.
         if provider is None:
