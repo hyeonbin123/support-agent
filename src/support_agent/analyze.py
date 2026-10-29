@@ -29,10 +29,12 @@
     uv run python -m support_agent.analyze stitch reports/<음성 실행> reports/<다시 잰 실행> [--out <폴더>]
     uv run python -m support_agent.analyze guards reports/<M2b 개발용> reports/<팔> [...]   (13단계 선택)
     uv run python -m support_agent.analyze guards-verdict reports/<M2b 시험용> reports/<고른 구성 시험용>
+    uv run python -m support_agent.analyze replay reports/<기록> reports/<같은 설정으로 다시 돈 실행>
 
 `table`은 docs/experiments.md에 들어가는 마크다운 표를 출력한다. `misses`는 DB는 맞았지만 꼭 전달할 값을
 찾지 못한 에피소드를 나열해, 사람이 값 찾기 규칙을 점검할 수 있게 한다. `sample`은 "시뮬레이터 점검"용
-에피소드를 고정 seed로 뽑는다.
+에피소드를 고정 seed로 뽑는다. `compare`·`guards`·`guards-verdict`는 표 아래에 음성 대조(장치가 한 번도
+작동하지 않은 에피소드로 본 실행 잡음)를 더 내고, `replay`는 다시 돈 실행을 기록과 에피소드마다 맞댄다.
 """
 
 # [파일 역할] 실행 기록(reports/·outputs/runs/의 episodes.jsonl, manifest.json, summary.json)에서 모든 수치를
@@ -47,7 +49,9 @@
 # - 짝짓기 검사: 두 실행이 한 축 말고 같은 설정인지(same-setup)
 # - 9단계: 이름 허용 오차 충돌 관문(name-collisions), 본인 확인 표(caller-id)
 # - 8단계: 스모크 관문(smoke), 선택(select), 시험용 판정(verdict), 결과를 가린 시뮬레이터 점검(blind/unblind)
-# - 10단계(confirm_report.py)·12단계(sim_report.py) 명령은 그 모듈로 넘긴다
+# - 10단계(confirm_report.py)·12단계(sim_report.py)·13단계(guard_report.py) 명령은 그 모듈로 넘긴다. compare
+#   출력 끝의 음성 대조 표와 replay(다시 돈 실행 맞대기)도 guard_report.py에 있다(docs/experiments.md 공통
+#   규칙 "음성 대조"와 13단계 끝 "원인 확인")
 # - 말로 풀어 쓰기를 고친 뒤의 재측정(respell.py): 바뀐 발화가 든 에피소드(respelled), 다시 잰 에피소드를
 #   원래 기록에 끼워 넣기(stitch)
 # [설계 이유] 문턱값과 판정표는 docs/experiments.md에 측정 전에 적은 규칙을 그대로 코드로 옮긴 것이다.
@@ -1332,6 +1336,19 @@ def main() -> None:
     guard_judging = commands.add_parser("guards-verdict")
     guard_judging.add_argument("base_dir", type=Path, help="8단계 qwen3.5:4b 시험용 기록 (기준)")
     guard_judging.add_argument("run_dir", type=Path, help="13단계에서 고른 구성의 시험용 실행")
+    # replay: 같은 설정으로 일부 과제(--task-id)나 일부 에피소드(--episode)를 다시 돈 실행을 기록의 같은
+    # (과제, 시도)와 맞대어, LLM 출력이 글자까지 같은지 에피소드마다 낸다(13단계 끝 "원인 확인"의 읽기 명령).
+    # 짝지을 수 없으면(설정이 다름, 기록에 없는 과제·에피소드) 이유를 내고 종료 코드 1로 끝난다.
+    replaying = commands.add_parser(
+        "replay", help="다시 돈 실행을 기록과 에피소드마다 맞댄다 (LLM 출력의 글자 일치, 첫 상담원 답)"
+    )
+    replaying.add_argument("record_dir", type=Path, help="맞댈 기록 (예: 13단계 D1 개발용, 8단계 M2b 개발용)")
+    replaying.add_argument(
+        "rerun_dir",
+        type=Path,
+        help="같은 설정으로 다시 돈 실행. 기록의 일부 과제·에피소드만 돌았어도 된다 (발동 판정 함수가 "
+        "있는 장치 축은 달라도 되고, 그때는 그 장치가 작동했는지 함께 적는다)",
+    )
     args = parser.parse_args()
 
     # Windows 콘솔의 기본 인코딩으로는 한국어 표가 깨지거나 오류가 나므로 표준 출력을 UTF-8로 바꾼다.
@@ -1339,7 +1356,20 @@ def main() -> None:
     if args.command == "table":
         print(table(args.run_dirs))
     elif args.command == "compare":
+        # 표와 순열 p 줄(compare가 돌려주는 글) 아래에 빈 줄을 두고 음성 대조를 더 낸다(docs/experiments.md
+        # 공통 규칙 "음성 대조"). compare 함수의 글은 그대로라 docs에 붙인 표와 어긋나지 않는다. 계산할 수
+        # 없는 실행(모델·규정 모드처럼 발동 판정 함수가 없는 축이 다름)은 이유 한 줄로 나온다.
+        from support_agent import guard_report
+
         print(compare(args.base_dir, args.run_dirs))
+        print("\n" + "\n".join(guard_report.negative_control_lines(args.base_dir, args.run_dirs)))
+    elif args.command == "replay":
+        from support_agent import guard_report
+
+        report, paired = guard_report.replay(args.record_dir, args.rerun_dir)
+        print(report)
+        if not paired:
+            sys.exit(1)
     elif args.command == "misses":
         print(misses(args.run_dir))
     elif args.command == "voice":
