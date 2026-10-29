@@ -41,6 +41,16 @@ TURN_REMINDER = (
 _EMPTY_FIELD = "(없음)"
 
 
+# 모델에 보내는 가장 새 메시지의 글: 상담원의 말 뒤에 역할 지침(TURN_REMINDER)과 시나리오의 known("당신이 아는
+# 정보")을 붙인다. LLMUser.reply가 매 턴 이 글을 보내고(기록에는 상담원의 말만 남긴다), run.py는 상담원 말과
+# known 자리를 비운 이 글의 해시를 manifest(harness_sha256.turn_reminder)에 남겨 지침과 형식이 바뀌면 옛
+# 기록과 짝지을 때 드러나게 한다. 글자 하나도 바꾸지 않아야 한다: 기록된 모든 측정(2026-09-19 e86aa05 이후)이
+# 이 형식으로 쟀다.
+def reminded_message(agent_text: str, known: str) -> str:
+    """상담원의 말에 매 턴 역할 지침과 '당신이 아는 정보'를 붙인, 시뮬레이터 모델이 실제로 받는 글."""
+    return f"{agent_text}\n\n{TURN_REMINDER}\n(당신이 아는 정보: {known})"
+
+
 class SimulatorError(RuntimeError):
     """시뮬레이터 고객이 쓸 수 있는 답을 내지 못했다(빈 답). 에이전트의 실패가 아니다(infra_error).
 
@@ -112,10 +122,9 @@ class LLMUser:
         seed = derive_seed(self._config.base_seed, self._task.id, self._trial, "user", index)
         self.messages.append(Message("user", agent_text))
         # 7B 시뮬레이터는 몇 턴 지나면 규칙을 잊으므로, 가장 새 메시지에 짧은 리마인더를 붙인다. 리마인더에는
-        # 시나리오의 known("당신이 아는 정보")도 함께 붙인다. 리마인더는 모델에 보내는 마지막 메시지에만
-        # 붙이고, 기록(self.messages)에는 상담원의 말을 그대로 남긴다.
-        reminder = f"{TURN_REMINDER}\n(당신이 아는 정보: {self._task.user.known})"
-        reminded = [*self.messages[:-1], Message("user", f"{agent_text}\n\n{reminder}")]
+        # 시나리오의 known("당신이 아는 정보")도 함께 붙인다(reminded_message). 리마인더는 모델에 보내는
+        # 마지막 메시지에만 붙이고, 기록(self.messages)에는 상담원의 말을 그대로 남긴다.
+        reminded = [*self.messages[:-1], Message("user", reminded_message(agent_text, self._task.user.known))]
         response = self._provider.chat(
             reminded,
             (),

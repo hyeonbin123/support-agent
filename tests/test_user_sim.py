@@ -19,7 +19,14 @@ from support_agent.chat import ChatResponse, Message, ScriptedProvider, ToolCall
 from support_agent.clock import KST
 from support_agent.config import OUT_OF_SCOPE_TOKEN, STOP_TOKEN, RunConfig, derive_seed
 from support_agent.tasks import RequiredValue, Task, ToolAction, UserScenario
-from support_agent.user_sim import TURN_REMINDER, LLMUser, ScriptedUser, SimulatorError, build_user_prompt
+from support_agent.user_sim import (
+    TURN_REMINDER,
+    LLMUser,
+    ScriptedUser,
+    SimulatorError,
+    build_user_prompt,
+    reminded_message,
+)
 
 # 에이전트의 첫 인사말. 시뮬레이터가 처음 받는 상담원 발화로 쓴다.
 GREETING = "안녕하세요, 고객센터입니다. 무엇을 도와드릴까요?"
@@ -150,6 +157,8 @@ def test_llm_user_flips_roles_and_passes_seed_and_temperature():
     assert first["messages"][0].content == build_user_prompt(task)
     assert first["messages"][1].content.startswith(f"{GREETING}\n\n{TURN_REMINDER}")  # 리마인더와 함께 보낸다
     assert task.user.known in first["messages"][1].content
+    # 보내는 글은 reminded_message 그대로다. run.py가 이 함수로 리마인더 형식의 해시를 manifest에 남긴다.
+    assert first["messages"][1].content == reminded_message(GREETING, task.user.known)
     assert [m.role for m in second["messages"]] == ["system", "user", "assistant", "user"]
     assert second["messages"][2].content == "주문 취소하려고요."
     assert second["messages"][3].content.startswith("성함과 연락처를 알려 주세요.\n\n(고객 역할 지침")

@@ -33,9 +33,12 @@
 from __future__ import annotations
 
 # subprocess: git(커밋 해시, 작업 트리 상태)과 nvidia-smi(GPU 메모리)를 부른다. importlib.metadata.version:
-# 주요 패키지 버전을 manifest에 남긴다.
+# 주요 패키지 버전을 manifest에 남긴다. ast·inspect: tools.py·rules.py 소스에서 도구 오류 글과 규정 상수를
+# 뽑아 manifest의 하니스 글 해시(harness_sha256)에 넣는다.
 import argparse
+import ast
 import hashlib
+import inspect
 import json
 import re
 import subprocess
@@ -125,6 +128,127 @@ def text_sha256(text: str) -> str:
 
 def safe_name(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", text).strip("-")
+
+
+# --- manifest의 하니스 글 해시(harness_sha256) ---
+# prompt_sha256 넷(규정 문서, 시스템 프롬프트, 시뮬레이터 프롬프트, 도구 목록)은 모델 입력의 일부만 덮는다.
+# 모델은 그 밖에도 하니스가 끼워 넣는 글을 본다: 시뮬레이터에게 매 턴 붙이는 역할
+# 지침(user_sim.TURN_REMINDER와 그것을 붙이는 형식), 가드가 답을 돌려보낼 때 넣는 안내문 여섯(agent.py), 고정
+# 문장 셋(첫 인사, 이관 안내, 음성 인식 없음), R2 미리보기 안내문(confirm.py), 도구 오류 글(tools.py)과 그
+# 글의 숫자("7일", "3,000원")를 채우는 규정 상수(rules.py). 이 글이 한 줄 바뀌어도 prompt_sha256은 같아서
+# analyze same-setup이 두 측정 시대를 같은 설정으로 봤다. 그래서 2026-10-29부터 manifest에 글마다 sha256을
+# 남긴다(docs/experiments.md 공통 규칙의 날짜 메모).
+# - 상수를 이 모듈로 복사해 두지 않고 그 모듈의 속성을 부를 때 읽는다. 그래야 글이 바뀌면 해시도 바뀐다.
+# - 도구 오류 글은 소스 파일 전체를 해시하지 않는다: 한국어 주석이나 코드 배치만 고쳐도 해시가 바뀌어 옛
+#   기록과 짝짓기가 막힌다. 대신 ast로 ctx.require·ctx.check_policy 호출의 문자열 인자(오류 코드와 메시지)만
+#   모은다.
+# - 덮지 않는 글(주의): E1이 오류 글 끝에 붙이는 사실 괄호(tools.py의 _status_facts 등이 DB 값으로 만듦),
+#   toolkit.py의 오류 틀(ERROR_PREFIX로 감싼 `Error: [code] message` 형식)과 unknown_tool·invalid_arguments
+#   글(pydantic 검증 메시지 포함), 완료 주장 안내문의 {label}·{tools}에 채우는 표기(claims.py). 이 글을
+#   고치면 해시가 바뀌지 않으므로 docs/experiments.md에 날짜 메모로 적는다.
+
+
+# 문자열 리터럴 노드의 글. f-string은 실행 때 채워지는 값 대신 {식}을 자리에 남긴 틀로 만든다(모델이 보는 글의
+# 틀은 소스에 있고 채워지는 값은 자료다). 그 밖의 식(변수 등)은 <식>으로 적어 조용히 빠지지 않게 한다. 다만 그
+# 변수에 담긴 글은 해시에 들어가지 않으므로, tools.py는 오류 코드와 메시지를 모두 소스에 글(문자열이나
+# f-string)로 적는다(tests/test_run.py가 확인). 인자가 아예 없으면(None) <없음>이다.
+def _text_of(node: ast.expr | None) -> str:
+    if node is None:
+        return "<없음>"
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        parts = []
+        for value in node.values:
+            if isinstance(value, ast.Constant):
+                parts.append(str(value.value))
+            elif isinstance(value, ast.FormattedValue):
+                conversion = f"!{chr(value.conversion)}" if value.conversion != -1 else ""
+                spec = f":{_text_of(value.format_spec)}" if value.format_spec is not None else ""
+                parts.append("{" + ast.unparse(value.value) + conversion + spec + "}")
+        return "".join(parts)
+    return f"<{ast.unparse(node)}>"
+
+
+# 호출 노드의 인자 하나: 위치 인자(position번째)가 있으면 그것, 없으면 같은 이름의 키워드 인자.
+def _argument(node: ast.Call, position: int, name: str) -> ast.expr | None:
+    if len(node.args) > position:
+        return node.args[position]
+    return next((k.value for k in node.keywords if k.arg == name), None)
+
+
+# 도구 소스에서 ctx.require·ctx.check_policy 호출(toolkit.ToolContext의 두 검사, 인자 순서는 ok, code,
+# message)의 오류 코드와 메시지를 `[code] message` 줄로 모아 중복 없이 정렬한다. 모델에 돌아가는 도구 오류
+# 글(toolkit.ToolResult.error의 `Error: [code] message`)의 틀 전부다. 코드도 넣는 이유: 코드가 모델이 읽는
+# 글의 일부라 코드 이름만 바꿔도 모델 입력이 바뀐다. 같은 글을 두 곳에서 쓰는 것(예: 교환의 재고 부족을 재고
+# 확인과 조건부 갱신 두 곳에서 냄)은 코드 배치일 뿐 모델이 보는 글이 아니므로 한 번만 센다. `ctx`가 아닌
+# 이름으로 부르는 호출은 세지 않는다(tools.py는 모두 `ctx.`로 부른다. tests/test_run.py가 확인).
+def error_texts(source: str) -> list[str]:
+    """`ctx.require`·`ctx.check_policy` 호출의 `[code] message` 틀들(정렬, 중복 없음).
+
+    f-string은 채워지는 값 대신 `{식}` 자리를 남긴 틀로 적는다. 위치 인자와 키워드 인자(`code=`,
+    `message=`)를 모두 읽는다.
+    """
+    found = set()
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("require", "check_policy")
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "ctx"
+        ):
+            code, message = _argument(node, 1, "code"), _argument(node, 2, "message")
+            found.add(f"[{_text_of(code)}] {_text_of(message)}")
+    return sorted(found)
+
+
+# 모듈 수준의 `이름 = 숫자` 할당을 '이름=값' 줄로 모은다(소스 순서). rules.py의 규정 상수(반품 기한 7일, 반품
+# 배송비 3,000원, 쿠폰 금액·기간·한도)가 도구 오류 글의 숫자를 채우므로 글과 함께 해시한다.
+def numeric_constants(source: str) -> list[str]:
+    """모듈 수준 숫자 상수 `이름 = 숫자`를 '이름=값' 줄로."""
+    lines = []
+    for node in ast.parse(source).body:
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, int | float)
+            and not isinstance(node.value.value, bool)
+        ):
+            lines.append(f"{node.targets[0].id}={node.value.value!r}")
+    return lines
+
+
+# manifest의 harness_sha256: 모델이 보는 하니스 글의 키별 sha256(키 13개). analyze.setup_differences가 두
+# 실행의 이 값을 비교한다. 이 필드가 없는 옛 manifest는 analyze.old_records_harness가 2026-10-29 코드의
+# 값(analyze.OLD_RECORDS_HARNESS_SHA256)으로 채우고, 그때와 글이 달랐던 기록(첫 기준선 f4ec9a4: 턴 리마인더가
+# 생기기 전)만 그 기록의 값으로 채운다. 글을 고칠 때는 그 상수를 그대로 둔다(옛 기록이 본 글은 바뀌지 않는다).
+# 키를 더하면 그 키의 2026-10-29 값이 옛 기록에도 맞는지 git 이력으로 확인한 뒤 그 상수에 더한다.
+def harness_sha256() -> dict[str, str]:
+    """하니스가 모델에 끼워 넣는 글의 키별 sha256: 시뮬레이터 턴 리마인더(형식 포함), 안내문 여섯, 고정 문장
+    셋, R2 미리보기 안내문, 도구 오류 글(`[code] message` 틀, ast로 모음), 규정 상수."""
+    # 모듈을 여기서 가져오는 이유: main()의 지역 이름 config와 겹치지 않게, 그리고 테스트가 monkeypatch로 바꾼
+    # 글이 읽히게(모듈 속성을 부를 때마다 읽는다).
+    from support_agent import agent, config, confirm, episode, rules, tools, user_sim
+
+    texts = {
+        "turn_reminder": user_sim.reminded_message("", ""),  # 상담원 말과 known 자리를 비운 리마인더 형식
+        "stall_notice": agent.STALL_NOTICE,
+        "cut_off_notice": agent.CUT_OFF_NOTICE,
+        "format_notice": agent.FORMAT_NOTICE,
+        "language_notice": agent.LANGUAGE_NOTICE,
+        "claim_notice": agent.CLAIM_NOTICE,
+        "repeat_notice": agent.REPEAT_NOTICE,
+        "first_agent_message": config.FIRST_AGENT_MESSAGE,
+        "handoff_message": config.HANDOFF_MESSAGE,
+        "nothing_heard": episode.NOTHING_HEARD,
+        "confirm_notice": f"{confirm.CONFIRM_PREFIX}: {confirm.CONFIRM_NOTICE}",  # 미리보기 결과의 첫 줄
+        "tool_errors": "\n".join(error_texts(inspect.getsource(tools))),
+        "rules": "\n".join(numeric_constants(inspect.getsource(rules))),
+    }
+    return {key: text_sha256(text) for key, text in texts.items()}
 
 
 # 실행 결과를 summary.json용으로 집계한다. infra_error는 분모에서 빼고(counted), 모든 시도가 infra_error인
@@ -417,7 +541,9 @@ def main() -> None:
     seed_engine = build_seed_engine()
     seed_dump = db.dump_db(seed_engine)
     policy_text = load_policy()
-    # 모델 없이도 실패할 수 있는 일은 몇 시간의 GPU 시간을 쓰기 전에 여기서 모두 실패하게 한다.
+    # 모델 없이도 실패할 수 있는 일은 몇 시간의 GPU 시간을 쓰기 전에 여기서 모두 실패하게 한다. 하니스 글
+    # 해시(소스를 읽어 ast로 모음)도 여기서 만들어 두고 manifest에 쓴다.
+    harness = harness_sha256()
     gold_dumps = {task.id: gold_dump_of(task, seed_engine, registry) for task in tasks}
     channel = build_channel(config, args.tts_device, args.stt_device)
     # 측정 전에 모델을 올려 둔다. 첫 에피소드의 시간에 모델 적재 시간이 섞이지 않게 하려는 것이다.
@@ -459,8 +585,9 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=False)
 
     # manifest: 이 실행을 다른 실행과 짝지어도 되는지 판단할 모든 조건. 프롬프트 해시는 첫 과제의 시각으로
-    # 만든 에이전트 시스템 프롬프트와 시뮬레이터 프롬프트, 규정 문서, 모델에게 보인 도구 목록의 해시다. V4면
-    # 발신 번호 확인의 이름 허용 오차도 남긴다.
+    # 만든 에이전트 시스템 프롬프트와 시뮬레이터 프롬프트, 규정 문서, 모델에게 보인 도구 목록의 해시다. 하니스
+    # 글 해시(harness_sha256, 2026-10-29부터)는 그 밖에 모델이 보는 리마인더·안내문·고정 문장·도구 오류 글의
+    # 키별 해시다. V4면 발신 번호 확인의 이름 허용 오차도 남긴다.
     tools_json = json.dumps(visible_tools(registry, config), ensure_ascii=False, sort_keys=True)
     manifest: dict[str, Any] = {
         "run_id": run_id,
@@ -481,6 +608,7 @@ def main() -> None:
             "user_sim": text_sha256(build_user_prompt(manifest_tasks[0])),
             "tools": text_sha256(tools_json),
         },
+        "harness_sha256": harness,
         "agent_provider": provider.describe(),
         "user_provider": user_provider.describe(),
         "voice_channel": channel.describe() if channel else None,

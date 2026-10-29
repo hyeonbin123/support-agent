@@ -41,8 +41,8 @@
 # table, compare, voice, claims는 모델 없이 된다). 판정 규칙이 바뀐 뒤에도 기록된 판정 요소(DB 일치, 전달 값,
 # 종료 사유)로 성공을 다시 계산한다.
 # [주요 구성]
-# - 공통: pass^k와 과제 단위 부트스트랩 구간, 두 실행의 짝지은 차이(compare), 결과표(table), 값만 놓친
-#   에피소드(misses), 점검용 표본(sample)
+# - 공통: pass^k와 과제 단위 부트스트랩 구간, 두 실행의 짝지은 차이(compare, 표 아래에 과제 단위 부호 뒤집기
+#   순열 p), 결과표(table), 값만 놓친 에피소드(misses), 점검용 표본(sample)
 # - 7단계: 고객에게 전달된 근거 없는 완료 주장과 가드 뒤의 행동(claims)
 # - 짝짓기 검사: 두 실행이 한 축 말고 같은 설정인지(same-setup)
 # - 9단계: 이름 허용 오차 충돌 관문(name-collisions), 본인 확인 표(caller-id)
@@ -56,13 +56,15 @@
 
 from __future__ import annotations
 
-# statistics: 스모크 관문 S3의 prompt_eval 중앙값. random: 고정 seed 부트스트랩과 표본 추출.
+# statistics: 스모크 관문 S3의 prompt_eval 중앙값. random: 고정 seed 부트스트랩·순열 검정과 표본 추출. bisect:
+# 순열 검정의 전수 셈(반씩 나눈 합을 정렬해 두고 이분 탐색으로 센다).
 import argparse
 import json
 import random
 import re
 import statistics
 import sys
+from bisect import bisect_left, bisect_right
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -77,6 +79,12 @@ from support_agent.voice import metrics as voice_metrics
 # 표본 추출에도 같은 seed를 쓴다.
 BOOTSTRAP_ROUNDS = 10_000
 BOOTSTRAP_SEED = 20260919
+# 과제 단위 부호 뒤집기 순열 검정(docs/experiments.md 공통 규칙의 2026-10-29 메모, compare가 표 아래에 더 내는
+# 보조 지표): 0이 아닌 차이가 PERMUTATION_EXACT_MAX개 이하면 2^n 배치를 모두 세고, 넘으면 고정 seed로
+# PERMUTATION_ROUNDS번 뽑는다. 판정 규칙(위 부트스트랩 구간)은 바뀌지 않는다.
+PERMUTATION_EXACT_MAX = 20
+PERMUTATION_ROUNDS = 20_000
+PERMUTATION_SEED = 20261024
 # table의 보조 지표 열 이름(docs/experiments.md 결과표와 같은 순서).
 _COUNT_COLUMNS = (
     "정답에 없는 쓰기",
@@ -147,6 +155,18 @@ def bootstrap_interval(by_task: dict[str, list[bool]], k: int) -> tuple[float, f
     return means[int(0.025 * BOOTSTRAP_ROUNDS)], means[int(0.975 * BOOTSTRAP_ROUNDS) - 1]
 
 
+# 과제별 pass^k 차이(other − base), 과제 id 순. 짝지은 부트스트랩(paired_difference)과 순열
+# 검정(sign_flip_p)이 같은 차이를 쓴다. 두 실행의 과제 목록이 다르면 오류다.
+def task_differences(base: dict[str, list[bool]], other: dict[str, list[bool]], k: int) -> list[float]:
+    """과제마다 `other`의 pass^k에서 `base`의 것을 뺀 값, 과제 id 순."""
+    if set(base) != set(other):
+        raise ValueError("both runs must cover the same tasks")
+    return [
+        pass_hat_k(len(other[t]), sum(other[t]), k) - pass_hat_k(len(base[t]), sum(base[t]), k)
+        for t in sorted(base)
+    ]
+
+
 # 두 구성의 pass^k 차이(other − base)와 95% 구간. 같은 과제를 두 구성에서 돌렸으므로 과제마다 차이를 먼저
 # 구하고, 과제 단위로 다시 뽑아 짝을 유지한다. 과제 사이의 난이도 차이는 짝 안에서 빠진다. 두 실행의 과제
 # 목록이 다르면 오류다.
@@ -155,20 +175,68 @@ def paired_difference(
 ) -> tuple[float, float, float]:
     """`other`의 pass^k에서 `base`의 것을 뺀 값과 95% 구간. 같은 과제를 두 설정에서 돌렸으므로, 과제를
     복원 추출하되 과제마다 짝을 유지한다."""
-    if set(base) != set(other):
-        raise ValueError("both runs must cover the same tasks")
-    diffs = [
-        pass_hat_k(len(other[t]), sum(other[t]), k) - pass_hat_k(len(base[t]), sum(base[t]), k)
-        for t in sorted(base)
-    ]
+    diffs = task_differences(base, other, k)
     rng = random.Random(BOOTSTRAP_SEED)
     means = sorted(sum(rng.choice(diffs) for _ in diffs) / len(diffs) for _ in range(BOOTSTRAP_ROUNDS))
     low, high = means[int(0.025 * BOOTSTRAP_ROUNDS)], means[int(0.975 * BOOTSTRAP_ROUNDS) - 1]
     return sum(diffs) / len(diffs), low, high
 
 
+# 값들의 부호를 모든 방법으로 뒤집은 합 2^n개(순서는 무관하다).
+def _signed_sums(values: list[float]) -> list[float]:
+    sums = [0.0]
+    for value in values:
+        sums = [s + value for s in sums] + [s - value for s in sums]
+    return sums
+
+
+# 과제 단위 차이의 부호 뒤집기 순열 검정(양측). 두 설정에 차이가 없다면 과제별 차이(후보 − 기준)의 부호는 어느
+# 쪽이든 같은 확률이라는 가설 아래, 부호를 뒤집은 모든 배치 가운데 |평균|이 관측값 이상인 비율이 p다(평균의
+# 분모가 같으므로 합으로 비교한다). 0인 차이는 뒤집어도 같으므로 세지 않는다. 등록된 판정 규칙(백분위
+# 부트스트랩 구간)이 소표본·이산 값에서 명목보다 좁아질 수 있어, 보조 지표로 함께 낸다(2026-10-29 메모).
+# 전수 셈은 값들을 반씩 나눠 각각의 합 2^(n/2)개를 만들고, 한쪽을 정렬해 두고 다른 쪽의 합마다 이분 탐색으로
+# 관측값 이상(또는 −관측값 이하)인 짝의 수를 더한다(2^20이면 1,024 × 1,024 쌍을 1,024번의 탐색 둘로 센다).
+# 실수 합의 오차 때문에 관측 배치 자체가 빠지지 않게 1e-9의 여유를 둔다. 몬테카를로는 관측 배치를 하나로
+# 쳐서 (맞은 수 + 1) / (횟수 + 1)이다(p가 0으로 나오지 않는다).
+def sign_flip_p(diffs: list[float], exact_max: int = PERMUTATION_EXACT_MAX) -> tuple[float, int, bool]:
+    """(p값, 0이 아닌 차이의 수, 전수인지). 0이 아닌 차이가 `exact_max`개 이하면 2^n 전수, 넘으면 고정 seed
+    몬테카를로 PERMUTATION_ROUNDS회."""
+    nonzero = [d for d in diffs if d != 0]
+    observed = abs(sum(nonzero))
+    if observed <= 1e-9:
+        return 1.0, len(nonzero), True
+    if len(nonzero) <= exact_max:
+        half = len(nonzero) // 2
+        left, right = _signed_sums(nonzero[:half]), sorted(_signed_sums(nonzero[half:]))
+        hits = 0
+        for s in left:
+            hits += len(right) - bisect_left(right, observed - s - 1e-9)  # s + r >= 관측값
+            hits += bisect_right(right, -observed - s + 1e-9)  # s + r <= -관측값
+        return hits / (len(left) * len(right)), len(nonzero), True
+    rng = random.Random(PERMUTATION_SEED)
+    hits = sum(
+        abs(sum(d if rng.random() < 0.5 else -d for d in nonzero)) >= observed - 1e-9
+        for _ in range(PERMUTATION_ROUNDS)
+    )
+    return (hits + 1) / (PERMUTATION_ROUNDS + 1), len(nonzero), False
+
+
+# 두 실행의 과제별 pass^k 차이에 대한 순열 검정. paired_difference와 같은 차이를 쓴다.
+def paired_sign_flip_p(
+    base: dict[str, list[bool]], other: dict[str, list[bool]], k: int
+) -> tuple[float, int, bool]:
+    """`other` − `base`의 과제별 pass^k 차이에 대한 부호 뒤집기 순열 검정.
+
+    (p값, 0이 아닌 차이의 수, 전수인지)를 돌려준다.
+    """
+    return sign_flip_p(task_differences(base, other, k))
+
+
 # 기준 실행과 후보 실행들의 pass^1·pass^4와 짝지은 차이를 마크다운 표로 낸다(README·docs의 '기준과의 차이 [95%
-# 구간]' 열).
+# 구간]' 열). 표 아래에는 빈 줄을 두고 후보마다 순열 p 줄을 더 낸다(2026-10-29 메모): pass^1·pass^4 차이의
+# 양측 p와 셈 방식, 그리고 pass^1 구간 아래 끝을 기준 에피소드 수로 곱한 '에피소드 몫'. '경계' 꼬리표
+# 규칙(순열 p > 0.05 또는 아래 끝이 에피소드 2개 몫 이하)을 표의 반올림된 %p로 가늠하지 않게 하려는 것이다.
+# 표의 열과 순서는 그대로라 docs에 붙인 표와 어긋나지 않는다.
 def compare(base_dir: Path, other_dirs: list[Path]) -> str:
     base = successes_by_task(load_episodes(base_dir))
     lines = [
@@ -176,9 +244,10 @@ def compare(base_dir: Path, other_dirs: list[Path]) -> str:
         "|---|---|---|---|---|",
     ]
     lines.append(f"| {base_dir.name} (기준) | {pass_k(base, 1):.1%} | | {pass_k(base, 4):.1%} | |")
+    notes = []
     for run_dir in other_dirs:
         other = successes_by_task(load_episodes(run_dir))
-        cells = []
+        cells, tests, share = [], [], ""
         for k in (1, 4):
             # infra_error로 시도를 잃은 과제는 판정된 시도가 k보다 적을 수 있다. 그때 pass^k는 두 실행 모두
             # k번 이상인 과제끼리만 짝짓고, 칸에 몇 과제로 계산했는지 적는다.
@@ -187,8 +256,16 @@ def compare(base_dir: Path, other_dirs: list[Path]) -> str:
             diff, low, high = paired_difference(mine, theirs, k)
             note = "" if len(usable) == len(base) == len(other) else f" ({len(usable)}과제)"
             cells += [f"{pass_k(theirs, k):.1%}{note}", f"{diff:+.1%}p [{low:+.1%}, {high:+.1%}]"]
+            p, nonzero, exact = paired_sign_flip_p(mine, theirs, k)
+            how = "정확" if exact else f"몬테카를로 {PERMUTATION_ROUNDS:,}회"
+            tests.append(f"pass^{k} {p:.3f} ({how}, 0이 아닌 차이 {nonzero}개)")
+            if k == 1:
+                # 시도 수가 과제마다 같으면 pass^1 평균 차이 × 에피소드 수 = 성공 에피소드 수의 차이다.
+                episodes = sum(len(v) for v in mine.values())
+                share = f"pass^1 구간 아래 끝 = 에피소드 {low * episodes:.1f}개 몫"
         lines.append(f"| {run_dir.name} | " + " | ".join(cells) + " |")
-    return "\n".join(lines)
+        notes.append(f"순열 p (과제 단위 부호 뒤집기, 양측): {run_dir.name} {', '.join(tests)}; {share}")
+    return "\n".join(lines + ([""] + notes if notes else []))
 
 
 # 표 칸 하나: 'pass^k [구간 아래, 위]'.
@@ -400,12 +477,53 @@ def is_test_run(run_dir: Path) -> bool:
 # manifest에서 그 값으로 볼 값. setup_differences가 쓴다.
 _PROVIDER_FIELDS_ADDED_LATER: dict[str, Any] = {"truncate": False}
 
+# manifest의 하니스 글 해시(harness_sha256, run.harness_sha256이 2026-10-29부터 남김)가 없는 옛 기록에서 그
+# 값으로 볼 값 = 2026-10-29 코드의 해시. 근거(docs/experiments.md 공통 규칙의 2026-10-29 메모, git 이력만 읽고
+# CPU로 셈): 에이전트를 돌린 기록의 커밋마다 소스를 꺼내 같은 방법(ast)으로 글을 뽑으면, 그때 있던 글은 모두
+# 지금과 글자까지 같고(오류 코드 포함), 없던 글은 그 실행이 쓰지 않은 장치(가드 안내, V4 오류, R2 안내문, 음성
+# 문장)의 것이다. 하나뿐인 예외(첫 기준선, 아래 _OLD_RECORDS_HARNESS_BY_COMMIT)를 빼면 옛 기록은 이 값과 같은
+# 글을 본 것으로 보고 비교한다. 하니스 글을 일부러 바꾸면 이 값은 그대로 두어야 한다(옛 기록이 본 글은 바뀌지
+# 않는다). 새 실행은 새 해시를 남기므로 옛 기록과 `harness_sha256 differs (키)`로 걸리고, 그것이 이 필드를 둔
+# 이유다. tests/test_analyze.py가 지금 코드의 값과 같은지 확인한다(글을 바꾸면 그 테스트가 먼저 실패한다).
+OLD_RECORDS_HARNESS_SHA256: dict[str, str] = {
+    "turn_reminder": "fb22bde356be731cec35611b672c0dc9cdcdf6eb96db979bdbe43baf3e76b554",
+    "stall_notice": "db1ff55869f766c5d232196f296d0e6b6c3723716de1a335f88bedf085c7cc7d",
+    "cut_off_notice": "2fcc16bea5712a391866a42a5211bbfd1b215ea8a23e34321c8130073f9224ee",
+    "format_notice": "2e5c71e493d7c020dfeef1988a83727be66972e57087365f813c825507c44496",
+    "language_notice": "b95cfa896cdc37f18c9605cf794c7300a452eb9b9021fdf7f1b054917e4375bf",
+    "claim_notice": "30074fefcdb6ac1d9de9a67fababf84c36ec909e06e7811c1d6c012b214ffbb7",
+    "repeat_notice": "f9111055985ac81336f53c4f905cb2b1faee23d1b8fb501f52da7b5491043645",
+    "first_agent_message": "72433b8700b525a7168d9eeede198bfaccbc1c6071ba92c6c20f6d4e1345600b",
+    "handoff_message": "99a845101ce2d1004baef697834f351e4cd72a9f18bb24a22cc173c57fd94855",
+    "nothing_heard": "2f4d418637558f002b3122b9901301567398e49f6b15dc3222f29e38e14204d2",
+    "confirm_notice": "68c3bd52081d5e16984d138947a5428c136bdc595c21762152772c2260891764",
+    "tool_errors": "0c5dc895bd2e487aab7b641ea126235e6b8d061232f68e7265046124f6865244",
+    "rules": "c8646a58fa389ffb97f8a67112977895c1b9b623328637670b220a5f8e47ea75",
+}
+# 하니스 글이 위 값과 달랐던 옛 기록의 커밋(manifest의 commit)과 그 키의 값. 첫 기준선(2026-09-19 f4ec9a4,
+# 1단계 결과 1)은 시뮬레이터 턴 리마인더를 넣기 전(e86aa05에서 넣음)이라 시뮬레이터가 상담원의 말만 그대로
+# 받았다. run.harness_sha256의 turn_reminder는 상담원 말과 known 자리를 비운 글의 해시이므로, 리마인더가 없던
+# 형식의 값은 빈 글의 sha256이다. 그래서 이 기록과 다른 실행을 짝지으면 turn_reminder가 다르다고 나온다(이
+# 기록은 user_temperature도 0.7로 달라 어차피 짝지어지지 않는다).
+_OLD_RECORDS_HARNESS_BY_COMMIT: dict[str, dict[str, str]] = {
+    "f4ec9a48da2715c5722a8b8ba0647fc0bc77663f": {
+        "turn_reminder": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",  # 빈 글의 sha256
+    },
+}
+
+
+# harness_sha256 필드가 없는 옛 manifest에 채울 값: 2026-10-29 코드의 값에 그 커밋의 예외를 덮은 것.
+def old_records_harness(commit: str | None) -> dict[str, str]:
+    """옛 manifest(harness_sha256 없음)의 하니스 글 해시로 볼 값. `commit`은 그 manifest의 commit이다."""
+    return {**OLD_RECORDS_HARNESS_SHA256, **_OLD_RECORDS_HARNESS_BY_COMMIT.get(commit or "", {})}
+
 
 # 두 실행을 '한 축만 다른 같은 설정'으로 짝지어도 되는지 확인하고, 안 되는 이유를 목록으로 돌려준다(빈 목록 =
 # 짝지어도 됨). analyze same-setup과 8·10·12단계의 짝짓기 검사가 쓴다.
 # 비교 항목: 무시할 축을 뺀 모든 설정(옛 manifest에 없는 필드는 기본값으로 봄), 시도 수, 과제 해시, seed 해시,
-# 프롬프트 해시(V4는 에이전트 프롬프트와 도구 목록이 일부러 달라 뺄 수 있음), 두 제공자 정보(모델 digest,
-# Ollama 버전, 옵션), 과제별 판정된 시도 번호.
+# 프롬프트 해시(V4는 에이전트 프롬프트와 도구 목록이 일부러 달라 뺄 수 있음), 하니스 글 해시(없는 옛
+# manifest는 old_records_harness로 채움), 두 제공자 정보(모델 digest, Ollama 버전, 옵션), 과제별 판정된 시도
+# 번호.
 def setup_differences(
     run_a: Path, run_b: Path, ignore: tuple[str, ...] = ("voice",), ignore_prompts: tuple[str, ...] = ()
 ) -> list[str]:
@@ -413,13 +531,19 @@ def setup_differences(
 
     비교 항목: 무시할 축을 뺀 모든 설정 필드(옛 manifest에 없는 필드는 기본값으로 본다), 시도 수, 과제
     해시, seed 해시, `ignore_prompts`를 뺀 프롬프트 해시(V4는 에이전트 프롬프트와 도구 목록을 일부러
-    바꾼다), 두 제공자(모델 digest, 서버 버전, 옵션), 그리고 과제별로 판정된 시도.
+    바꾼다), 하니스 글 해시(필드가 없는 옛 manifest는 2026-10-29 코드의 값으로 보되 글이 달랐던 첫 기준선은
+    그 기록의 값으로 본다), 두 제공자(모델 digest, 서버 버전, 옵션), 그리고 과제별로 판정된 시도.
     """
     a, b = load_manifest(run_a), load_manifest(run_b)
     for manifest in (a, b):
         prompts = manifest.get("prompt_sha256")
         if isinstance(prompts, dict) and ignore_prompts:
             manifest["prompt_sha256"] = {k: v for k, v in prompts.items() if k not in ignore_prompts}
+        # 하니스 글 해시가 생기기 전(2026-10-29 전)의 manifest는 그때 코드의 글이 지금 글과 같았다는 확인에
+        # 따라 2026-10-29 값과 같다고 보고 비교한다(OLD_RECORDS_HARNESS_SHA256의 설명). 글이 달랐던 첫
+        # 기준선만 그 기록의 값으로 채운다.
+        if "harness_sha256" not in manifest:
+            manifest["harness_sha256"] = old_records_harness(manifest.get("commit"))
         # 제공자 설명에 나중에 생긴 필드는, 그 필드가 없는 옛 manifest에서 지금 값과 같다고 보고 비교한다.
         # truncate(2026-10-15부터 False): 옛 실행은 이 필드 없이 요청했지만, 기록된 어느 실행에서도 프롬프트가
         # 잘린 호출이 없어(같은 에피소드 안에서 프롬프트 길이가 줄어든 호출 0, tests/test_recorded_numbers.py)
@@ -437,7 +561,15 @@ def setup_differences(
         left, right = a["config"].get(key, defaults.get(key)), b["config"].get(key, defaults.get(key))
         if left != right:
             out.append(f"config.{key}: {left!r} != {right!r}")
-    for key in ("trials", "task_sha256", "seed_hash", "prompt_sha256", "agent_provider", "user_provider"):
+    for key in (
+        "trials",
+        "task_sha256",
+        "seed_hash",
+        "prompt_sha256",
+        "harness_sha256",
+        "agent_provider",
+        "user_provider",
+    ):
         if a.get(key) != b.get(key):
             detail = ""
             if isinstance(a.get(key), dict) and isinstance(b.get(key), dict):
