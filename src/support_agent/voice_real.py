@@ -575,10 +575,13 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     run_id = "-".join(p for p in (started.strftime("%Y%m%d-%H%M%S"), STAGE, safe_name(args.label)) if p)
     out = (REPORTS if args.official else OUTPUTS / "v4r") / run_id
     out.mkdir(parents=True, exist_ok=False)
-    from support_agent.voice.speech import versions
+    from support_agent.voice.speech import versions, voice_extra
 
     # 실행 기록: 커밋, 원본 실행과 그 커밋·과제 파일, 기본 seed, 발화 수, 두 모델 설정, 정규화, 열화 버전과
     # 값, 불일치 목록, 시작 때 GPU 사용량, 패키지 버전. 나중에 이 실행을 다시 해석할 근거다.
+    # voice_extra(2026-10-29부터)는 MeloTTS가 묶는 transformers 등의 버전과 음성 모델 세 가지의 HF 캐시
+    # 스냅숏이다. 재현 확인(channel_mismatches)은 이것을 보지 않는다: 원본 실행(9단계)의 manifest에 이 항목이
+    # 없으므로, 비교하면 공식 실행이 늘 거절된다. 모델을 올린 뒤에 읽어 이 실행이 받은 스냅숏을 남긴다.
     record = {
         "run_id": run_id,
         "stage": "11-A",
@@ -600,6 +603,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         "gpu_mib_used_at_start": used,
         "versions": {"python": sys.version.split()[0]}
         | versions("numpy", "scipy", "av", "faster-whisper", "ctranslate2", "melotts", "torch"),
+        "voice_extra": voice_extra(),
     }
     (out / "manifest.json").write_text(
         json.dumps(record, ensure_ascii=False, indent=1), "utf-8", newline="\n"

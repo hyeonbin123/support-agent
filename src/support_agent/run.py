@@ -50,7 +50,8 @@ from typing import Any
 
 # 실행에 필요한 내부 모듈 전부: DB 덤프·해시(db), 프롬프트와 도구 목록(agent), 설정(config), R2 미리보기
 # 코드(confirm), 에피소드(episode), pass^k(judge), Ollama 제공자, 경로(paths), 기록(records), seed DB(seed),
-# 과제(tasks), 도구 등록부(tools), 시뮬레이터(user_sim), 음성 패키지 버전(voice.speech).
+# 과제(tasks), 도구 등록부(tools), 시뮬레이터(user_sim), 음성 패키지 버전과 비교하지 않는 음성
+# 기록(voice.speech의 versions, voice_extra).
 from support_agent import db
 from support_agent.agent import build_system_prompt, load_policy, visible_tools
 from support_agent.config import RunConfig
@@ -65,6 +66,7 @@ from support_agent.tasks import load_tasks
 from support_agent.tools import NAME_TOLERANCE, build_registry
 from support_agent.user_sim import LLMUser, build_user_prompt
 from support_agent.voice.speech import versions as speech_versions
+from support_agent.voice.speech import voice_extra as speech_voice_extra
 
 # infra_error가 3번 잇달아 나면 모델 서버가 죽었다고 보고 멈춘다. 나머지 과제를 모두 infra_error로 태우지 않게
 # 하려는 것이다. GPU 한도 3,000 MiB는 데스크톱 앱이 쓰는 1~2 GiB보다 크면 다른 작업(다른 프로젝트의
@@ -588,6 +590,10 @@ def main() -> None:
     # 만든 에이전트 시스템 프롬프트와 시뮬레이터 프롬프트, 규정 문서, 모델에게 보인 도구 목록의 해시다. 하니스
     # 글 해시(harness_sha256, 2026-10-29부터)는 그 밖에 모델이 보는 리마인더·안내문·고정 문장·도구 오류 글의
     # 키별 해시다. V4면 발신 번호 확인의 이름 허용 오차도 남긴다.
+    # 하나만 예외로 비교하지 않는다: 음성 실행의 voice_extra(2026-10-29부터. MeloTTS가 묶는 transformers
+    # 등의 버전과 음성 모델 세 가지의 HF 캐시 스냅숏). 이 키가 없는 기존 음성 기록과의 짝짓기·끼워 넣기를
+    # 막지 않으려고 voice_channel·versions와 따로 두고, analyze same-setup·respell은 이 키를 보지 않는다
+    # (voice/speech.py의 voice_extra).
     tools_json = json.dumps(visible_tools(registry, config), ensure_ascii=False, sort_keys=True)
     manifest: dict[str, Any] = {
         "run_id": run_id,
@@ -620,6 +626,8 @@ def main() -> None:
         "versions": {"python": sys.version.split()[0]}
         | {name: version(name) for name in ("sqlalchemy", "pydantic", "httpx", "pyyaml")}
         | (speech_versions("faster-whisper", "ctranslate2", "melotts", "torch") if channel else {}),
+        # 모델을 올린 뒤(build_channel 뒤)에 읽어야 캐시의 main이 이 실행이 받은 스냅숏을 가리킨다.
+        "voice_extra": speech_voice_extra() if channel else None,
     }
     if only:
         manifest["only_episodes"] = [[task_id, trial] for task_id, trial in sorted(only)]

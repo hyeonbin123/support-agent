@@ -18,18 +18,26 @@
 from __future__ import annotations
 
 # math: SNR(dB) 계산과 포아송 표준편차. Path: docs/experiments.md 원문을 읽어 등록한 값이 문서에 있는지 본다.
+# types: 실행기 시험에서 열화 모듈(voice/degrade.py) 자리에 넣을 대역.
 import io
 import json
 import math
+import types
 from pathlib import Path
 
 import pytest
 
+# fake_voice_metadata: 가짜 패키지 버전·HF 캐시(tests/test_run_voice.py). manifest의 voice_extra 기록을 본다.
+from test_run_voice import fake_voice_metadata
+
 # voice_real: 11단계 실행기·관문·표(검증 대상). derive_seed: 합성 seed('voice')와 열화 seed('degrade')가 기록
 # 규칙대로인지 본다. normalize_heard: 두 받아쓰기에 모두 V2 정규화를 거친다. Audio: 가짜 합성기의 출력 형식.
+# speech·SpeechChannel: 지금 코드의 음성 모델 설명(describe)이 기록과 같은지 본다.
 from support_agent import voice_real
 from support_agent.config import derive_seed
 from support_agent.paths import REPORTS
+from support_agent.voice import speech
+from support_agent.voice.channel import SpeechChannel
 from support_agent.voice.normalize import normalize_heard
 from support_agent.voice.speech import Audio
 
@@ -420,6 +428,31 @@ def test_the_speech_models_must_be_the_ones_of_the_source_run():
     assert voice_real.channel_mismatches(manifest, dict(tts, device="cpu"), stt) == ["tts device"]
 
 
+# 지금 코드의 음성 모델 설명(MeloSpeaker·WhisperListener.describe())이 기록과 글자까지 같은지 본다: 9단계
+# 원본 실행의 voice_channel(두 설명을 합친 채널 설명), 11단계 기록(송장 번호를 고쳐 다시 잰 것)의
+# speaker·listener. 패키지 버전은 기록된 값으로 두고 모델은 올리지 않는다. 이 설명은 왕복 캐시 키이자 재현
+# 확인(channel_mismatches)의 비교 대상이라, transformers 같은 항목을 여기에 더하면 기존 캐시와 기록 비교가
+# 모두 끊긴다. 그런 것은 manifest의 voice_extra(비교하지 않음)에 두고, voice_extra가 붙은 manifest도 재현
+# 확인 결과가 같아야 한다.
+def test_the_model_descriptions_stay_those_of_the_records(monkeypatch):
+    manifest = json.loads((SOURCE / "manifest.json").read_text(encoding="utf-8"))
+    recorded = manifest["voice_channel"]
+    monkeypatch.setattr(
+        speech, "version", {**recorded["tts_versions"], **recorded["stt_versions"]}.__getitem__
+    )
+    speaker = object.__new__(speech.MeloSpeaker)
+    speaker.device, speaker.speed = "cuda", 1.0
+    listener = object.__new__(speech.WhisperListener)
+    listener.model, listener.device, listener.compute_type = "large-v3-turbo", "cuda", "float16"
+    listener.beam_size, listener.vad_filter = 5, False
+    assert SpeechChannel(speaker, listener, normalizer=normalize_heard).describe() == recorded
+    stage11 = REPORTS / "20261014-033627-v4r-a-dev-respelled" / "manifest.json"
+    respelled = json.loads(stage11.read_text(encoding="utf-8"))
+    assert (speaker.describe(), listener.describe()) == (respelled["speaker"], respelled["listener"])
+    with_extra = dict(manifest, voice_extra={"versions": {"transformers": "4.27.4"}, "model_revisions": {}})
+    assert voice_real.channel_mismatches(with_extra, speaker.describe(), listener.describe()) == []
+
+
 # 실행기: 가짜 음성 모델로 발화마다 기록 한 줄을 남기고, 캐시에서 이어 가는지 본다.
 # ==================================================================== 실행기 (가짜 음성 모델)
 
@@ -506,6 +539,29 @@ def test_the_runner_writes_one_record_per_utterance_and_resumes_from_its_cache(t
         utterances, FakeSpeaker(), FakeListener(), out=out3, cache_path=cache, **changed
     )
     assert not any(r["cached"] for r in other)
+
+
+# run 명령이 남기는 실행 기록(manifest.json)에 voice_extra(묶인 패키지 버전과 음성 모델 스냅숏, 비교하지
+# 않음)가 남고, 패키지 버전(versions)의 이름은 예전 그대로인지 본다. 모델 적재는 가짜 음성
+# 모델·디코더·열화로 바꾸고, 원본 발화 앞의 2개만 CPU로 돈다(공식 실행 아님). 메타데이터와 HF 캐시는
+# 대역이라 음성 그룹 없이 돈다.
+def test_the_runner_records_the_unpaired_versions_and_model_revisions(tmp_path, monkeypatch):
+    expected = fake_voice_metadata(monkeypatch, tmp_path / "hf")
+    degrade = types.SimpleNamespace(describe=lambda: {"degrade": "test-1"}, degrade=fake_degrade)
+    monkeypatch.setattr(
+        voice_real, "_load_models", lambda device: (FakeSpeaker(), FakeListener(), fake_decode, degrade)
+    )
+    monkeypatch.setattr(voice_real, "OUTPUTS", tmp_path)
+    cache = tmp_path / "cache.jsonl"
+    voice_real.main(["run", str(SOURCE), "--limit", "2", "--device", "cpu", "--cache", str(cache)])
+    (out,) = (tmp_path / "v4r").iterdir()
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["voice_extra"] == expected
+    assert set(manifest["versions"]) == {
+        "python", "numpy", "scipy", "av", "faster-whisper", "ctranslate2", "melotts", "torch"
+    }  # fmt: skip
+    assert manifest["utterances"] == 2
+    assert len((out / "utterances.jsonl").read_text(encoding="utf-8").splitlines()) == 2
 
 
 # 정규화를 None으로 주면(V1 원본) 받아쓰기를 그대로 쓰는지 본다.

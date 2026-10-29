@@ -255,3 +255,57 @@ def test_the_committed_voice_records_change_in_the_planned_episodes_only():
     assert {d.name: respell.changed_episodes(d) for d in voice_runs if respell.changed_episodes(d)} == (
         RESPELLED_EPISODES
     )
+
+
+# ==================================================================== 비교하지 않는 음성 기록(voice_extra)
+
+# 2026-10-29부터 음성 실행의 manifest에 남는 voice_extra의 꼴(값은 이 PC의 음성 그룹과 HF 캐시의 것).
+# 끼워 넣기 검사와 same-setup은 이 항목을 보지 않는다.
+_VOICE_EXTRA = {
+    "versions": {
+        "transformers": "4.27.4", "tokenizers": "0.13.3", "huggingface-hub": "0.36.2", "numpy": "1.26.4",
+        "librosa": "0.9.1",
+    },
+    "model_revisions": {
+        "myshell-ai/MeloTTS-Korean": "0207e5adfc90129a51b6b03d89be6d84360ed323",
+        "kykim/bert-kor-base": "1779cc0982ada0216dd6de0dd4e86fb78201926d",
+        "mobiuslabsgmbh/faster-whisper-large-v3-turbo": "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf",
+    },
+}  # fmt: skip
+
+
+# 실행 폴더를 만든다: manifest는 준 것 그대로(test MANIFEST와 섞지 않음), 에피소드는 한 줄에 하나.
+def write_record(path: Path, manifest: dict, episodes: list[dict]) -> Path:
+    path.mkdir(parents=True)
+    (path / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    lines = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in episodes)
+    (path / "episodes.jsonl").write_text(lines, encoding="utf-8", newline="\n")
+    return path
+
+
+# voice_extra가 없는 커밋된 음성 기록(9단계 V2 개발용, 실제로 끼워 넣기를 한 기록)과, 같은 설정에
+# voice_extra만 더한 실행을 짝지어 본다. (1) 끼워 넣기 검사: 바뀐 에피소드 둘을 지금 코드로 풀어 쓴
+# '다시 잰 실행'을 막지 않는다. (2) same-setup: 판정된 에피소드 목록이 같은 사본을 '같은 설정'으로
+# 본다(음성 축을 무시하든 안 하든). 이 항목을 비교 대상에 넣으면 이 키가 없는 기존 음성 기록 전부와
+# 다시 재기·짝짓기가 막힌다.
+def test_the_unpaired_voice_record_keeps_old_voice_records_stitchable_and_paired(tmp_path):
+    original = REPORTS / _V2_DEV_9
+    manifest = analyze.load_manifest(original)
+    assert "voice_extra" not in manifest  # 이 항목이 생기기 전의 기록
+    newer = manifest | {"commit": "c1", "voice_extra": _VOICE_EXTRA}
+    episodes = analyze.load_episodes(original)
+    needed = respell.changed_episodes(original)
+    by_key = {(e["task_id"], e["trial"]): e for e in episodes}
+    respelled = [
+        dict(by_key[key], voice=[dict(v, spoken=verbalize(v["said"])) for v in by_key[key]["voice"]])
+        for key in needed
+    ]
+    rerun = write_record(
+        tmp_path / "rerun", newer | {"only_episodes": [list(key) for key in needed]}, respelled
+    )
+    assert needed == RESPELLED_EPISODES[_V2_DEV_9]
+    assert respell.stitch_problems(original, rerun) == []
+    judged = [{"task_id": e["task_id"], "trial": e["trial"], "status": e["status"]} for e in episodes]
+    copy = write_record(tmp_path / "copy", newer, judged)
+    assert analyze.setup_differences(original, copy) == []
+    assert analyze.setup_differences(original, copy, ignore=()) == []

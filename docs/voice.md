@@ -18,6 +18,25 @@ uv run python -m support_agent.analyze voice-worst reports/<개발용 음성 실
 - `--tts-device cpu`, `--stt-device cpu`로 모델을 CPU에 둘 수 있다 (GPU 메모리가 모자랄 때)
 - 기록(`episodes.jsonl`)의 `voice` 항목에 발화마다 고객이 쓴 글(`said`), 말로 푼 글(`spoken`), 인식된 글(`heard`), 에이전트가 받은 글(`text`), 음성 길이와 합성·인식 시간이 남는다. 음성 파일은 남기지 않는다
 
+### 음성 모델의 리비전 (2026-10-29 보탬)
+
+음성 모델 세 가지는 처음 쓸 때 Hugging Face 허브에서 받아 캐시(`HF_HOME/hub`, `HF_HOME`의 기본값은 `~/.cache/huggingface`)에 둔다. 코드는 리비전을 고정하지 않고 저장소의 `main`을 받는다. 이 PC의 캐시에는 저장소마다 아래 스냅숏(커밋) 하나만 있고 2026-09-13부터 있었다 (첫 음성 측정 2026-09-21보다 앞). 그래서 기록된 음성 측정(5·9·11단계)은 이 파일들로 돈 것으로 본다. 그 기록들의 manifest에는 리비전이 남지 않았다. 2026-10-29에 본 허브의 `main`도 세 저장소 모두 같은 커밋이다.
+
+| 쓰임 | 허브 저장소 | 스냅숏(커밋) |
+|---|---|---|
+| 합성: MeloTTS 한국어 설정·체크포인트 | `myshell-ai/MeloTTS-Korean` | `0207e5adfc90129a51b6b03d89be6d84360ed323` |
+| 합성의 한국어 앞단: 토크나이저·BERT (melo가 고정 id로 부른다) | `kykim/bert-kor-base` | `1779cc0982ada0216dd6de0dd4e86fb78201926d` |
+| 인식: `large-v3-turbo` (CTranslate2 변환본) | `mobiuslabsgmbh/faster-whisper-large-v3-turbo` | `0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf` |
+
+- 2026-10-29부터 음성 실행의 `manifest.json`에 `voice_extra`가 남는다 (11단계 `voice_real run`도 같다): `versions`(MeloTTS가 고정하는 `transformers`·`librosa`, 그 transformers가 범위를 묶는 `tokenizers`·`huggingface-hub`, 그리고 `numpy`의 버전)와 `model_revisions`(위 세 저장소마다, 모델을 올린 직후 캐시의 `main`이 가리키는 스냅숏 이름. 찾지 못하면 `?`). 파일 sha256은 남기지 않는다 (가중치가 수백 MB~1.6 GB라 실행마다 HDD에서 수십 초가 든다)
+- `voice_extra`는 왕복 캐시 키와 짝짓기 검사(`analyze same-setup`, 끼워 넣기 검사, 11단계 재현 확인)에 넣지 않는다. 넣으면 이 항목이 없는 기존 음성 기록 전부와 "다름"이 되기 때문이다. 두 실행의 이 값은 사람이 대조한다. 끼워 넣은 기록(`analyze stitch`)은 원래 실행의 manifest를 그대로 쓰므로, 다시 잰 에피소드 쪽 값은 `stitched.rerun`이 가리키는 실행의 manifest에 있다
+- 한 번 받은 뒤에는 `HF_HUB_OFFLINE=1`로 띄우면 허브에 묻지 않는다. 캐시의 `refs/main`이 가리키는 스냅숏을 그대로 쓰고, 캐시에 없는 파일은 받지 않고 바로 오류를 낸다. transformers 4.27.4는 이 변수를 직접 읽지 않지만 파일을 huggingface_hub(0.36.2)로 받으므로 BERT도 캐시에서 온다 (2026-10-29 CPU로 확인: melo 불러오기(토크나이저), MeloTTS 설정·체크포인트, BERT 가중치, 인식 모델 스냅숏이 모두 캐시에서 풀렸고, 캐시에 없는 파일은 곧바로 `LocalEntryNotFoundError`). 처음 한 번은 온라인으로 받아야 하고, BERT 가중치는 첫 합성 때 받는다
+
+```bash
+export HF_HUB_OFFLINE=1    # PowerShell: $env:HF_HUB_OFFLINE = "1"
+uv run --group voice python -m support_agent.run --tasks dev --trials 4 --voice V1
+```
+
 ## 채팅 서비스에서 말로 상담하기
 
 `SUPPORT_AGENT_VOICE=1`로 서비스를 띄우면 채팅 화면에 마이크 버튼이 생긴다. 음성 모델이 필요하므로 Docker가 아니라 호스트에서 띄운다.
@@ -100,6 +119,7 @@ uv run --no-sync python -m support_agent.voice_real report reports/<위 실행>
 ## 정한 것과 이유
 
 - **음성 모델은 옆 프로젝트에서 이미 잰 것을 쓴다.** 한국어 합성은 MeloTTS(재인식 CER 5.5%로 사람 녹음 5.4%와 비슷했다), 인식은 faster-whisper `large-v3-turbo`다. MeloTTS는 transformers 4.27을 고정하고 Windows에서 우회 세 개가 필요하다 (`speech.py`의 `_prepare_melo_on_windows`). 본체는 transformers를 쓰지 않아 한 환경에 같이 설치된다. MeloTTS의 시연 화면만 쓰는 gradio는 설치에서 뺐다
+- **(2026-10-29 보탬) transformers 4.27.4 고정의 알려진 위험.** voice 그룹은 MeloTTS(git rev `2091453`)의 Requires-Dist가 `transformers==4.27.4`를 정확히 요구해 고정된다 (`pyproject.toml`의 같은 줄을 지워도 해석은 같고, 올리려면 `override-dependencies`가 필요하다. 그러면 합성 경로가 바뀐다). 이 버전에는 pip-audit 기준 고유 권고 30건이 있다 (2026-10-24. 2026-10-29에 다시 확인해 같은 30건). 함께 묶이는 패키지(transformers가 요구하는 tokenizers<0.14·huggingface-hub<1.0, MeloTTS가 요구하는 librosa==0.9.1, MeloTTS의 의존성 gruut 2.2.3이 요구하는 numpy<2.0.0. 잠금 버전은 tokenizers 0.13.3·huggingface-hub 0.36.2·librosa 0.9.1·numpy 1.26.4)에는 같은 날 권고가 없었다. 이 저장소는 고정 id `kykim/bert-kor-base`의 토크나이저·BERT만 불러 해당 코드 경로를 부르지 않고, torch 2.11의 `torch.load` 기본값(`weights_only=True`)이 pickle 경로를 막는다 (MeloTTS 체크포인트와 BERT 가중치를 읽는 두 호출 모두 `weights_only`를 주지 않아 기본값을 따른다. 환경 변수 `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD`를 켜면 이 막음이 풀린다). 서비스 Docker 이미지와 CI에는 설치되지 않는다 (Dockerfile은 `uv sync --frozen --no-dev`, CI는 `uv sync --frozen`이라 voice 그룹을 넣지 않는다). 이 환경에서 신뢰할 수 없는 모델·체크포인트를 열지 말 것. 왕복 캐시 키에는 transformers 버전이 없으므로, 이 핀을 바꾸면 `outputs/voice-cache/`의 예전 왕복 결과를 쓰지 않아야 한다. 버전과 모델 스냅숏은 manifest의 `voice_extra`에 남는다 (위 "음성 모델의 리비전")
 - **고객 → 에이전트 방향만 바꾼다.** 시뮬레이터는 자기가 쓴 글을 기억하고, 에이전트의 답은 글 그대로 시뮬레이터에 간다. 그래서 텍스트 실행과의 차이는 "에이전트가 잘못 들었다"에서만 나온다
 - **같은 입력이면 같은 소리.** 합성의 표본 추출 잡음을 발화마다 정해진 seed로 고정하고, 인식은 temperature 0만 쓴다. 그래서 왕복 결과를 캐시해도 측정값이 달라지지 않는다. 캐시 키에는 말로 푼 글과 seed 말고도 모델 이름, 장치, 옵션, 패키지 버전(melotts, torch, faster-whisper, ctranslate2)이 들어간다. 버전이 바뀌면 예전 결과를 쓰지 않는다
 - **음성 파일을 커밋하지 않는다.** 글과 seed로 다시 만들 수 있다

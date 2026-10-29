@@ -13,9 +13,9 @@ MeloTTS는 옆 프로젝트 voice-translator에서 재인식 오류(CER 5.5%, �
 # 앞(0열)의 import 줄에 이 이름들이 없는지 검사한다.
 # 같은 입력이면 같은 소리·같은 글이 나오게 했다: 합성은 발화마다 seed를 고정하고, 인식은 temperature 0만 쓴다.
 # 그래서 왕복 결과를 캐시해도 측정값이 바뀌지 않는다 (docs/voice.md "정한 것과 이유").
-# [주요 구성] 버전 기록(versions) → WAV 만들기(wav_bytes) → Windows 우회(add_cuda_dll_dirs,
-# _prepare_melo_on_windows) → MeloSpeaker → 길이 제한 디코더(decode_limited) → WhisperListener → 시간
-# 재기(timed).
+# [주요 구성] 버전 기록(versions) → 비교하지 않는 음성 기록(model_revisions, voice_extra) → WAV
+# 만들기(wav_bytes) → Windows 우회(add_cuda_dll_dirs, _prepare_melo_on_windows) → MeloSpeaker → 길이 제한
+# 디코더(decode_limited) → WhisperListener → 시간 재기(timed).
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ class AudioTooLongError(ValueError):
 
 # 패키지 이름 → 설치된 버전. 설치되지 않은 것은 "?"로 적는다(예외를 내지 않는다).
 # describe()가 이 버전을 캐시 키와 실행 기록에 넣어, 패키지 버전이 바뀌면 예전 왕복 결과를 쓰지 않게 한다.
-# run.py와 voice_real.py도 manifest의 versions 항목에 이 함수를 쓴다.
+# run.py와 voice_real.py도 manifest의 versions 항목에 이 함수를 쓰고, 비교하지 않는 voice_extra()도 쓴다.
 def versions(*packages: str) -> dict[str, str]:
     """설치된 버전들: 캐시된 왕복 결과가 기대는 것의 일부다."""
     out = {}
@@ -58,6 +58,66 @@ def versions(*packages: str) -> dict[str, str]:
         except PackageNotFoundError:
             out[package] = "?"
     return out
+
+
+# 음성 모델 세 가지의 Hugging Face 허브 저장소와, 리비전을 확인할 때 캐시에서 찾을 파일 하나. 저장소 id는 음성
+# 라이브러리가 정해 둔 것이다: 합성은 melo가 KR 모델의 설정·체크포인트를 myshell-ai/MeloTTS-Korean에서
+# 받고(melo/download_utils.py의 LANG_TO_HF_REPO_ID), 한국어 앞단은 고정 id kykim/bert-kor-base의
+# 토크나이저와 BERT를 쓰며(melo/text/korean.py), 인식은 faster-whisper가 large-v3-turbo
+# (WhisperListener의 기본값)를 mobiuslabsgmbh/faster-whisper-large-v3-turbo에서 받는다
+# (faster_whisper/utils.py). tests/test_run_voice.py가 설치된 라이브러리 소스와 대조한다.
+# 파일은 manifest를 쓰기 전, 곧 모델을 올릴 때 이미 받은 것으로 골랐다. BERT 가중치(pytorch_model.bin)는 첫
+# 합성 때에야 받으므로 kykim/bert-kor-base는 melo를 불러올 때 토크나이저가 받는 vocab.txt로 본다(가중치도 같은
+# refs/main에서 온다).
+SPEECH_MODEL_FILES = {
+    "myshell-ai/MeloTTS-Korean": "checkpoint.pth",
+    "kykim/bert-kor-base": "vocab.txt",
+    "mobiuslabsgmbh/faster-whisper-large-v3-turbo": "model.bin",
+}
+
+
+# 음성 모델 저장소마다, 지금 HF 캐시에서 main이 가리키는 스냅숏 폴더 이름(= 허브 저장소의 커밋)을 돌려준다.
+# 세 라이브러리는 리비전을 주지 않고(main) 받으므로, 모델을 올린 직후 캐시의 main이 가리키는 스냅숏이 그
+# 실행이 읽은 파일이다(온라인이면 받을 때 refs/main을 허브의 main으로 고쳐 쓰고, HF_HUB_OFFLINE=1이면
+# 있던 refs/main을 그대로 쓴다. docs/voice.md "음성 모델의 리비전").
+# 캐시 찾기는 huggingface_hub.try_to_load_from_cache에 맡긴다: 라이브러리들과 같은 캐시 위치(HF_HOME,
+# HF_HUB_CACHE)와 폴더 규칙(models--<조직>--<이름>/refs/main, snapshots/<커밋>/<파일>)을 쓰고 네트워크에 묻지
+# 않는다. 경로를 직접 맞추면 그 규칙을 이 파일이 따로 흉내 내야 한다.
+# 입력 cache_dir: 캐시 폴더(None이면 huggingface_hub의 기본값. 테스트가 가짜 캐시를 준다). 출력: 저장소 →
+# 커밋, 찾지 못하면 "?"(받은 적 없음, 허브에 없다고 캐시된 파일, huggingface_hub가 없는 환경 = 음성 그룹 없음.
+# versions()의 표기와 같다).
+# 주의: transformers 4.27.4는 자기 캐시 변수(TRANSFORMERS_CACHE 등)를 따로 읽는다. 그 변수를 다른 폴더로 두면
+# kykim/bert-kor-base 값은 그 폴더를 보지 않는다(기본 설정에서는 둘 다 HF_HOME/hub). 파일 sha256은 계산하지
+# 않는다: 가중치가 수백 MB~1.6 GB라 HDD에서 실행마다 수십 초가 든다.
+def model_revisions(cache_dir: str | os.PathLike[str] | None = None) -> dict[str, str]:
+    """음성 모델 저장소 → HF 캐시에서 main이 가리키는 스냅숏(커밋) 이름. 찾지 못하면 "?"."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except ImportError:  # 음성 그룹이 없는 환경(CI 등)
+        return dict.fromkeys(SPEECH_MODEL_FILES, "?")
+    out = {}
+    for repo_id, filename in SPEECH_MODEL_FILES.items():
+        # 캐시에 있으면 …/snapshots/<커밋>/<파일> 경로 문자열, 없으면 None, 허브에 없다고 캐시된
+        # 파일이면 경로가 아닌 표시 객체가 온다. 경로일 때만 그 폴더 이름(커밋)을 적는다.
+        path = try_to_load_from_cache(repo_id, filename, cache_dir=cache_dir)
+        out[repo_id] = os.path.basename(os.path.dirname(path)) if isinstance(path, str) else "?"
+    return out
+
+
+# manifest의 voice_extra(2026-10-29부터 run.py·voice_real.py가 남김): 음성 실행이 기대지만 describe()
+# (왕복 캐시 키, 11단계 재현 확인)와 manifest의 versions(끼워 넣기 검사가 비교함)에는 넣지 않는 것.
+# - versions: MeloTTS가 Requires-Dist로 정확히 고정하는 transformers(4.27.4)·librosa(0.9.1), 그 transformers가
+#   범위를 묶는 tokenizers(<0.14)·huggingface-hub(<1.0), 합성 결과와 인식 입력을 다루는 numpy.
+# - model_revisions: 위 model_revisions().
+# 짝짓기 검사(analyze same-setup, respell의 끼워 넣기 검사, voice_real.channel_mismatches)는 이 항목을 보지
+# 않는다. 비교 대상에 넣으면 이 키가 없던 기존 음성 기록 전부와 '다름'이 되어 왕복 캐시와 짝짓기가 모두 끊기기
+# 때문이다. 두 실행의 환경을 나중에 사람이 대조할 근거로만 남긴다.
+VOICE_EXTRA_PACKAGES = ("transformers", "tokenizers", "huggingface-hub", "numpy", "librosa")
+
+
+def voice_extra() -> dict[str, Any]:
+    """manifest에만 남기고 비교하지 않는 음성 쪽 기록: 묶인 패키지 버전과 음성 모델 스냅숏."""
+    return {"versions": versions(*VOICE_EXTRA_PACKAGES), "model_revisions": model_revisions()}
 
 
 # 합성 결과: 16비트 모노 WAV 파일 바이트와 길이(초). 채널은 이 바이트를 녹음 파일처럼 인식기에 넘긴다.
@@ -169,6 +229,8 @@ class MeloSpeaker:
 
     # 합성 설정(모델, 장치, 속도, 패키지 버전). 음성 채널(channel.py)과 voice_real.py가 이 값을 왕복 캐시 키에
     # 넣고, voice_real.channel_mismatches는 9단계 기록과 같은 합성기인지 이 값으로 확인한다.
+    # 항목을 더하면 기존 캐시와 기록 비교가 모두 끊기므로 transformers 버전·모델 스냅숏은 여기 말고
+    # voice_extra()에 둔다(tests/test_stage11.py가 이 설명을 기록과 대조한다).
     def describe(self) -> dict[str, Any]:
         return {
             "tts": "melotts/KR",
@@ -282,7 +344,8 @@ class WhisperListener:
         self._model = WhisperModel(model, device=device, compute_type=self.compute_type)
 
     # 인식 설정(모델, 장치, 정밀도, beam, VAD, 패키지 버전). 왕복 캐시 키와 실행 기록에 들어가고,
-    # voice_real.channel_mismatches가 9단계 기록과 비교하는 값이다.
+    # voice_real.channel_mismatches가 9단계 기록과 비교하는 값이다. 합성 쪽과 같은 이유로 모델 스냅숏은
+    # voice_extra()에 둔다.
     def describe(self) -> dict[str, Any]:
         return {
             "stt": f"faster-whisper/{self.model}",
