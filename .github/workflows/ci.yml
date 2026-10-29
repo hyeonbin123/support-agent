@@ -5,12 +5,17 @@ on:
     branches: [main]
   pull_request:
 
+# 이 워크플로의 GITHUB_TOKEN은 저장소 내용을 읽기만 한다. 적어 두지 않으면 저장소 설정의 기본 권한을 따르므로,
+# 그 기본값이 쓰기로 바뀌어도 이 작업은 읽기 전용으로 남게 여기서 정한다. 작업은 코드를 받아 린트·테스트만 한다.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     env:
       UV_PYTHON: "3.11"
-      # tests/test_postgres.py runs only when this is set (a throwaway server for this job)
+      # tests/test_postgres.py는 이 값이 있을 때만 돈다(이 작업에서만 쓰고 버리는 서버)
       SUPPORT_AGENT_TEST_PG_URL: postgresql+psycopg://support:ci-only@127.0.0.1:5432/support
     services:
       postgres:
@@ -27,10 +32,16 @@ jobs:
           --health-timeout 3s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v7
+      # 액션은 태그가 아니라 커밋 SHA로 부른다. 태그는 다른 커밋으로 옮길 수 있어, 옮겨지면 검토하지 않은 코드가
+      # 이 작업에서 돈다. 줄 끝 주석은 그 SHA를 가리키는 릴리스 태그다. 올릴 때는 새 태그가 가리키는 SHA를
+      # `git ls-remote https://github.com/<소유자>/<저장소> refs/tags/<태그>`로 확인해 SHA와 주석을 함께 바꾼다.
+      # persist-credentials: false: 토큰을 .git/config에 남기지 않는다. 뒤 단계는 git으로 원격에 닿지 않는다.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
-      # setup-uv publishes no floating major tag, so pin the exact release.
-      - uses: astral-sh/setup-uv@v10.1.0
+      # setup-uv는 v10 같은 큰 버전 태그를 내지 않아 정확한 릴리스로 고정해 왔다. 그 릴리스의 커밋 SHA로 부른다.
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
         with:
           enable-cache: true
 

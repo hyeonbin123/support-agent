@@ -44,7 +44,7 @@ uv run --group voice python -m support_agent.run --tasks dev --trials 4 --voice 
 ```bash
 uv sync --group voice
 export SUPPORT_AGENT_VOICE=1 SUPPORT_AGENT_ADMIN_TOKEN=local-admin    # PowerShell: $env:SUPPORT_AGENT_VOICE = "1"
-uv run --group voice uvicorn support_agent.service.app:create_app --factory --port 8062
+uv run --group voice uvicorn support_agent.service.app:create_app --factory --port 8062 --no-access-log
 ```
 
 - `POST /api/sessions/{id}/voice`: 본문은 브라우저가 녹음한 음성 그대로(webm, ogg, wav, mp4. 5 MB까지). 인식된 문장을 `heard` 이벤트로 먼저 보내고, 그 뒤는 글로 보낸 메시지와 같은 길을 간다. 인식된 것이 없으면 턴을 쓰지 않고 다시 말해 달라고 한다. 동시에 도는 턴이 한도(4)에 닿으면 글 메시지와 같이 503과 `Retry-After`를 받는다. 화면은 이 503과 음성 기능이 꺼진 503(`Retry-After` 없음)을 가려, 앞의 것에는 잠시 뒤 다시 보내 달라고만 안내하고 마이크 버튼을 그대로 둔다 (2026-10-24 고침. 전에는 둘 다 음성 막대를 숨겨 붐빌 때 음성 모드가 꺼졌다)
