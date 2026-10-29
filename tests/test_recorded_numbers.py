@@ -9,7 +9,9 @@
 # 없는 쓰기, 통과된 규정 위반, 거짓 완료 전달 수, 본인 확인 성공률, 음성 인식 지표, 시뮬레이터 계수와,
 # 표 아래 문장 가운데 고른 것(1·2단계 기준선, 2단계 시험용, 5단계, 13단계 B·판정·D1)의 수를 다시 계산해
 # README의 글자와 맞춰 본다. docs/experiments.md에서는 13단계 결과의 보고만 하는 지표 표와 D1 '읽는 법'의
-# 수를 맞춰 본다. 기록과 공개 문장이 어긋나면(수치를 고치고 문장을 빠뜨리거나 그 반대) 여기서 실패한다.
+# 수를 맞춰 본다. 공통 규칙의 시험용 사용 장부(시험용 기록 목록·시각·커밋·과제 해시)와 README 한계의
+# 시험용 기록 수는 manifest로 맞춰 본다. 기록과 공개 문장이 어긋나면(수치를 고치고 문장을 빠뜨리거나 그
+# 반대) 여기서 실패한다.
 # 여기서 맞춰 보지 않는 문장 속 수치는 CI가 지키지 않는다(README "다시 재는 방법"에 그 범위를 적었다).
 # [왜 필요한가] 측정 뒤 수치·문장 바로잡음이 여러 번 있었다(docs/experiments.md의 '바로잡음' 절들).
 # 사람이 대조하던 일을 테스트로 옮긴다. README 문장을 바꾸면 이 테스트도 바꿔야 한다(의도된 마찰).
@@ -24,8 +26,10 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from functools import cache
 from itertools import pairwise
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -185,8 +189,14 @@ def test_stage5_test_table():
 
 
 def test_stage5_sentences():
+    # 채널 글자 오류율(voice.metrics.channel_summary): 고객이 쓴 글(said)과 에이전트가 받은 글(text, V2면
+    # 정규화 뒤)의 편집 거리 / 고객이 쓴 글자 수. 인식기만의 오류율이 아니어서 README는 이 이름과 정의 줄을
+    # 쓴다(2026-10-29부터. 전에는 '인식 결과의 글자 오류율'). 정의 줄의 V1 → V2 시험용 값도 같은 셈으로
+    # 맞춘다.
     cer = voice_metrics.channel_summary(episodes(TEST_V1))["cer"]
-    assert_in_readme(f"인식 결과의 글자 오류율은 {cer:.1%}인데")
+    assert_in_readme(f"채널 글자 오류율(고객이 쓴 글 대비 에이전트가 받은 글)은 {cer:.1%}인데")
+    normalized = voice_metrics.channel_summary(episodes(TEST_V2))["cer"]
+    assert_in_readme(f"시험용 값이 {cer:.1%}에서 {normalized:.1%}로 내려갔다")
     diff, _, _ = analyze.paired_difference(by_task(DEV_V1), by_task(DEV_V2), 1)
     test_diff, _, _ = analyze.paired_difference(by_task(TEST_V1), by_task(TEST_V2), 1)
     assert_in_readme(f"개발용({signed(diff)}%p)과 시험용({signed(test_diff)}%p)에서 같은 방향이다")
@@ -313,8 +323,10 @@ def test_stage11_table():
         counts, share = re.match(r"(\d+/\d+) \((.+)\)", cell).groups()
         return f"{share} ({counts})"
 
+    # 보고서(voice_real.report)의 행 이름은 '글자 오류율' 그대로이고, README 표는 같은 값을 '채널 글자
+    # 오류율'로 적는다(말한 글 대비 정규화 뒤 받아쓰기라 5단계와 같은 정의, 2026-10-29부터).
     cer = rows["글자 오류율"]
-    assert_in_readme(f"| 글자 오류율 | {cer[0]} | {cer[1]} | {spread(cer)} |")
+    assert_in_readme(f"| 채널 글자 오류율 | {cer[0]} | {cer[1]} | {spread(cer)} |")
     name = rows["이름 (정확히, k = 0)"]
     assert_in_readme(
         f"| 이름 정확 생존 (V4 본인 확인의 기준) | {share_first(name[0])} | {share_first(name[1])} "
@@ -453,6 +465,64 @@ def test_stage13_reported_only_rows(run):
         f"| {s['held_stalls']} | {s['held_repeats']} | {s['e1_facts']} | {s['seconds']:.1f} "
         f"| {s['agent_ms']:.0f} | {s['other_script']} | {s['infra']} |"
     )
+
+
+# ---------------------------------------------------------------- 시험용 사용 장부 (시험용 40과제를 쓴 기록)
+
+# [무엇] docs/experiments.md 공통 규칙의 '시험용 사용 장부' 표가 reports/에서 시험용 과제 파일(manifest의
+# tasks_file이 test)로 돈 기록을 빠짐없이, 그것만 적었는지 본다. 행의 시작 시각(한국 시각)과 커밋이 그 기록의
+# manifest와 같은지, 모든 기록의 과제 해시가 같은지도 본다. README 한계와 장부 머리의 '기록 N개(실행 설정
+# M가지)'는 manifest에서 센다. 실행 설정은 manifest의 config(키와 값)가 서로 다른 것의 수다. 2단계 기준과
+# 8단계 P0·7B 참조는 설정 값이 같지만 뒤에 생긴 키가 더해져 config가 달라 따로 센다(Ollama 버전도 다르다.
+# 장부에 적은 대로).
+# [왜] 규칙은 단계마다 재기 전에 정한 구성만 한 번 재는 것이지만, 단계를 건너서는 같은 40과제를 거듭 쓴다.
+# 그 횟수가 적혀 있지 않으면 한 번 쓰고 덮은 집합으로 읽힌다. 앞으로 시험용을 재면 장부에 한 줄을 보태고
+# 두 곳의 수를 함께 고쳐야 이 테스트가 통과한다(의도된 마찰).
+# [주의] 시험용 기록은 manifest만 읽는다(에피소드는 열지 않는다). 기록 이름의 시각은 UTC이고 장부의 시각은
+# 한국 시각(UTC+9)이다. 끼워 넣어 만든 기록(analyze stitch)의 manifest는 원래 실행의 시작 시각과 커밋을
+# 지닌다.
+KST = timezone(timedelta(hours=9))
+
+
+def runs_on_test_tasks() -> dict[str, dict[str, Any]]:
+    """reports/ 아래 기록 가운데 시험용 과제 파일로 돈 것의 {기록 이름: manifest}."""
+    runs = {}
+    for path in sorted(REPORTS.iterdir()):
+        manifest = path / "manifest.json"
+        if manifest.is_file():
+            loaded = json.loads(manifest.read_text(encoding="utf-8"))
+            if Path(str(loaded.get("tasks_file", ""))).stem == "test":
+                runs[path.name] = loaded
+    return runs
+
+
+def test_test_set_ledger():
+    runs = runs_on_test_tasks()
+    # 장부 절만 떼어 낸다: 제목 뒤부터 다음 제목(#~###) 앞까지.
+    assert "### 시험용 사용 장부" in EXPERIMENTS, "docs/experiments.md 공통 규칙에 시험용 사용 장부 절이 없다"
+    ledger = EXPERIMENTS.split("### 시험용 사용 장부", 1)[1]
+    ledger = re.split(r"\n#{1,3} ", ledger, maxsplit=1)[0]
+    rows = re.findall(
+        r"^\| [^|]+ \| `([^`]+)` \| (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) \| `([0-9a-f]{7})` \|", ledger, re.M
+    )
+    assert sorted(name for name, _, _ in rows) == sorted(runs), (
+        "장부의 기록 목록이 reports/의 시험용 기록과 다르다"
+    )
+    for name, started, commit in rows:
+        manifest = runs[name]
+        assert started == datetime.fromisoformat(manifest["started_at"]).astimezone(KST).strftime(
+            "%Y-%m-%d %H:%M"
+        )
+        assert manifest["commit"].startswith(commit), name
+    configs = {json.dumps(m["config"], sort_keys=True) for m in runs.values()}
+    count = f"기록 {len(runs)}개(실행 설정 {len(configs)}가지)"
+    assert_in_readme(count)
+    assert_in_experiments(count)
+    # 장부의 "12개 manifest의 과제 해시(40과제)는 모두 같다": 시험용 과제는 측정을 시작한 뒤 고치지 않는다는
+    # 규칙(공통 규칙 "과제")이 기록에서도 맞는지. 고치면 이 단언과 장부의 그 문장을 함께 고친다.
+    task_hashes = {json.dumps(m["task_sha256"], sort_keys=True) for m in runs.values()}
+    assert len(task_hashes) == 1 and len(next(iter(runs.values()))["task_sha256"]) == 40
+    assert_in_experiments(f"{len(runs)}개 manifest의 과제 해시(40과제)는 모두 같다")
 
 
 # ---------------------------------------------------------------- 기록된 프롬프트가 조용히 잘렸을 수 있는가

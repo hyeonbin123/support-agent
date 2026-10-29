@@ -1,0 +1,9 @@
+# gitleaks(비밀값 스캐너)가 찾지만 비밀값이 아닌 것의 지문. 형식은 gitleaks의 git 이력 검사 지문
+# "커밋:파일:규칙:줄"이다 (gitleaks detect / gitleaks git이 저장소 루트의 이 파일을 읽는다).
+#
+# reports/의 측정 기록은 모델 출력을 고치지 않고 남긴다. 아래 지문은 5단계 시험용 V2 기록의 한 에피소드(150줄)에서
+# qwen2.5 7B가 이 프로젝트에 없는 도구 인자(toolbench_rapidapi_key)에 지어 넣은 RapidAPI 키 모양 값이다
+# (같은 줄에 세 번 나와 지문은 하나다). 학습 데이터에서 외운 것으로 보이며 이 프로젝트의 비밀값이 아니고,
+# 실제로 쓰이는 키인지는 시험하지 않았다. 측정 원본이라 값을 가리거나 이력을 고쳐 쓰지 않는다
+# (README "한계"). 지문에 든 것은 커밋·경로·규칙 이름·줄 번호뿐이고 값은 없다.
+64d068befc7674ddc10c7aecd96269bef8126535:reports/20260921-193331-qwen2.5-7b-instruct-P0-R0-G0-F0-V2-test-v2/episodes.jsonl:rapidapi-access-token:150
