@@ -1,20 +1,23 @@
-"""README의 대표 수치를 커밋된 reports/ 기록에서 다시 계산해, README 글과 같은지 확인한다.
+"""README와 docs/experiments.md의 기록 수치를 커밋된 reports/ 기록에서 다시 계산해, 글과 같은지 확인한다.
 
-모델을 부르지 않는다. 기록만 읽어 analyze.py·voice/metrics.py·sim_report.py·voice_real.py와 같은 계산으로
-수치를 내고, README 표의 행(또는 문장 조각)이 그 값으로 쓰여 있는지 본다.
+모델을 부르지 않는다. 기록만 읽어 analyze.py·voice/metrics.py·sim_report.py·voice_real.py·guard_report.py와
+같은 계산으로 수치를 내고, 표의 행(또는 문장 조각)이 그 값으로 쓰여 있는지 본다.
 """
 
 # [테스트 묶음] README "이 저장소의 수치는 모두 reports/의 기록에서 다시 계산된다"를 CI가 지키게 한다.
-# 단계별 대표 표(2·5·7·8·9·11·12단계)의 pass^1·pass^4, 과제 단위로 짝지은 차이와 95% 구간, 정답에 없는 쓰기,
-# 통과된 규정 위반, 거짓 완료 전달 수, 본인 확인 성공률, 음성 인식 지표, 시뮬레이터 계수를 다시 계산해
-# README의 행 글자와 맞춰 본다. 기록과 공개 문장이 어긋나면(수치를 고치고 문장을 빠뜨리거나 그 반대) 여기서
-# 실패한다. [왜 필요한가] 측정 뒤 수치·문장 바로잡음이 여러 번 있었다(docs/experiments.md의 '바로잡음' 절들).
+# 단계별 대표 표(2·5·7·8·9·11·12·13단계)의 pass^1·pass^4, 과제 단위로 짝지은 차이와 95% 구간, 정답에
+# 없는 쓰기, 통과된 규정 위반, 거짓 완료 전달 수, 본인 확인 성공률, 음성 인식 지표, 시뮬레이터 계수와,
+# 표 아래 문장 가운데 고른 것(1·2단계 기준선, 2단계 시험용, 5단계, 13단계 B·판정·D1)의 수를 다시 계산해
+# README의 글자와 맞춰 본다. docs/experiments.md에서는 13단계 결과의 보고만 하는 지표 표와 D1 '읽는 법'의
+# 수를 맞춰 본다. 기록과 공개 문장이 어긋나면(수치를 고치고 문장을 빠뜨리거나 그 반대) 여기서 실패한다.
+# 여기서 맞춰 보지 않는 문장 속 수치는 CI가 지키지 않는다(README "다시 재는 방법"에 그 범위를 적었다).
+# [왜 필요한가] 측정 뒤 수치·문장 바로잡음이 여러 번 있었다(docs/experiments.md의 '바로잡음' 절들).
 # 사람이 대조하던 일을 테스트로 옮긴다. README 문장을 바꾸면 이 테스트도 바꿔야 한다(의도된 마찰).
 # [주의] 시험용 기록은 수치만 다시 계산하고 대화 내용을 보지 않는다(시험용 에피소드를 보며 무엇을 고치지
 # 않는다는 규칙과 어긋나지 않는다). 기록 하나를 읽는 데 수백 ms라 실행마다 한 번만 읽어 둔다.
-# [함께 확인하는 것] 기록된 어느 실행에서도 Ollama가 프롬프트를 조용히 잘라 답한 흔적이 없다(같은 에피소드
-# 안에서 같은 역할의 프롬프트 길이가 줄어든 호출 0). 2026-10-15부터 요청에 넣은 truncate: false가 기록된
-# 응답을 바꾸지 않았을 것이라는 근거다(docs/experiments.md 공통 규칙의 2026-10-15 메모).
+# [함께 확인하는 것] 요청에 truncate 필드가 없던 2026-10-15 전 실행에서 Ollama가 프롬프트를 조용히
+# 잘랐을 수 있는 호출을 센다(근거는 맨 아래 절). num_ctx 8192로 잰 2단계 14B 두 기록 말고는 잘림이 있을
+# 수 없다.
 
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ import json
 import re
 from collections import Counter
 from functools import cache
+from itertools import pairwise
 from typing import Any
 
 import pytest
@@ -31,6 +35,8 @@ from support_agent.paths import REPORTS, ROOT
 from support_agent.voice import metrics as voice_metrics
 
 README = (ROOT / "README.md").read_text(encoding="utf-8")
+# 측정 규칙과 결과의 원본. 13단계 보고 지표 표처럼 README에 옮기지 않은 기록 수치를 여기서 맞춰 본다.
+EXPERIMENTS = (ROOT / "docs" / "experiments.md").read_text(encoding="utf-8")
 
 # 단계별 기록 이름 (reports/ 아래 폴더). 실행 이름의 시각은 UTC다.
 STAGE1_BASELINE = "20260919-102552-qwen2.5-7b-instruct-P0-R0-baseline2"
@@ -114,6 +120,10 @@ def format_errors(name: str) -> int:
 
 def assert_in_readme(text: str) -> None:
     assert text in README, f"README에 이 글이 없다(기록에서 다시 계산한 값): {text!r}"
+
+
+def assert_in_experiments(text: str) -> None:
+    assert text in EXPERIMENTS, f"docs/experiments.md에 이 글이 없다(기록에서 다시 계산한 값): {text!r}"
 
 
 # ---------------------------------------------------------------- 1·2단계
@@ -387,22 +397,127 @@ def test_stage13_test_row_and_verdict():
     assert_in_readme(f"**판정: {result}.**")
 
 
-# ---------------------------------------------------------------- 기록된 프롬프트가 잘린 흔적이 없다
+def held_repeats_answered_again(name: str) -> tuple[int, int]:
+    """(다음 에이전트 호출이 이어진 붙잡은 되풀이 수, 그 다음 호출이 도구 호출 없이 같은 글을 낸 수)."""
+    followed = same = 0
+    for episode in episodes(name):
+        if episode["status"] == "infra_error":
+            continue
+        calls = [c for c in episode["llm_calls"] if c["who"] == "agent"]
+        for held, after in pairwise(calls):
+            if held["format_error"] == "repeat":
+                followed += 1
+                if not after["tool_calls"] and after["text"] == held["text"]:
+                    same += 1
+    return followed, same
 
 
-# 잘림이 있었다면 Ollama가 잘린 길이를 prompt_eval_count로 보고해, 같은 에피소드 안에서 같은 역할의 프롬프트
-# 길이가 앞 호출보다 줄어든다(대화는 덧붙기만 하므로 정상이면 줄지 않는다). 또 기록된 프롬프트는 모두 그
-# 실행의 num_ctx보다 짧다. 그래서 truncate: false를 보냈더라도 기록된 응답은 같았다.
+# D1(바로 앞 답의 되풀이를 한 번 다시 시킴) 문장의 세 수. README 13단계 절과 docs/experiments.md
+# 13단계 '읽는 법'에 같은 수가 있다.
+# [무엇을 세나] 붙잡은 답(format_error "repeat") 가운데 다음 에이전트 호출이 이어진 것. 붙잡은 호출이
+# 에피소드의 마지막 호출이면 셀 다음이 없다(보고 표의 '붙잡은 되풀이'는 그것까지 센 수라 이것보다 크다).
+# 그 다음 호출이 도구 호출 없이 글자까지 같은 글을 낸 것(이 기록에서는 공백만 빼고 비교하는 가드의
+# is_repeat로 세도 같다). LLM 호출 한도(max_agent_calls)로 끝난 에피소드(기준 8단계 M2b와 함께).
+# infra_error 에피소드는 세지 않는다.
+def test_stage13_d1_sentences():
+    d1 = STAGE13_DEV["D1: 바로 앞 답의 되풀이를 한 번 다시 시킴"]
+    followed, same = held_repeats_answered_again(d1)
+    limit = analyze.load_manifest(REPORTS / d1)["config"]["max_agent_calls"]  # 에피소드당 LLM 호출 한도
+    capped = {
+        run: sum(e["termination"] == "max_agent_calls" for e in episodes(run) if e["status"] != "infra_error")
+        for run in (DEV_M2B, d1)
+    }
+    assert_in_readme(
+        f"붙잡힌 답 {followed}번 중 {same}번 같은 답을 다시 냈고, "
+        f"그만큼 호출이 늘어 {capped[d1]}개 에피소드가 LLM 호출 한도로 끝났다"
+    )
+    assert_in_experiments(f"붙잡은 답 {followed}번 뒤 다시 낸 답이 {same}번 글자까지 같았다")
+    assert_in_experiments(
+        f"{capped[d1]}개 에피소드가 에피소드당 LLM 호출 한도({limit})에 닿아 "
+        f"`max_agent_calls`(실패)로 끝났다 (기준 {capped[DEV_M2B]})"
+    )
+    assert_in_experiments(f"(D1 {same}/{followed})")
+
+
+# docs/experiments.md 13단계 결과의 보고만 하는 지표 표. 개발용 기준·네 팔과 시험용 기준·E1의 일곱 행이고
+# 열은 전달된 거짓 완료, 같은 답 되풀이로 끝남, 전달된 멈춤 답, 붙잡은 완료 주장·멈춤·되풀이, E1 사실을 붙인
+# 거절, 에피소드당 초, 에이전트 호출 ms, 한자 섞인 답, infra다. 이 표는 analyze guards·guards-verdict가 낸
+# 것을 옮겼다고 적혀 있으므로, 같은 셈(guard_report.run_stats)으로 행 전체를 다시 만들어 그 글자를 찾는다.
+@pytest.mark.parametrize("run", [DEV_M2B, *STAGE13_DEV.values(), TEST_M2B, STAGE13_TEST])
+def test_stage13_reported_only_rows(run):
+    from support_agent import guard_report
+
+    s = guard_report.run_stats(REPORTS / run)
+    assert_in_experiments(
+        f"| {run} | {s['false_claims']} | {s['loops']} | {s['stall_replies']} | {s['held_claims']} "
+        f"| {s['held_stalls']} | {s['held_repeats']} | {s['e1_facts']} | {s['seconds']:.1f} "
+        f"| {s['agent_ms']:.0f} | {s['other_script']} | {s['infra']} |"
+    )
+
+
+# ---------------------------------------------------------------- 기록된 프롬프트가 조용히 잘렸을 수 있는가
+
+# [잘림 모형] 2026-10-15 전의 실행은 Ollama 요청에 truncate 필드가 없었다. 그러면 Ollama 0.35.1
+# (server/prompt.go의 chatPrompt)은 프롬프트가 num_ctx를 넘을 때 오류 없이, 시스템 메시지를 두고 앞
+# 메시지부터 빼서 num_ctx 안에 드는 가장 긴 메시지 접미사만 모델에 넣는다. 그래서 잘린 호출의 보고 길이
+# (prompt_eval_count)는 num_ctx 가까이(빠진 메시지 하나의 길이 안쪽) 남고, 앞 호출보다 짧아진다는 보장이
+# 없다. 같은 역할의 길이가 줄지 않았다는 것만으로는 잘림을 배제하지 못한다(docs/experiments.md 2026-10-15
+# 메모의 2026-10-29 바로잡음).
+# [근거] 대화는 덧붙기만 하므로 어느 호출이 잘리려면 바로 앞 호출의 길이 + 한 번에 늘어난 길이가 num_ctx를
+# 넘어야 한다. 한 번에 늘어난 길이는 이 기록들에서 최대 MAX_STEP이므로(아래 테스트가 그 전제를 확인한다),
+# 앞 호출이 num_ctx − MAX_STEP 이하이면 다음 호출은 잘릴 수 없다. 에이전트는 프롬프트가 num_ctx의 95%를 넘은
+# 호출에서 에피소드를 끝내므로(agent.py의 context_limit), 잘림을 배제하지 못하는 것은 길이가
+# (num_ctx − MAX_STEP, 0.95·num_ctx] 띠에 든 호출의 바로 다음 호출뿐이다. 95%를 넘은 호출 자체는 잘렸든
+# 아니든 truncate: false에서도 context_limit 종료라 결과가 같다. 시뮬레이터에는 95% 검사가 없으므로
+# 시뮬레이터의 띠는 (한도 − MAX_STEP, 한도)다.
+# [범위] 2026-10-15부터의 실행은 truncate: false를 보냈고(manifest의 제공자 설명에 남음), Ollama는 넘친
+# 요청을 잘라 답하지 않고 HTTP 400으로 거절하므로 띠 셈이 필요 없다. 그 전 실행 36개 가운데 띠에 호출이 든
+# 것은 num_ctx 8192로 잰 2단계 14B 두 기록뿐이고, 그 수를 기록값으로 고정한다. 두 기록은 판정을 가르지
+# 않았다: 개발용 m1은 호출당 시간 조건(7.8배, 3배 이하)만으로도 채택하지 않는 2단계 후보이고, 시험용은
+# 판정과 무관한 참고 측정이다.
+
+# 기록에서 본, 같은 에피소드·같은 역할의 한 호출에서 다음 호출로 늘어난 프롬프트 길이의 최대값(토큰).
+MAX_STEP = {"agent": 1075, "user": 494}
+# 실행 → (띠에 든 에이전트 호출 수, 띠 호출 다음에 같은 역할의 호출이 이어진 에피소드 수).
+NOT_EXCLUDED = {STAGE2_CANDIDATES["qwen2.5 14B"]: (6, 2), TEST_M1: (20, 6)}
+
+
 @pytest.mark.parametrize("run", sorted(p.name for p in REPORTS.iterdir() if (p / "episodes.jsonl").exists()))
 def test_no_recorded_prompt_was_silently_truncated(run):
-    config = json.loads((REPORTS / run / "manifest.json").read_text(encoding="utf-8"))["config"]
+    manifest = json.loads((REPORTS / run / "manifest.json").read_text(encoding="utf-8"))
+    config = manifest["config"]
     limits = {"agent": config["num_ctx"], "user": config.get("user_num_ctx") or config["num_ctx"]}
+    # 두 제공자 모두 truncate: false를 보낸 실행: 넘친 요청은 잘리지 않고 거절됐다(띠 셈을 하지 않음).
+    sides = ("agent_provider", "user_provider")
+    refused = all((manifest.get(side) or {}).get("truncate") is False for side in sides)
+    # 역할 → 길이가 한도 − MAX_STEP을 넘은 호출 수(에이전트는 95%를 넘은 호출도 든다).
+    near: Counter[str] = Counter()
+    band = 0  # 띠 (num_ctx − MAX_STEP, 0.95·num_ctx]에 든 에이전트 호출 수
+    # 한도 − MAX_STEP을 넘은 호출 다음에 같은 역할의 호출이 이어진 에피소드 (과제, 시도).
+    exposed: set[tuple[str, int]] = set()
     for episode in episodes(run):
-        longest = {"agent": 0, "user": 0}
+        key = (episode["task_id"], episode["trial"])
+        last = {"agent": 0, "user": 0}
         for call in episode["llm_calls"]:
             tokens, who = call["prompt_tokens"] or 0, call["who"]
-            if not tokens:
+            if not tokens:  # 길이를 보고하지 않은 호출은 건너뛴다(증가는 그 앞뒤 호출 사이로 잰다)
                 continue
-            assert tokens >= longest[who], (episode["task_id"], episode["trial"], who, longest[who], tokens)
-            assert tokens < limits[who]
-            longest[who] = tokens
+            # 모든 실행의 기록 점검: 같은 역할의 보고 길이는 줄지 않고 한도보다 짧다(이것만으로는 잘림을
+            # 배제하지 못한다).
+            assert last[who] <= tokens < limits[who], (*key, who, last[who], tokens)
+            if not refused:
+                margin = limits[who] - MAX_STEP[who]
+                assert not last[who] or tokens - last[who] <= MAX_STEP[who], (*key, who, last[who], tokens)
+                if last[who] > margin:
+                    exposed.add(key)
+                if tokens > margin:
+                    near[who] += 1
+                    if who == "agent" and tokens <= 0.95 * limits["agent"]:
+                        band += 1
+            last[who] = tokens
+    if refused:
+        return
+    assert near["user"] == 0, near
+    assert (band, len(exposed)) == NOT_EXCLUDED.get(run, (0, 0))
+    if run not in NOT_EXCLUDED:  # 띠 위(95% 초과)의 에이전트 호출도 없어야 한다
+        assert near["agent"] == 0, near
