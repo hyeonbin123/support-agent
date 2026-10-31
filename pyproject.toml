@@ -30,8 +30,8 @@ dev = [
     "pytest>=8.2",
     "ruff>=0.6",
 ]
-# Stage 5 only (docs/voice.md): speech synthesis and recognition for the voice channel. Several GB, GPU
-# builds of torch. Nothing else imports these, and the tests run without them.
+# 5단계 음성 채널에서만 쓴다(docs/voice.md): 음성 합성과 인식. 수 GB이고 torch는 GPU 빌드다. 본체의 다른
+# 코드는 이 패키지들을 import하지 않고, 테스트는 이것 없이도 돈다.
 voice = [
     "faster-whisper>=1.2",
     "melotts",
@@ -45,13 +45,23 @@ voice = [
 
 [tool.uv]
 override-dependencies = [
-    # MeloTTS's Japanese front end: on a case-insensitive file system mecab-python3's `MeCab` folder is
-    # python-mecab-ko's `mecab` (voice/tts.py stands in for the Japanese module on Windows).
+    # MeloTTS의 일본어 앞단이 쓰는 mecab-python3: 대소문자를 가리지 않는 파일 시스템에서는 그 `MeCab` 폴더가
+    # python-mecab-ko의 `mecab` 폴더와 같은 폴더가 된다. 그래서 Windows에서는 설치하지 않고,
+    # voice/speech.py의 `_prepare_melo_on_windows`가 일본어 모듈 자리에 빈 모듈을 넣는다.
     "mecab-python3; sys_platform != 'win32'",
-    # The full unidic dictionary is a separate 770 MB download; unidic-lite is enough.
+    # unidic 전체 사전은 따로 770 MB를 내려받아야 한다. unidic-lite로 충분하다.
     "unidic; sys_platform == 'never'",
-    # Only MeloTTS's demo page uses gradio; leaving it out keeps its web stack away from ours.
+    # gradio는 MeloTTS의 시연 화면만 쓴다. 빼 두면 그 웹 스택이 이 서비스의 웹 스택과 섞이지 않는다.
     "gradio; sys_platform == 'never'",
+    # filelock 하한(2026-11-01): MeloTTS가 끌어오는 cached-path 1.8.10은 `filelock<4.0,>=3.4`를 요구하지만,
+    # filelock 3.x에는 2026-10에 공개된 권고 13건(CVE-2026-112907 등. 대부분 잠금 파일이나 그 폴더를 같은 PC의
+    # 다른 계정이 바꿔치기·선점할 수 있을 때 성립)을 고친 판이 없다(고친 판 4.2.1, 하나는 4.0.9). 그 상한을
+    # 덮어 음성 그룹이 4.x를 쓰게 한다. cached-path는 FileLock을 상속해 생성자 인수 read_only_ok를 더하고
+    # acquire를 감쌀 뿐이고, FileLock의 생성자·acquire 서명은 3.32.7과 4.2.6에서 같다. cached-path·
+    # huggingface_hub·torch의 잠금 사용을 두 판에서 CPU로 확인해 결과가 같았다(docs/voice.md "정한 것과
+    # 이유"의 2026-11-01 보탬). filelock은 파일 잠금만 하고 합성·인식 계산에 끼지 않으며 음성 실행의 짝짓기
+    # 정보(describe·voice_extra)에도 들어가지 않는다. MeloTTS나 cached-path를 바꿀 때 이 줄을 다시 본다.
+    "filelock>=4.2.1",
 ]
 
 [[tool.uv.index]]
