@@ -549,11 +549,17 @@ def after(title: str) -> str:
     return EXPERIMENTS.split(SECTION, 1)[1].split(title, 1)[1]
 
 
-# reports/의 실행 폴더 전부(문서의 명령 `reports/2026*`와 같은 목록)와 그 계산 결과. 기록 42개를 한 번만
+# 결과 절이 센 실행 폴더(표의 행 42개와 '에피소드 기록 없음' 줄 2개. 그때의 `reports/2026*`)와 그 계산 결과.
+# 목록을 reports/를 훑지 않고 문서에서 읽는 이유: 뒤에 새 공식 기록이 reports/에 더해져도(다음 측정) 이 결과는
+# 그때의 기록으로 계속 다시 셀 수 있어야 하고, 새 기록 때문에 이 테스트가 깨지면 안 된다. 기록 42개를 한 번만
 # 읽도록 이 파일 안에서 나눠 쓴다.
 @pytest.fixture(scope="module")
 def recorded() -> tuple[list[Path], tuple[list[grounding.RunResult], list[str]]]:
-    runs = sorted(path for path in REPORTS.iterdir() if path.name.startswith("2026"))
+    result = after(RESULT)
+    names = re.findall(r"^\| (2026\S+?)(?: \(시험용\))? \|", result, flags=re.MULTILINE)
+    names += re.findall(r"^- (2026\S+): 에피소드 기록 없음$", result, flags=re.MULTILINE)
+    runs = sorted(REPORTS / name for name in names)
+    assert len(runs) == len(set(runs)) == 44 and all(run.is_dir() for run in runs)
     return runs, grounding.check_runs(runs)
 
 
