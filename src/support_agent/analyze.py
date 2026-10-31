@@ -30,11 +30,14 @@
     uv run python -m support_agent.analyze guards reports/<M2b 개발용> reports/<팔> [...]   (13단계 선택)
     uv run python -m support_agent.analyze guards-verdict reports/<M2b 시험용> reports/<고른 구성 시험용>
     uv run python -m support_agent.analyze replay reports/<기록> reports/<같은 설정으로 다시 돈 실행>
+    uv run python -m support_agent.analyze grounding reports/<실행> [...] [--sheet <파일> --n 20]
 
 `table`은 docs/experiments.md에 들어가는 마크다운 표를 출력한다. `misses`는 DB는 맞았지만 꼭 전달할 값을
 찾지 못한 에피소드를 나열해, 사람이 값 찾기 규칙을 점검할 수 있게 한다. `sample`은 "시뮬레이터 점검"용
 에피소드를 고정 seed로 뽑는다. `compare`·`guards`·`guards-verdict`는 표 아래에 음성 대조(장치가 한 번도
 작동하지 않은 에피소드로 본 실행 잡음)를 더 내고, `replay`는 다시 돈 실행을 기록과 에피소드마다 맞댄다.
+`grounding`은 상담원 답의 근거 없는 값(보조 지표, 판정 아님)을 기록마다 세고, `--sheet`면 개발용 기록에서
+손 확인 표본을 고정 seed로 뽑아 파일로 쓴다.
 """
 
 # [파일 역할] 실행 기록(reports/·outputs/runs/의 episodes.jsonl, manifest.json, summary.json)에서 모든 수치를
@@ -54,6 +57,8 @@
 #   규칙 "음성 대조"와 13단계 끝 "원인 확인")
 # - 말로 풀어 쓰기를 고친 뒤의 재측정(respell.py): 바뀐 발화가 든 에피소드(respelled), 다시 잰 에피소드를
 #   원래 기록에 끼워 넣기(stitch)
+# - 보조 지표(grounding.py): 상담원 답의 근거 없는 값(grounding). 판정이 보지 못하는 '틀린 값을 말한 성공'을
+#   기록마다 센다(docs/experiments.md 끝 절)
 # [설계 이유] 문턱값과 판정표는 docs/experiments.md에 측정 전에 적은 규칙을 그대로 코드로 옮긴 것이다.
 # 부트스트랩은 고정 seed라 같은 기록은 언제나 같은 구간을 낸다. 시험용 기록으로는 무엇도 만들지 않는다는
 # 규칙을 is_test_run 검사로 지킨다.
@@ -1259,6 +1264,22 @@ def _respell_command(args: argparse.Namespace) -> None:
     print(f"wrote {out}: {', '.join(f'{task}#{trial}' for task, trial in replaced)} from {args.rerun.name}")
 
 
+# 보조 지표(상담원 답의 근거 없는 값) 명령을 grounding.py로 넘긴다. grounding.py도 이 모듈을 가져다 쓰므로
+# 함수 안에서 가져온다. 기록은 한 번만 읽어 표와 손 확인 표본에 함께 쓴다. 표본은 개발용 기록에서만
+# 뽑는다(시험용은 표의 수만).
+def _grounding_command(args: argparse.Namespace) -> None:
+    """보조 지표 명령. 코드는 grounding.py에 있다."""
+    from support_agent import grounding
+
+    checked = grounding.check_runs(args.run_dirs)
+    print(grounding.grounding_table(args.run_dirs, checked))
+    if args.sheet is not None:
+        args.sheet.parent.mkdir(parents=True, exist_ok=True)
+        sheet = grounding.hand_sheet(args.run_dirs, n=args.n, checked=checked)
+        args.sheet.write_text(sheet, encoding="utf-8", newline="\n")
+        print(f"\nwrote {args.sheet}")
+
+
 # 하위 명령 정의와 분기. 명령 목록과 쓰임은 모듈 docstring에 있다. name-collisions와 same-setup은 관문·검사
 # 명령이라 통과하지 못하면 종료 코드 1을 내, 스크립트에서 바로 멈출 수 있게 한다.
 def main() -> None:
@@ -1349,6 +1370,24 @@ def main() -> None:
         help="같은 설정으로 다시 돈 실행. 기록의 일부 과제·에피소드만 돌았어도 된다 (발동 판정 함수가 "
         "있는 장치 축은 달라도 되고, 그때는 그 장치가 작동했는지 함께 적는다)",
     )
+    # grounding: 전달된 상담원 답의 값(이메일, 날짜, 4자리 이상 숫자) 가운데 그 답 앞까지 에이전트가 받은
+    # 글에도, 규정이 정한 계산에도 없는 것을 기록마다 센다(보고만, 판정 아님). 시험용 기록은 수만 낸다.
+    grounding_parser = commands.add_parser(
+        "grounding", help="상담원 답의 근거 없는 값을 기록마다 센다 (보조 지표, 보고만, 판정 아님)"
+    )
+    grounding_parser.add_argument(
+        "run_dirs",
+        nargs="+",
+        type=Path,
+        help="실행 폴더들 (예: reports/2026*. 에피소드가 없는 폴더는 표 아래에 적음)",
+    )
+    grounding_parser.add_argument(
+        "--sheet",
+        type=Path,
+        default=None,
+        help="손 확인 표본을 이 파일(마크다운)에 쓴다. 개발용 기록에서만 seed 20261024로 뽑는다",
+    )
+    grounding_parser.add_argument("--n", type=int, default=20, help="손 확인 표본 수 (기본 20)")
     args = parser.parse_args()
 
     # Windows 콘솔의 기본 인코딩으로는 한국어 표가 깨지거나 오류가 나므로 표준 출력을 UTF-8로 바꾼다.
@@ -1409,6 +1448,8 @@ def main() -> None:
         _respell_command(args)
     elif args.command.startswith("guards"):
         _guards_command(args)
+    elif args.command == "grounding":
+        _grounding_command(args)
     elif args.command == "same-setup":
         differences = setup_differences(args.run_a, args.run_b, tuple(args.ignore), tuple(args.ignore_prompt))
         print("\n".join(differences) or "same setup")
