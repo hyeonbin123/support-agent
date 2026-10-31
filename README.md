@@ -236,7 +236,7 @@ uv run python -m support_agent.run --tasks smoke --trials 1
 - `--policy P1`은 코드로 검증할 수 있는 규정을 도구 안에서도 막는다. `--reasoning R1`은 think 도구를 보여 준다
 - GPU 메모리를 다른 작업이 쓰고 있으면 시작하지 않는다 (`--force`로 무시)
 - Ollama 주소는 `OLLAMA_BASE_URL`로 바꾼다 (기본 `http://127.0.0.1:11434`). 주소에 인증 정보(`http://아이디:비밀번호@호스트`)가 있으면 `manifest.json`에는 그 부분을 `***`로 가려 적는다
-- 요청에는 `truncate: false`를 넣는다 (2026-10-15부터). 프롬프트가 컨텍스트(`--num-ctx`)보다 길면 Ollama가 앞부분을 잘라 답하지 않고 거절하고, 에피소드는 컨텍스트 한도 종료로 끝난다. 기록된 실행에서는 잘린 호출이 없었다 ([docs/experiments.md](docs/experiments.md) 공통 규칙)
+- 요청에는 `truncate: false`를 넣는다 (2026-10-15부터). 프롬프트가 컨텍스트(`--num-ctx`)보다 길면 Ollama가 앞부분을 잘라 답하지 않고 거절하고, 에피소드는 컨텍스트 한도 종료로 끝난다. 기록된 실행에서는 잘린 호출이 없었다 ([docs/experiments.md](docs/experiments.md) 공통 규칙). (2026-11-01 보탬) 정확히는 `num_ctx` 12288·16384로 잰 기록에는 잘림이 있을 수 없고, `num_ctx` 8192로 잰 2단계 14B 두 기록은 에피소드 2개·6개에서 잘림을 배제하지 못한다. 두 기록은 판정을 가르지 않았고 짝짓기에도 영향이 없다 (같은 곳의 2026-10-29 바로잡음)
 
 ### 서비스와 MCP 서버
 

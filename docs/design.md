@@ -139,7 +139,7 @@ tasks/smoke.yaml, dev.yaml, test.yaml
 | 도구 오류 누적 | `max_tool_errors`(10)에 닿으면 `too_many_tool_errors`로 끝 |
 | 이관 성공 | 고정 안내문(`HANDOFF_MESSAGE`)을 고객에게 전달한 것으로 치고 `handoff`로 끝 |
 | 한도 | 에이전트 LLM 호출 30, 고객 턴 20 |
-| 컨텍스트 | 프롬프트 토큰이 `num_ctx`의 95%를 넘으면 `context_limit`로 끝 (Ollama는 `truncate` 필드가 없으면 넘친 프롬프트의 앞을 오류 없이 자른다). 2026-10-15부터 Ollama 요청에 `truncate: false`를 넣어, 한 번에 `num_ctx`를 넘은 요청은 잘리지 않고 HTTP 400으로 거절되며 이것도 `context_limit`로 끝난다 (시뮬레이터 요청이 넘치면 `infra_error`). 기록된 평가 실행에는 잘린 호출이 없었다 (`experiments.md` 공통 규칙의 2026-10-15 메모) |
+| 컨텍스트 | 프롬프트 토큰이 `num_ctx`의 95%를 넘으면 `context_limit`로 끝 (Ollama는 `truncate` 필드가 없으면 넘친 프롬프트의 앞을 오류 없이 자른다). 2026-10-15부터 Ollama 요청에 `truncate: false`를 넣어, 한 번에 `num_ctx`를 넘은 요청은 잘리지 않고 HTTP 400으로 거절되며 이것도 `context_limit`로 끝난다 (시뮬레이터 요청이 넘치면 `infra_error`). 기록된 평가 실행에는 잘린 호출이 없었다 (`experiments.md` 공통 규칙의 2026-10-15 메모). (2026-11-01 보탬) 정확히는 `num_ctx` 12288·16384로 잰 기록에는 잘림이 있을 수 없고, `num_ctx` 8192로 잰 2단계 14B 두 기록은 에피소드 2개·6개에서 잘림을 배제하지 못한다 (같은 메모의 2026-10-29 바로잡음. 두 기록은 판정을 가르지 않았다) |
 
 판정하는 종료는 `user_stop`, `out_of_scope`, `handoff`뿐이다. 나머지는 실패로 세고, `infra_error`(제공자 오류, 도구 버그)는 분모에서 뺀다.
 

@@ -605,10 +605,16 @@ def setup_differences(
         if "harness_sha256" not in manifest:
             manifest["harness_sha256"] = old_records_harness(manifest.get("commit"))
         # 제공자 설명에 나중에 생긴 필드는, 그 필드가 없는 옛 manifest에서 지금 값과 같다고 보고 비교한다.
-        # truncate(2026-10-15부터 False): 옛 실행은 이 필드 없이 요청했지만, 기록된 어느 실행에서도 프롬프트가
-        # 잘린 호출이 없어(같은 에피소드 안에서 프롬프트 길이가 줄어든 호출 0, tests/test_recorded_numbers.py)
-        # 모든 응답이 truncate: false일 때와 같다. 그래서 필드가 생겼다는 이유만으로 옛 기록과 짝짓기가 막히지
-        # 않게 한다.
+        # truncate(2026-10-15부터 False): 옛 실행은 이 필드 없이 요청했다. 그때 Ollama는 num_ctx를 넘는
+        # 프롬프트를 오류 없이 잘라 답하므로(시스템 메시지를 두고 앞 메시지부터 뺌), 잘린 호출이 있었다면 그
+        # 응답은 truncate: false일 때(HTTP 400 → context_limit)와 다르다. 한 호출이 잘리려면 바로 앞 호출의
+        # 길이에 한 번에 늘어난 길이(기록에서 최대 에이전트 1,075·시뮬레이터 494토큰)를 더한 값이 한도를
+        # 넘어야 하는데, 에이전트 num_ctx 12288·16384로 잰 34개 실행은 모든 호출이 그 여유 안이라 잘림이 있을
+        # 수 없다. 잘림을 배제하지 못하는 것은 num_ctx 8192로 잰 2단계 14B 두 기록(에피소드 2개·6개)뿐이고,
+        # 둘은 Ollama 0.34.2로 쟀으므로 0.35.1로 잰 새 실행과는 서버 버전으로 이미 짝지어지지 않는다. 근거는
+        # docs/experiments.md 공통 규칙의 2026-10-15 메모에 붙은 2026-10-29 바로잡음이고, 그 셈은
+        # tests/test_recorded_numbers.py가 기록에서 다시 한다. 그래서 필드가 생겼다는 이유만으로 옛 기록과
+        # 짝짓기가 막히지 않게 한다.
         for key in ("agent_provider", "user_provider"):
             provider = manifest.get(key)
             if isinstance(provider, dict) and provider.get("provider") == "ollama":
