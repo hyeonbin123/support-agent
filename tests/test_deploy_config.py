@@ -53,6 +53,27 @@ def test_ci_token_is_read_only_and_every_action_is_pinned_to_a_commit():
             assert found["version"] and re.fullmatch(r"v\d+\.\d+\.\d+", found["version"]), line
 
 
+# CI의 audit 작업(2026-11-01부터): 잠금 파일의 기본 그룹(본체 + dev. CI와 서비스 Docker 이미지가 설치하는
+# 것)을 판을 고정한 pip-audit으로 공개 권고와 대조한다. 설치 없이(--disable-pip, --no-deps) 잠금 그대로의
+# 판만 보고(--frozen), 대조하지 못한 패키지가 있으면 실패한다(--strict). 단계 셸은 bash라 파이프 앞쪽의
+# 명령(uv export, grep)이 실패해도 단계가 실패한다(GitHub Actions의 bash는 pipefail을 켠다). 새 권고가 공개된
+# 날 코드와 상관없는 push가 막히지 않게 이 작업만 실패로 남는다(continue-on-error). 음성 그룹은 대조하지
+# 않는다: MeloTTS가 묶은 판의 권고가 남아 있어 늘 실패한다(docs/voice.md "정한 것과 이유"의 2026-11-01
+# 보탬). 이 작업이 빠지면 기본 그룹에 새 권고가 생겨도 아무 검사도 실패하지 않으므로 글자 그대로 고정한다.
+def test_ci_audits_the_locked_default_group_with_a_pinned_pip_audit():
+    workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    audit = workflow["jobs"]["audit"]
+    assert audit.get("continue-on-error") is True
+    (step,) = [s for s in audit["steps"] if "pip-audit" in s.get("run", "")]
+    assert step.get("shell") == "bash"
+    run = step["run"]
+    assert "uv export --frozen" in run and "--no-emit-project" in run
+    assert "--all-groups" not in run and "--group" not in run  # 기본 그룹만
+    assert re.search(r"uvx pip-audit==\d+\.\d+\.\d+ ", run)
+    for flag in ("--no-deps", "--disable-pip", "--strict"):
+        assert flag in run, flag
+
+
 # Dockerfile을 지시 단위로 나눈다: 빈 줄과 주석 줄은 빼고, 줄 끝 `\`로 이어진 줄은 한 지시로 붙인다. 첫 줄의
 # 파서 지시(`# syntax=…`)도 주석 모양이라 여기서는 빠지므로 테스트가 따로 본다.
 def _dockerfile_instructions(text: str) -> list[str]:

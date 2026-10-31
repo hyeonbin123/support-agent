@@ -55,3 +55,36 @@ jobs:
 
       - name: Test
         run: uv run pytest -q
+
+  # 공개 보안 권고 대조(2026-11-01부터). uv.lock의 기본 그룹(본체 + dev. 위 test 작업과 서비스 Docker 이미지가
+  # 설치하는 것)의 고정 판을 PyPI의 권고 정보(pip-audit 기본)와 대조한다. 패키지를 설치하지 않고(--disable-pip,
+  # --no-deps) 잠금에 고정된 `이름==판`만 본다.
+  # - continue-on-error: 새 권고가 공개된 날 코드와 상관없는 push·PR이 막히지 않게, 이 작업이 실패해도 워크플로는
+  #   통과한다. 이 작업만 실패로 표시되므로, 보면 판단해서 올리거나(`uv lock --upgrade-package <패키지>`) 이유를
+  #   적고 `--ignore-vuln <ID>`로 이 단계에 더한다(지금은 없음)
+  # - 줄 고르기: uv export 줄에서 환경 표시(`; sys_platform == 'win32'` 등)를 떼어 러너와 상관없이 모든 플랫폼의
+  #   항목을 본다. --strict는 대조하지 못한 패키지가 하나라도 있으면 실패하게 해, 조용히 빠지는 패키지가 없게 한다.
+  #   프로젝트 자신은 PyPI에 없으므로 내보내지 않는다(--no-emit-project)
+  # - 음성 그룹(voice)은 대조하지 않는다. MeloTTS가 묶은 판(transformers 4.27.4 등)의 권고가 남아 있어 늘 실패하기
+  #   때문이다. 남은 권고와 이유는 docs/voice.md "정한 것과 이유"의 2026-10-29·2026-11-01 보탬에 있다
+  # - shell: bash는 pipefail을 켠다(기본 셸은 bash -e뿐이라 파이프 앞쪽 명령이 실패해도 지나간다). 그래서 내보내기가
+  #   실패하거나 비어 grep이 아무것도 못 고르면 이 단계가 실패한다
+  # - pip-audit 판은 고정한다(2.10.1). 결과 표는 이 단계의 로그에 남는다
+  audit:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      # 액션 SHA 고정과 persist-credentials는 test 작업과 같은 이유다(위 주석).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
+
+      - name: Audit the locked default group
+        shell: bash
+        run: |
+          uv export --frozen --format requirements-txt --no-hashes --no-emit-project > "$RUNNER_TEMP/locked.txt"
+          grep -E '^[A-Za-z0-9]' "$RUNNER_TEMP/locked.txt" | sed -E 's/[[:space:]]*;.*$//' > "$RUNNER_TEMP/pinned.txt"
+          echo "== $(wc -l < "$RUNNER_TEMP/pinned.txt") packages"
+          uvx pip-audit==2.10.1 -r "$RUNNER_TEMP/pinned.txt" --no-deps --disable-pip --strict --progress-spinner off
