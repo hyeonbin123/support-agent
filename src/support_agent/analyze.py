@@ -247,18 +247,32 @@ def paired_sign_flip_p(
     return sign_flip_p(task_differences(base, other, k))
 
 
+# compare 표에서 그 k로 계산할 과제가 하나도 없을 때 칸에 적는 글. 과제마다 판정된 시도가 k번보다 적은
+# 실행(--trials 2로 돈 실행, --episode로 일부 에피소드만 다시 돈 실행)에서 pass^4가 그렇다.
+NO_TASKS = "과제 없음"
+
+
+# 과제 평균 pass^k를 표 칸 글로 낸다. 판정된 시도가 k번 이상인 과제가 없으면(pass_k가 nan) NO_TASKS다.
+def _rate_cell(by_task: dict[str, list[bool]], k: int) -> str:
+    if not any(len(v) >= k for v in by_task.values()):
+        return NO_TASKS
+    return f"{pass_k(by_task, k):.1%}"
+
+
 # 기준 실행과 후보 실행들의 pass^1·pass^4와 짝지은 차이를 마크다운 표로 낸다(README·docs의 '기준과의 차이 [95%
 # 구간]' 열). 표 아래에는 빈 줄을 두고 후보마다 순열 p 줄을 더 낸다(2026-10-29 메모): pass^1·pass^4 차이의
 # 양측 p와 셈 방식, 그리고 pass^1 구간 아래 끝을 기준 에피소드 수로 곱한 '에피소드 몫'. '경계' 꼬리표
 # 규칙(순열 p > 0.05 또는 아래 끝이 에피소드 2개 몫 이하)을 표의 반올림된 %p로 가늠하지 않게 하려는 것이다.
-# 표의 열과 순서는 그대로라 docs에 붙인 표와 어긋나지 않는다.
+# 표의 열과 순서는 그대로라 docs에 붙인 표와 어긋나지 않는다. 두 실행 모두 시도가 k번 이상인 과제가 없는
+# k(예: 시도 2번짜리 실행의 pass^4)는 칸을 NO_TASKS로 적고 그 k의 순열 p는 건너뛴다(2026-11-01부터. 전에는
+# 빈 짝으로 paired_difference를 불러 0으로 나눴다).
 def compare(base_dir: Path, other_dirs: list[Path]) -> str:
     base = successes_by_task(load_episodes(base_dir))
     lines = [
         "| 실행 | pass^1 | 기준과의 차이 [95% 구간] | pass^4 | 차이 [95% 구간] |",
         "|---|---|---|---|---|",
     ]
-    lines.append(f"| {base_dir.name} (기준) | {pass_k(base, 1):.1%} | | {pass_k(base, 4):.1%} | |")
+    lines.append(f"| {base_dir.name} (기준) | {_rate_cell(base, 1)} | | {_rate_cell(base, 4)} | |")
     notes = []
     for run_dir in other_dirs:
         other = successes_by_task(load_episodes(run_dir))
@@ -268,6 +282,12 @@ def compare(base_dir: Path, other_dirs: list[Path]) -> str:
             # k번 이상인 과제끼리만 짝짓고, 칸에 몇 과제로 계산했는지 적는다.
             usable = [t for t in base if len(base[t]) >= k and len(other.get(t, ())) >= k]
             mine, theirs = {t: base[t] for t in usable}, {t: other[t] for t in usable}
+            # 짝지을 과제가 하나도 없으면 차이·구간·순열 p를 낼 수 없다(빈 짝으로 부르면 paired_difference가
+            # 0으로 나눈다). 두 칸을 NO_TASKS로 적고, k = 1이면 에피소드 몫도 적지 않는다.
+            if not usable:
+                cells += [NO_TASKS, NO_TASKS]
+                tests.append(f"pass^{k} {NO_TASKS}")
+                continue
             diff, low, high = paired_difference(mine, theirs, k)
             note = "" if len(usable) == len(base) == len(other) else f" ({len(usable)}과제)"
             cells += [f"{pass_k(theirs, k):.1%}{note}", f"{diff:+.1%}p [{low:+.1%}, {high:+.1%}]"]
@@ -279,7 +299,8 @@ def compare(base_dir: Path, other_dirs: list[Path]) -> str:
                 episodes = sum(len(v) for v in mine.values())
                 share = f"pass^1 구간 아래 끝 = 에피소드 {low * episodes:.1f}개 몫"
         lines.append(f"| {run_dir.name} | " + " | ".join(cells) + " |")
-        notes.append(f"순열 p (과제 단위 부호 뒤집기, 양측): {run_dir.name} {', '.join(tests)}; {share}")
+        tail = f"; {share}" if share else ""  # pass^1을 짝지을 과제가 없으면 몫이 없다
+        notes.append(f"순열 p (과제 단위 부호 뒤집기, 양측): {run_dir.name} {', '.join(tests)}{tail}")
     return "\n".join(lines + ([""] + notes if notes else []))
 
 

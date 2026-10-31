@@ -390,6 +390,22 @@ def test_compare_prints_the_negative_control_below_the_table(tmp_path, monkeypat
     assert "- m: 계산하지 않음 (발동 판정 함수가 없는 축: model)" in out
 
 
+# 과제마다 시도가 2번인 실행끼리(14단계 주입 과제의 --trials 2처럼)도 analyze compare가 끝까지 돈다: pass^4를
+# 짝지을 과제가 없으니 그 칸은 '과제 없음'이고, pass^1 칸·순열 p 줄·음성 대조 표는 그대로 나온다. 전에는
+# pass^4 칸에서 ZeroDivisionError로 멈췄다.
+def test_compare_runs_on_two_trial_runs(tmp_path, monkeypatch, capsys):
+    base = write_run(tmp_path, "base", base_episodes())
+    arm = write_run(tmp_path, "c1", base_episodes(), axes={"claims": "C1"})
+    monkeypatch.setattr("sys.argv", ["analyze", "compare", str(base), str(arm)])
+    analyze.main()
+    out = capsys.readouterr().out
+    assert out.startswith(analyze.compare(base, [arm]) + "\n\n음성 대조")
+    assert "| base (기준) | 100.0% | | 과제 없음 | |" in out
+    assert "| c1 | 100.0% | +0.0%p [+0.0%, +0.0%] | 과제 없음 | 과제 없음 |" in out
+    assert "c1 pass^1 1.000 (정확, 0이 아닌 차이 0개), pass^4 과제 없음; pass^1 구간 아래 끝" in out
+    assert "| c1 | C1 | 4 | 0 | 4 | 0 | 0 / 0 / 0 | 0 | 0 | +0 (+0.0%p) | +0 (+0.0%p) |" in out
+
+
 # ==================================================================== replay: 다시 돈 실행을 기록과 맞대기
 
 

@@ -149,6 +149,42 @@ def test_compare_adds_the_permutation_p_below_the_table(tmp_path):
     )
 
 
+# 두 실행 모두 과제마다 시도가 2번뿐이면(14단계 주입 과제의 --trials 2처럼) 두 실행 모두 시도가 4번 이상인
+# 과제가 없어 pass^4를 짝지을 수 없다. compare는 그 k의 칸(기준 행 포함)을 '과제 없음'으로 적고 그 k의 순열
+# p는 건너뛰며, pass^1 칸·순열 p·에피소드 몫은 그대로 낸다. 전에는 빈 짝으로 paired_difference를 불러 0으로
+# 나눴다(ZeroDivisionError). 과제별 pass^1 차이는 둘 다 +0.5라 부호 배치 4개 가운데 둘의 |합|이 관측값 1.0
+# 이상이다 → p = 0.5.
+def test_compare_writes_no_tasks_for_a_k_that_no_task_reaches(tmp_path):
+    base_by_task = {"a": [True, False], "b": [False, False]}
+    other_by_task = {"a": [True, True], "b": [True, False]}
+    base = write_run(tmp_path, "base", base_by_task)
+    other = write_run(tmp_path, "other", other_by_task)
+    table, _, extra = analyze.compare(base, [other]).partition("\n\n")
+    rows = table.splitlines()
+    assert rows[2] == "| base (기준) | 25.0% | | 과제 없음 | |"
+    assert rows[3] == "| other | 75.0% | +50.0%p [+50.0%, +50.0%] | 과제 없음 | 과제 없음 |"
+    assert extra == (
+        "순열 p (과제 단위 부호 뒤집기, 양측): other pass^1 0.500 (정확, 0이 아닌 차이 2개), "
+        "pass^4 과제 없음; pass^1 구간 아래 끝 = 에피소드 2.0개 몫"
+    )
+
+
+# 기준은 시도 4번, 후보는 2번만 돈 경우(--episode로 일부만 다시 돈 실행처럼): 기준 행의 pass^4는 기준
+# 기록만으로 계산되어 그대로 나오고, 짝지을 과제가 없는 후보의 pass^4 칸만 '과제 없음'이다. pass^1은 두 과제
+# 모두로 짝짓는다.
+def test_compare_with_fewer_trials_in_the_candidate_keeps_the_base_pass4(tmp_path):
+    base_by_task = {"a": [True, False, False, False], "b": [False] * 4}
+    other_by_task = {"a": [True, True], "b": [True, False]}
+    base = write_run(tmp_path, "base", base_by_task)
+    other = write_run(tmp_path, "other", other_by_task)
+    table, _, extra = analyze.compare(base, [other]).partition("\n\n")
+    rows = table.splitlines()
+    assert rows[2] == "| base (기준) | 12.5% | | 0.0% | |"
+    diff, low, high = analyze.paired_difference(base_by_task, other_by_task, 1)
+    assert rows[3] == f"| other | 75.0% | {diff:+.1%}p [{low:+.1%}, {high:+.1%}] | 과제 없음 | 과제 없음 |"
+    assert extra.endswith(f"pass^4 과제 없음; pass^1 구간 아래 끝 = 에피소드 {low * 8:.1f}개 몫")
+
+
 # 9단계 시험용 pass^1 V4 − V2의 순열 p를 기록에서 다시 낸다(시험용 기록은 수치만 읽는다): 끼워 넣은 V2로
 # 0.058, 수정 전 코드로 낸 V2로 0.092. 둘 다 0이 아닌 차이가 20개라 전수다. 등록 판정(백분위 부트스트랩,
 # +8.8%p [+1.2, +16.9])은 그대로이고 이 값은 compare가 표 아래에 더 내는 보조 지표다.
