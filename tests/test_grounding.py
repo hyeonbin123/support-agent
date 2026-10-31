@@ -454,6 +454,36 @@ def test_hand_sheet_draws_n_with_the_fixed_seed(tmp_path):
     assert sheet.count("\n## ") == 2
 
 
+# 대화를 다른 실행에서 다시 돌렸을 때처럼 도구 호출 id(assistant의 tool_calls[].id, tool의 tool_call_id)만
+# 바꾼 사본.
+def with_call_ids(episode: dict[str, Any], prefix: str) -> dict[str, Any]:
+    copy = json.loads(json.dumps(episode, ensure_ascii=False))
+    for number, message in enumerate(copy["messages"]):
+        for item in message.get("tool_calls", ()):
+            item["id"] = f"{prefix}-{number}"
+        if message["role"] == "tool":
+            message["tool_call_id"] = f"{prefix}-{number - 1}"
+    return copy
+
+
+# '같은 대화'는 공통 규칙 "음성 대조"의 '대화'와 같이 도구 호출 id를 빼고 본다: id는 실행마다 새로 붙는
+# 값이라, 장치가 작동하지 않아 대화가 같은 두 실행(예: P1·7B의 0.34.2·0.35.1 두 기록)도 id까지 비교하면
+# 다른 대화로 세어진다. 개발용 합계와 손 확인 모집단에 한 번만 들어가야 하고, 기록마다의 행은 그대로다.
+def test_the_same_conversation_with_other_tool_call_ids_counts_once(tmp_path):
+    first = write_run(tmp_path, "a", [with_call_ids(WRONG, "call_a")])
+    second = write_run(tmp_path, "b", [with_call_ids(WRONG, "call_b")])
+    table = grounding.grounding_table([first, second])
+    assert "| a | 1 | 1 | 1/1 (100.0%) | 1 (1·0·0) | 1/1 (100.0%) | 1/1 (100.0%) | 0 · 0 |" in table
+    assert "| b | 1 | 1 | 1/1 (100.0%) | 1 (1·0·0) | 1/1 (100.0%) | 1/1 (100.0%) | 0 · 0 |" in table
+    assert "- 개발용 기록 2개 합계 (같은 대화는 한 번): 에피소드 1, 전달된 답 1," in table
+    assert [item.run for item in grounding.flagged_pool([first, second])] == ["a"]
+    # 글이 하나라도 다르면 다른 대화다(도구 호출 인자가 다른 경우).
+    other = with_call_ids(WRONG, "call_c")
+    other["messages"][2]["tool_calls"][0]["arguments"] = {"order_id": "O-91012"}
+    third = write_run(tmp_path, "c", [other])
+    assert len(grounding.flagged_pool([first, second, third])) == 2
+
+
 # analyze grounding: 표를 내고, --sheet를 주면 손 확인 표본 파일을 쓴다.
 def test_analyze_grounding_command(tmp_path, monkeypatch, capsys):
     run_dir = write_run(tmp_path, "dev", [WRONG, RIGHT])

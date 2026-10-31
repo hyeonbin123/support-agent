@@ -55,6 +55,10 @@ from support_agent.agent import build_system_prompt, load_policy
 from support_agent.analyze import is_success, is_test_run, load_episodes, load_manifest
 from support_agent.clock import kst_date
 from support_agent.config import FIRST_AGENT_MESSAGE
+
+# 같은 대화를 알아보는 메시지 비교 값: 공통 규칙 "음성 대조"의 '대화'와 같은 기준(역할, 글, 도구 이름, 전달
+# 여부, 하니스 안내문 여부, 도구 호출 이름과 인자. 실행마다 새로 붙는 도구 호출 id는 뺀다).
+from support_agent.guard_report import _message as comparable_message
 from support_agent.judge import extract_dates
 from support_agent.sim_report import _all_tasks, _normal, _share, grounded, source_tokens, value_tokens
 from support_agent.tasks import Task
@@ -266,7 +270,8 @@ def check_answers(messages: Sequence[dict[str, Any]], system_prompt: str, today:
 
 
 class Checked(NamedTuple):
-    """판정된 에피소드 하나의 결과. key는 같은 대화를 알아보는 값(과제, 시도, 메시지 전체)이다."""
+    """판정된 에피소드 하나의 결과. key는 같은 대화를 알아보는 값(과제, 시도, 메시지마다 comparable_message.
+    도구 호출 id는 빼므로 다른 실행에서 같은 대화가 나와도 같은 값이 된다)이다."""
 
     task_id: str
     trial: int
@@ -289,6 +294,14 @@ class RunResult(NamedTuple):
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+# 같은 대화의 판별 값: (과제, 시도, 메시지마다 comparable_message)를 JSON으로. 도구 호출 id를 넣으면 실행마다
+# 새로 붙는 id 때문에 장치가 작동하지 않아 대화가 같은 두 실행(P1·7B의 Ollama 0.34.2·0.35.1 두 기록 등)이
+# 다른 대화로 세어진다(docs/experiments.md 이 지표 절의 2026-11-01 바로잡음). tail은 판별에 함께 넣을 값(답
+# 글)이다.
+def _conversation_key(task_id: str, trial: int, messages: Sequence[dict[str, Any]], *tail: Any) -> str:
+    return json.dumps([task_id, trial, [comparable_message(m) for m in messages], *tail], ensure_ascii=False)
 
 
 def check_run(run_dir: Path, tasks: dict[str, Task] | None = None) -> RunResult | None:
@@ -323,7 +336,7 @@ def check_run(run_dir: Path, tasks: dict[str, Task] | None = None) -> RunResult 
             prompts[task.id] = build_system_prompt(policy, task.now, caller_id=caller_id)
         messages = episode["messages"]
         answers = check_answers(messages, prompts[task.id], kst_date(task.now))
-        key = json.dumps([task.id, episode["trial"], messages], ensure_ascii=False, sort_keys=True)
+        key = _conversation_key(task.id, episode["trial"], messages)
         episodes.append(Checked(task.id, episode["trial"], is_success(episode), answers, messages, key))
     return RunResult(run_dir.name, is_test_run(run_dir), episodes, infra, changed)
 
@@ -391,8 +404,9 @@ def _row(result: RunResult) -> str:
     )
 
 
-# 개발용 기록을 합친 수. 같은 대화(과제, 시도, 메시지 전체가 같음)는 한 번만 센다: 끼워 넣은 기록(analyze
-# stitch)은 원래 기록과 다시 잰 기록의 에피소드를 그대로 담고, 설정이 같아 대화가 같은 기록도 있다.
+# 개발용 기록을 합친 수. 같은 대화(과제, 시도, 도구 호출 id를 뺀 메시지 전체가 같음. _conversation_key)는 한
+# 번만 센다: 끼워 넣은 기록(analyze stitch)은 원래 기록과 다시 잰 기록의 에피소드를 그대로 담고, 설정이 같거나
+# 다른 장치가 한 번도 작동하지 않아 대화가 같은 기록도 있다.
 def _development_total(results: Sequence[RunResult]) -> str | None:
     dev = [r for r in results if not r.test]
     if not dev:
@@ -442,8 +456,8 @@ def flagged_pool(
     run_dirs: Sequence[Path], checked: tuple[list[RunResult], list[str]] | None = None
 ) -> list[PoolItem]:
     """개발용 기록의 근거 없는 값이 든 답 전부를 실행 이름 → 기록 순서 → 메시지 순서로. 시험용 기록은 넣지
-    않는다(시험용 기록으로는 아무것도 만들지 않는다). 같은 대화의 같은 답(그 답까지의 메시지가 같음)은 한 번만
-    넣는다(끼워 넣은 기록, 대화가 같은 기록)."""
+    않는다(시험용 기록으로는 아무것도 만들지 않는다). 같은 대화의 같은 답(과제·시도와 그 답까지의 메시지가
+    도구 호출 id를 빼고 같음)은 한 번만 넣는다(끼워 넣은 기록, 대화가 같은 기록)."""
     results, _ = checked if checked is not None else check_runs(run_dirs)
     seen: set[str] = set()
     pool: list[PoolItem] = []
@@ -453,7 +467,7 @@ def flagged_pool(
                 if not answer.missing:
                     continue
                 context = tuple(episode.messages[: answer.index])
-                key = json.dumps([episode.task_id, episode.trial, context, answer.text], ensure_ascii=False)
+                key = _conversation_key(episode.task_id, episode.trial, context, answer.text)
                 if key in seen:
                     continue
                 seen.add(key)
