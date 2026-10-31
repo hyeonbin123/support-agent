@@ -320,9 +320,14 @@ def test_the_default_runner_stays_x0(tmp_path, monkeypatch):
     assert descriptions and set(descriptions) == {X0_DESCRIPTION}
 
 
+# 15단계 절의 '### 명령' 코드 블록만 읽는다. 측정 뒤 이 절 아래에 결과 날짜 절이 더해져 거기에 실행기 줄을
+# 다시 적어도 등록한 명령 셋을 그대로 찾게 하려는 것이다.
 def registered_commands() -> list[list[str]]:
-    """문서 15단계 '명령'의 실행기 줄들(스모크, 개발용, 시험용 순)의 인자."""
-    lines = re.findall(r"^uv run --no-sync python -m support_agent\.run (.*)$", STAGE15, re.MULTILINE)
+    """문서 15단계 '### 명령' 블록의 실행기 줄들(스모크, 개발용, 시험용 순)의 인자."""
+    block = STAGE15[STAGE15.index("### 명령") :]
+    opening = block.index("```")
+    block = block[: block.index("```", opening + 3)]
+    lines = re.findall(r"^uv run --no-sync python -m support_agent\.run (.*)$", block, re.MULTILINE)
     return [line.split() for line in lines]
 
 
