@@ -11,13 +11,18 @@
 # - 형식 예시('예를 들어 "P-0001" 형식'), 자리 표시 꼴 숫자(0001), 더 긴 숫자의 일부, 이메일의 대소문자.
 # - 전달된 답의 기준이 판정(judge.delivered_texts)과 같다(첫 인사·전달하지 않은 답·도구 호출 메시지 제외).
 # - 기록: 개발용 dev-008 시도 3에서 115,400원은 근거 없음으로 잡히고 112,300원은 잡히지 않는다.
-# - 실행 단위 표, 시험용 기록은 수만, 손 확인 표본은 개발용만(고정 seed, 같은 대화는 한 번), CLI 연결, 문서.
-# [방법] GPU·모델 없이 메모리의 대화 dict와 임시 폴더의 합성 기록, 커밋된 reports/ 개발용 기록 하나를 읽는다.
+# - 실행 단위 표, 시험용 기록은 수만, 손 확인 표본은 개발용만(고정 seed, 같은 대화는 도구 호출 id를 빼고 한
+#   번), CLI 연결, 문서.
+# - 문서에 적은 결과: reports/의 기록 42개로 다시 센 표·개발용 합계, 손 확인 표의 표본(고정 seed)과 정밀도 줄,
+#   바로잡음 메모의 '고치기 전' 수(도구 호출 id까지 비교한 판별로 다시 셈).
+# [방법] GPU·모델 없이 메모리의 대화 dict와 임시 폴더의 합성 기록, 커밋된 reports/ 기록을 읽는다. 시험용
+# 기록은 수만 센다(대화 글을 테스트 출력에 내지 않는다).
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -528,3 +533,117 @@ SECTION = "## 보조 지표: 상담원 답의 근거 없는 값"
 def test_the_rule_is_registered(phrase):
     assert SECTION in EXPERIMENTS
     assert phrase in EXPERIMENTS.split(SECTION, 1)[1]
+
+
+# ==================================================================== 문서에 적은 결과 (기록 42개)
+
+
+RESULT = "### 결과: 기존 기록 42개"
+CORRECTION = "### 바로잡음 (2026-11-01, 기록에 처음 센 뒤·결과를 적기 전)"
+P1_0342 = "20260920-190957-qwen2.5-7b-instruct-P1-R0-G0-F0-p1"
+P1_0351 = "20261003-185751-qwen2.5-7b-instruct-P1-R0-G0-F0-p1-stage8"
+
+
+# 이 지표 절 안에서 title 뒤의 글.
+def after(title: str) -> str:
+    return EXPERIMENTS.split(SECTION, 1)[1].split(title, 1)[1]
+
+
+# reports/의 실행 폴더 전부(문서의 명령 `reports/2026*`와 같은 목록)와 그 계산 결과. 기록 42개를 한 번만
+# 읽도록 이 파일 안에서 나눠 쓴다.
+@pytest.fixture(scope="module")
+def recorded() -> tuple[list[Path], tuple[list[grounding.RunResult], list[str]]]:
+    runs = sorted(path for path in REPORTS.iterdir() if path.name.startswith("2026"))
+    return runs, grounding.check_runs(runs)
+
+
+# 정밀도의 Wilson 95% 구간(문서의 정밀도 줄에 적은 값).
+def wilson(hits: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    p = hits / n
+    center = (p + z * z / (2 * n)) / (1 + z * z / n)
+    half = z * (p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5 / (1 + z * z / n)
+    return center - half, center + half
+
+
+# 결과 절의 표와 개발용 합계는 지금 코드가 기록에서 다시 센 것과 글자까지 같다(행 42개 = 개발용 30 + 시험용
+# 12). 읽는 법의 합계 문장도 같은 수다.
+def test_the_recorded_table_is_what_the_code_counts(recorded):
+    runs, checked = recorded
+    result = after(RESULT)
+    table = grounding.grounding_table(runs, checked)
+    assert table in result
+    rows = [line for line in table.splitlines() if line.startswith("| 2026")]
+    assert len(rows) == 42 and sum(row.split(" | ")[0].endswith("(시험용)") for row in rows) == 12
+    unique = {e.key: e for r in checked[0] if not r.test for e in r.episodes}
+    c = grounding._counts(unique.values())
+    assert (
+        f"전달된 상담원 답 {c['answers']:,}개 중 {c['flagged_answers']}개"
+        f"({c['flagged_answers'] / c['answers']:.1%}), 판정된 에피소드 {c['episodes']:,}개 중 "
+        f"{c['flagged_episodes']}개({c['flagged_episodes'] / c['episodes']:.1%})"
+    ) in result
+    assert (
+        f"성공으로 판정된 에피소드 {c['successes']}개 중 {c['flagged_successes']}개"
+        f"({c['flagged_successes'] / c['successes']:.1%})"
+    ) in result
+
+
+# 손 확인 표의 행은 고친 모집단에서 seed 20261024로 뽑은 표본과 같은 순서·자리·걸린 값이고, 정밀도 줄은 판단
+# 수와 그 Wilson 구간이다. 정밀도가 0.5 이상이라 정의를 고치지 않았다는 문장과도 맞는다.
+def test_the_recorded_hand_check_is_the_fixed_seed_sample(recorded):
+    runs, checked = recorded
+    result = after(RESULT)
+    pool = grounding.flagged_pool(runs, checked)
+    picked = grounding.draw(pool, grounding.SHEET_SIZE)
+    rows = [line for line in result.splitlines() if re.match(r"\| \d+ \| ", line)]
+    assert len(rows) == len(picked) == grounding.SHEET_SIZE
+    verdicts = []
+    for row, item in zip(rows, picked, strict=True):
+        cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+        assert cells[1] == f"{item.run} · {item.task_id} 시도 {item.trial} · {item.answer.index}"
+        assert cells[2] == ", ".join(item.answer.missing)
+        assert cells[3] in ("근거 없음", "오탐")
+        verdicts.append(cells[3])
+    hits = verdicts.count("근거 없음")
+    low, high = wilson(hits, len(verdicts))
+    assert f"정밀도 {hits}/20 = {hits / 20:.2f}** (Wilson 95% 구간 [{low:.2f}, {high:.2f}])" in result
+    assert f"고친 모집단 {len(pool)}개에서 seed 20261024로" in result
+    assert hits / len(verdicts) >= 0.5 and "0.5 이상이라 정의는 고치지 않는다" in result
+
+
+# 바로잡음 메모의 '고치기 전' 수: 도구 호출 id까지 비교하던 판별(규칙 커밋의 코드)로 다시 세면 메모에 적은
+# 합계와 모집단 크기가 나오고, P1·7B 두 기록은 id를 빼면 96개 모두 같지만 id까지는 8개만 같다.
+def test_the_correction_memo_numbers(recorded):
+    _, (results, _) = recorded
+    memo = after(CORRECTION).split(RESULT, 1)[0]
+    dev = [r for r in results if not r.test]
+    whole: dict[str, grounding.Checked] = {}
+    for result in dev:
+        for e in result.episodes:
+            whole.setdefault(
+                json.dumps([e.task_id, e.trial, e.messages], ensure_ascii=False, sort_keys=True), e
+            )
+    c = grounding._counts(whole.values())
+    assert (
+        f"에피소드 {c['episodes']:,}, 전달된 답 {c['answers']:,}, "
+        f"근거 없는 값이 든 답 {c['flagged_answers']} "
+        f"({c['flagged_answers'] / c['answers']:.1%}), 그런 에피소드 {c['flagged_episodes']} "
+        f"({c['flagged_episodes'] / c['episodes']:.1%}), 성공 에피소드 중 "
+        f"{c['flagged_successes']}/{c['successes']} ({c['flagged_successes'] / c['successes']:.1%})"
+    ) in memo
+    seen = set()
+    for result in sorted(dev, key=lambda r: r.name):
+        for e in result.episodes:
+            for a in e.answers:
+                if a.missing:
+                    seen.add(
+                        json.dumps([e.task_id, e.trial, e.messages[: a.index], a.text], ensure_ascii=False)
+                    )
+    assert f"그 모집단({len(seen)}개)" in memo
+    pair = {
+        r.name: {(e.task_id, e.trial): e for e in r.episodes} for r in dev if r.name in (P1_0342, P1_0351)
+    }
+    old, new = pair[P1_0342], pair[P1_0351]
+    assert len(old) == len(new) == 96
+    assert sum(old[k].key == new[k].key for k in old) == 96
+    assert sum(old[k].messages == new[k].messages for k in old) == 8
+    assert "id를 빼면 96개가 모두 같지만 id까지 비교하면 8개만 같다" in memo
