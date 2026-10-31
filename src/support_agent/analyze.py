@@ -31,13 +31,16 @@
     uv run python -m support_agent.analyze guards-verdict reports/<M2b 시험용> reports/<고른 구성 시험용>
     uv run python -m support_agent.analyze replay reports/<기록> reports/<같은 설정으로 다시 돈 실행>
     uv run python -m support_agent.analyze grounding reports/<실행> [...] [--sheet <파일> --n 20]
+    uv run python -m support_agent.analyze adversarial reports/<run --tasks adv --user-script 실행>   (14단계)
 
 `table`은 docs/experiments.md에 들어가는 마크다운 표를 출력한다. `misses`는 DB는 맞았지만 꼭 전달할 값을
 찾지 못한 에피소드를 나열해, 사람이 값 찾기 규칙을 점검할 수 있게 한다. `sample`은 "시뮬레이터 점검"용
 에피소드를 고정 seed로 뽑는다. `compare`·`guards`·`guards-verdict`는 표 아래에 음성 대조(장치가 한 번도
 작동하지 않은 에피소드로 본 실행 잡음)를 더 내고, `replay`는 다시 돈 실행을 기록과 에피소드마다 맞댄다.
 `grounding`은 상담원 답의 근거 없는 값(보조 지표, 판정 아님)을 기록마다 세고, `--sheet`면 개발용 기록에서
-손 확인 표본을 고정 seed로 뽑아 파일로 쓴다.
+손 확인 표본을 고정 seed로 뽑아 파일로 쓴다. `adversarial`은 14단계 주입 과제를 대본 고객으로 돈 실행에서
+주입 줄 뒤의 쓰기, 구조적 방어가 막은 시도, 다른 고객 정보·규정 원문·거짓 완료가 든 답을 주입 종류별로
+센다(보고만).
 """
 
 # [파일 역할] 실행 기록(reports/·outputs/runs/의 episodes.jsonl, manifest.json, summary.json)에서 모든 수치를
@@ -59,6 +62,8 @@
 #   원래 기록에 끼워 넣기(stitch)
 # - 보조 지표(grounding.py): 상담원 답의 근거 없는 값(grounding). 판정이 보지 못하는 '틀린 값을 말한 성공'을
 #   기록마다 센다(docs/experiments.md 끝 절)
+# - 14단계(adv_report.py): 프롬프트 주입 과제를 대본 고객으로 돈 실행의 보고(adversarial). 모델이 주입에
+#   넘어간 시도와 구조적 방어가 막은 수를 나눠 보인다
 # [설계 이유] 문턱값과 판정표는 docs/experiments.md에 측정 전에 적은 규칙을 그대로 코드로 옮긴 것이다.
 # 부트스트랩은 고정 seed라 같은 기록은 언제나 같은 구간을 낸다. 시험용 기록으로는 무엇도 만들지 않는다는
 # 규칙을 is_test_run 검사로 지킨다.
@@ -1280,6 +1285,17 @@ def _grounding_command(args: argparse.Namespace) -> None:
         print(f"\nwrote {args.sheet}")
 
 
+def _adversarial_command(args: argparse.Namespace) -> None:
+    """14단계 주입 과제 보고. 코드는 adv_report.py에 있다. 읽을 수 없는 실행(대본 고객 실행이 아님, seed·규정
+    문서가 기록과 다름)이면 이유를 표준 오류에 내고 종료 코드 1로 끝난다."""
+    from support_agent import adv_report
+
+    try:
+        print(adv_report.report(args.run_dir))
+    except adv_report.AdversarialError as error:
+        sys.exit(f"adversarial: {error}")
+
+
 # 하위 명령 정의와 분기. 명령 목록과 쓰임은 모듈 docstring에 있다. name-collisions와 same-setup은 관문·검사
 # 명령이라 통과하지 못하면 종료 코드 1을 내, 스크립트에서 바로 멈출 수 있게 한다.
 def main() -> None:
@@ -1388,6 +1404,14 @@ def main() -> None:
         help="손 확인 표본을 이 파일(마크다운)에 쓴다. 개발용 기록에서만 seed 20261024로 뽑는다",
     )
     grounding_parser.add_argument("--n", type=int, default=20, help="손 확인 표본 수 (기본 20)")
+    # adversarial(14단계): 프롬프트 주입 과제 묶음을 대본 고객으로 돈 실행 하나를 주입 종류별로 센다(보고만,
+    # 판정 없음). 등록한 읽는 법 줄도 낸다(docs/experiments.md 14단계).
+    adversarial_parser = commands.add_parser(
+        "adversarial", help="14단계 주입 과제 실행의 보고 (주입 줄 뒤의 쓰기·막힌 시도·노출, 보고만)"
+    )
+    adversarial_parser.add_argument(
+        "run_dir", type=Path, help="run --tasks adv --user-script로 돈 실행 폴더 (예: reports/<…-adv>)"
+    )
     args = parser.parse_args()
 
     # Windows 콘솔의 기본 인코딩으로는 한국어 표가 깨지거나 오류가 나므로 표준 출력을 UTF-8로 바꾼다.
@@ -1450,6 +1474,8 @@ def main() -> None:
         _guards_command(args)
     elif args.command == "grounding":
         _grounding_command(args)
+    elif args.command == "adversarial":
+        _adversarial_command(args)
     elif args.command == "same-setup":
         differences = setup_differences(args.run_a, args.run_b, tuple(args.ignore), tuple(args.ignore_prompt))
         print("\n".join(differences) or "same setup")

@@ -9,6 +9,8 @@
         --user-num-ctx 8192 를 더한다
     전체 실행의 에피소드 몇 개만 다시(말로 풀어 쓰기를 고친 뒤): 그 실행의 옵션에
         --episode dev-018:1 --episode dev-018:2 를 더하고, 뒤에 `analyze stitch` (docs/experiments.md 9단계)
+    14단계(프롬프트 주입 과제, 대본 고객): --tasks adv --trials 2 --policy P1 --model qwen3.5:4b --think off
+        --num-ctx 12288 --user-script, 뒤에 `analyze adversarial` (docs/experiments.md 14단계)
 
 기록은 outputs/runs/<run_id>/에 쌓인다(git이 무시함). --official을 주면 reports/에 쓴다(커밋 대상). 그러려면
 작업 트리가 깨끗해야 하고, 시험용 과제 파일은 --allow-test도 있어야 한다. GPU를 다른 프로젝트와 나눠 쓰므로,
@@ -27,6 +29,8 @@
 # - GPU를 다른 프로젝트와 나눠 쓰므로 Ollama가 아닌 것이 GPU 메모리를 3 GB 넘게 쓰고 있으면 시작하지 않는다.
 # - 모델 없이 실패할 수 있는 일(과제 로드, 정답 재실행)은 모델을 올리기 전에 모두 해서, 몇 시간의 GPU 시간을
 #   쓴 뒤에 실패하지 않게 한다.
+# - --user-script(14단계)는 고객을 과제의 대본 줄(user.script)을 말하는 ScriptedUser로 바꾼다. 시뮬레이터
+#   모델을 만들지도 올리지도 않고, manifest의 고객 자리에 SCRIPT_USER를 적는다(docs/experiments.md 14단계).
 # [흐름] 인자 확인 → RunConfig → 제공자 준비 → GPU 확인 → 도구·seed·정답 덤프 → 음성 채널 → 모델 적재 →
 # run_id·폴더 → manifest·seed 덤프 → _run_all → summary(Ctrl+C나 오류에도 finally로 씀).
 
@@ -54,6 +58,7 @@ from typing import Any
 # 기록(voice.speech의 versions, voice_extra).
 from support_agent import db
 from support_agent.agent import build_system_prompt, load_policy, visible_tools
+from support_agent.chat import ChatProvider
 from support_agent.config import RunConfig
 from support_agent.confirm import CONFIRM_CODE
 from support_agent.episode import gold_dump_of, run_episode
@@ -62,9 +67,9 @@ from support_agent.ollama import OllamaProvider
 from support_agent.paths import OUTPUTS, REPORTS, ROOT
 from support_agent.records import EpisodeResult
 from support_agent.seed import build_seed_engine
-from support_agent.tasks import load_tasks
+from support_agent.tasks import Task, load_tasks
 from support_agent.tools import NAME_TOLERANCE, build_registry
-from support_agent.user_sim import LLMUser, build_user_prompt
+from support_agent.user_sim import LLMUser, ScriptedUser, User, build_user_prompt
 from support_agent.voice.speech import versions as speech_versions
 from support_agent.voice.speech import voice_extra as speech_voice_extra
 
@@ -73,6 +78,10 @@ from support_agent.voice.speech import voice_extra as speech_voice_extra
 # 학습·측정)이 돈다고 보는 기준이다.
 MAX_CONSECUTIVE_INFRA_ERRORS = 3  # 모델 서버가 죽었을 것이다: 과제 목록을 태우지 말고 멈춘다
 OTHER_GPU_USE_LIMIT_MIB = 3000  # 데스크톱 앱이 1~2 GiB를 쓴다. 이보다 많으면 다른 작업이 도는 것이다
+# --user-script(14단계) 실행에서 manifest의 고객 자리에 적는 이름: config.user_model과 user_provider의
+# provider가 이 값이다. 시뮬레이터 모델이 없다는 것을 기록에 남겨, 기본값인 qwen2.5 7B가 고객이었던 것처럼
+# 읽히지 않게 한다(user_num_ctx는 None). analyze adversarial은 user_provider가 이 값인 실행만 읽는다.
+SCRIPT_USER = "script"
 
 
 # 저장소 루트에서 git 명령을 돌려 출력을 돌려준다. git이 없거나 실패하면 빈 문자열(그러면 --official은
@@ -437,6 +446,13 @@ def main() -> None:
     parser.add_argument(
         "--user-num-ctx", type=int, default=None, help="시뮬레이터의 num_ctx (기본: --num-ctx 값)"
     )
+    parser.add_argument(
+        "--user-script",
+        action="store_true",
+        help="14단계: 시뮬레이터 대신 대본 고객이 과제의 user.script 줄을 차례로 말하고, 줄이 떨어지면 "
+        "끝낸다. 시뮬레이터 모델을 만들지도 올리지도 않는다. 모든 과제에 대본이 있어야 하고(tasks/adv.yaml), "
+        "시뮬레이터 옵션(--user-model 등)과 음성 채널은 함께 쓸 수 없다",
+    )
     parser.add_argument("--label", default="", help="run id에 붙일 짧은 이름")
     parser.add_argument("--official", action="store_true", help="reports/에 쓴다 (작업 트리가 깨끗해야 함)")
     parser.add_argument("--allow-test", action="store_true", help="시험용 과제 파일을 돌릴 때 필요하다")
@@ -455,6 +471,23 @@ def main() -> None:
             "--official needs git and a clean working tree, so that the commit describes the code that ran"
         )
 
+    # --user-script(14단계): 고객은 과제의 대본 줄을 차례로 말하는 ScriptedUser라 시뮬레이터 모델이 없다.
+    # 시뮬레이터 옵션을 함께 주면 무엇을 잰 실행인지 기록과 명령이 어긋나므로 거절한다. 음성 채널(V1·V2·V4)은
+    # 대본 고객과 함께 잰 적도 등록한 적도 없어 받지 않는다(대본 줄이 합성·인식을 거치면 주입 문장이 글자
+    # 그대로 가지 않는다).
+    if args.user_script:
+        simulator_options = {
+            "--user-model": args.user_model is not None,
+            "--user-num-ctx": args.user_num_ctx is not None,
+            "--user-on-cpu": args.user_on_cpu,
+            "--user-num-gpu": args.user_num_gpu is not None,
+            "--user-think": args.user_think is not None,
+        }
+        given = [name for name, used in simulator_options.items() if used]
+        if given:
+            parser.error(f"--user-script has no simulator model; drop {' '.join(given)}")
+        if args.voice != "V0":
+            parser.error("--user-script runs on the text channel (V0) only")
     # 시뮬레이터 자리 옵션 정리. --user-on-cpu는 --user-num-gpu 0과 같다(2단계 M1: 14B가 GPU를 차지해
     # 시뮬레이터를 CPU에서 돌림). --user-num-ctx를 안 주면 에이전트와 같은 컨텍스트를 쓴다.
     if args.user_on_cpu and args.user_num_gpu not in (None, 0):
@@ -474,9 +507,10 @@ def main() -> None:
     think = None if args.think is None else args.think == "on"
     user_think = None if args.user_think is None else args.user_think == "on"
 
+    # --user-script면 고객 자리에 모델이 없으므로 user_model은 SCRIPT_USER, user_num_ctx는 None으로 적는다.
     config = RunConfig(
         model=args.model,
-        user_model=user_model,
+        user_model=SCRIPT_USER if args.user_script else user_model,
         policy=args.policy,
         reasoning=args.reasoning,
         guard=args.guard,
@@ -486,7 +520,7 @@ def main() -> None:
         errors=args.errors,
         repeat=args.repeat,
         num_ctx=args.num_ctx,
-        user_num_ctx=user_num_ctx,
+        user_num_ctx=None if args.user_script else user_num_ctx,
     )
     # 과제 파일을 읽고, --task-id가 있으면 그 과제만 남긴다. 모르는 id는 오류다.
     tasks = load_tasks(args.tasks)
@@ -510,23 +544,38 @@ def main() -> None:
         tasks = [t for t in tasks if t.id in {task_id for task_id, _ in only}]
     if not tasks:
         parser.error("no tasks selected")
+    # 대본은 --user-script와 짝이다: --user-script는 돌릴 과제마다 대본이 있어야 하고, 대본이 있는 과제(14단계
+    # 주입 과제)는 --user-script로만 돈다. 대본 과제를 시뮬레이터로 돌리면 주입 문장이 고객 말에 나오지 않는다
+    # (시나리오에는 주입 문장이 없다). 모델을 만들기 전에 막는다.
+    scripted = [t.id for t in tasks if t.user.script]
+    if args.user_script and len(scripted) != len(tasks):
+        unscripted = [t.id for t in tasks if not t.user.script]
+        parser.error(f"--user-script needs a script on every task; none on {unscripted[:5]}")
+    if scripted and not args.user_script:
+        parser.error(f"{scripted[:5]} have a customer script; run them with --user-script")
 
     # think는 실행기 옵션이 아니라 요청 필드라 모델을 다시 읽게 하지 않는다. 에이전트 쪽에만 보낸다.
     provider = OllamaProvider(
         config.model, num_ctx=config.num_ctx, **({} if think is None else {"think": think})
     )
-    # 두 역할이 같은 모델이고 다른 점이 하나도 없으면 제공자 객체를 하나만 쓴다: 실행기 옵션이 같아진다.
-    same = config.user_model == config.model and think is None and user_think is None
-    user_provider = (
-        provider
-        if same
-        else OllamaProvider(
-            config.user_model,
-            num_ctx=config.user_num_ctx,
-            num_gpu=user_num_gpu,
-            **({} if user_think is None else {"think": user_think}),
+    # 고객 쪽 제공자. --user-script면 없다(None): 고객이 모델을 부르지 않으므로 시뮬레이터 모델을 만들지도,
+    # 아래에서 올리지도 않는다. 그 밖에는, 두 역할이 같은 모델이고 다른 점이 하나도 없으면 제공자 객체를
+    # 하나만 쓴다: 실행기 옵션이 같아진다.
+    user_provider: ChatProvider | None
+    if args.user_script:
+        user_provider = None
+    else:
+        same = config.user_model == config.model and think is None and user_think is None
+        user_provider = (
+            provider
+            if same
+            else OllamaProvider(
+                config.user_model,
+                num_ctx=config.user_num_ctx,
+                num_gpu=user_num_gpu,
+                **({} if user_think is None else {"think": user_think}),
+            )
         )
-    )
 
     # 다른 작업이 GPU를 쓰고 있으면 시작하지 않는다. 같이 돌리면 두 쪽의 속도·메모리 수치가 모두 흔들린다.
     # --force는 이 검사를 건너뛴다.
@@ -550,7 +599,7 @@ def main() -> None:
     channel = build_channel(config, args.tts_device, args.stt_device)
     # 측정 전에 모델을 올려 둔다. 첫 에피소드의 시간에 모델 적재 시간이 섞이지 않게 하려는 것이다.
     print(f"loading {config.model} ... {provider.preload() / 1000:.1f} s")
-    if user_provider is not provider:
+    if user_provider is not None and user_provider is not provider:
         print(f"loading {config.user_model} ... {user_provider.preload() / 1000:.1f} s")
         # 서버는 둘째 모델을 올리려고 첫 모델을 내릴 수 있다. 그 뒤에 첫 모델이 둘째 옆에 들어갈 수 있어도
         # 그렇다(2026-10-04에 봄: qwen2.5 7B가 qwen3 4B를 내렸는데, 4B를 다시 올리자 7B 옆에 들어갔다). 그래서
@@ -559,7 +608,7 @@ def main() -> None:
         if held and config.model not in held:
             seconds = provider.preload() / 1000
             print(f"{config.model} was evicted by that load; loaded it again ... {seconds:.1f} s")
-    if config.user_model != config.model:
+    if user_provider is not None and config.user_model != config.model:
         print("warning: two models take turns; if both do not fit in GPU memory every turn reloads one")
     # run_id = 시작 시각(UTC) + 모델 + 축 코드 + 라벨. 음성 축은 채널이 있을 때만, C·E·D 축은
     # 기본값(C0·E0·D0)이 아닐 때만 넣는다(그래서 지금까지의 실행 이름 꼴이 그대로다). 이 실행기는 평가
@@ -616,7 +665,8 @@ def main() -> None:
         },
         "harness_sha256": harness,
         "agent_provider": provider.describe(),
-        "user_provider": user_provider.describe(),
+        # --user-script면 고객 자리에 모델이 없다는 표시. 대본 줄은 과제 해시(task_sha256)에 들어 있다.
+        "user_provider": {"provider": SCRIPT_USER} if user_provider is None else user_provider.describe(),
         "voice_channel": channel.describe() if channel else None,
         "caller_id": (
             {"tool": "verify_caller", "name_tolerance": NAME_TOLERANCE} if config.caller_id else None
@@ -672,8 +722,19 @@ def main() -> None:
         print(json.dumps(summary, ensure_ascii=False, indent=1))
 
 
-# 과제 × 시도를 차례로 돌린다. 에피소드마다 새 시뮬레이터(LLMUser)를 만들고, 결과를 한 줄씩 쓰고 바로 flush해,
-# 실행이 중간에 멈춰도 그때까지의 기록이 남는다. 진행 상황(PASS/fail/infra, 종료 사유, 시간)을 출력한다.
+# 에피소드 하나의 고객. user_provider가 None이면(--user-script, 14단계) 과제의 대본 줄을 차례로 말하고 줄이
+# 떨어지면 STOP을 내는 ScriptedUser다. 모델을 부르지 않으므로 기록의 llm_calls에 시뮬레이터 호출이 남지 않고,
+# 대본이 떨어진 것은 infra 오류가 아니라 고객의 종료(user_stop)다. 그 밖에는 시나리오를 연기하는 시뮬레이터
+# LLMUser다.
+def make_user(task: Task, trial: int, config: RunConfig, user_provider: ChatProvider | None) -> User:
+    if user_provider is None:
+        return ScriptedUser(task.user.script)
+    return LLMUser(user_provider, task, config, trial)
+
+
+# 과제 × 시도를 차례로 돈다. 에피소드마다 새 고객(make_user: 시뮬레이터 LLMUser 또는 대본 ScriptedUser)을
+# 만들고, 결과를 한 줄씩 쓰고 바로 flush해, 실행이 중간에 멈춰도 그때까지의 기록이 남는다. 진행
+# 상황(PASS/fail/infra, 종료 사유, 시간)을 출력한다.
 def _run_all(
     tasks,
     trials,
@@ -703,7 +764,7 @@ def _run_all(
                     trial,
                     config=config,
                     provider=provider,
-                    user=LLMUser(user_provider, task, config, trial),
+                    user=make_user(task, trial, config, user_provider),
                     registry=registry,
                     seed_engine=seed_engine,
                     policy_text=policy_text,
