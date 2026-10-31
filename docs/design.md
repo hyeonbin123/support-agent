@@ -77,6 +77,8 @@ tasks/smoke.yaml, dev.yaml, test.yaml
 | `transfer_to_human` | 쓰기, 대화 종료 | `reason`, `summary` | `handoff_id, message` |
 | `think` | 기타 (R1에서만 노출) | `thought` | `ok` |
 
+- X1(15단계 읽기 도구 출력 축, 평가 실행기의 `--reads X1`. 서비스와 MCP 서버는 X0)이면 `get_order` 출력의 `shipping` 바로 뒤에 `shipment{status, status_label, shipped_at, delivered_at, promised_by}`가 붙는다. 값과 표기는 `track_shipment`의 같은 키와 같고(같은 함수로 만듦), 배송 행이 없는 주문은 `null`이다. 택배사·송장 번호는 여전히 `track_shipment`에만 있다. 도구 설명은 둘째 문단만 "출고·수령 시각은 track_shipment로 본다."에서 "배송 상태와 출고·수령 시각, 도착 예정일도 함께 보여 준다. 택배사·송장 번호는 track_shipment로 본다."로 바뀐다. 계산된 판단은 넣지 않는다. 기본(X0)은 위 표 그대로다
+
 ### 항상 막는 검사 (`require`)
 
 | 코드 | 조건 |

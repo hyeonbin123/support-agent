@@ -7,8 +7,8 @@
 # 다른 모듈이 모두 기대는 계약 파일로 두고, 바꾸면 전체 테스트를 돌린다.
 # [설계 이유] RunConfig는 frozen dataclass라 실행 중에 바뀌지 않고, to_dict()로 그대로 manifest.json에 남는다.
 # analyze same-setup이 두 실행의 설정을 키별로 비교해 짝지어도 되는지 확인할 때 이 값을 쓴다.
-# [실험 축] 각 필드의 P/R/G/F/V/L/C 코드는 docs/experiments.md의 단계별 후보 이름과 같다(기준 구성
-# P0·R0·G0·F0·V0·L0·C0에서 한 축씩 바꿔 잰다).
+# [실험 축] 각 필드의 P/R/G/F/V/L/C/E/D/X 코드는 docs/experiments.md의 단계별 후보 이름과 같다(기준 구성
+# P0·R0·G0·F0·V0·L0·C0·E0·D0·X0에서 한 축씩 바꿔 잰다).
 
 from __future__ import annotations
 
@@ -70,7 +70,8 @@ class RunConfig:
     user_model: str = "qwen2.5:7b-instruct"
     # 아래 필드가 실험 축이다. P(규정을 도구에서도 막는가), R(think 도구·쓰기 전 고객 확인), G(멈춤 가드),
     # F(본문에 샌 도구 호출 구제), V(음성 채널), L(중국어·일본어 문자 답 되돌리기), C(근거 없는 완료 주장
-    # 되돌리기). 기본값 0번이 기준 구성이다.
+    # 되돌리기), E(규정 거절 오류에 사실 붙이기), D(같은 답 되풀이 가드), X(읽기 도구 출력). 기본값 0번이 기준
+    # 구성이다.
     policy: Literal["P0", "P1"] = "P0"  # P0: 규정은 프롬프트에만, P1: 도구도 거절한다
     # R1: think 도구. R2(10단계): 고객이 미리보기에 동의했을 때만 쓰기가 실행된다(confirm.py). 프롬프트와
     # 도구 목록은 R0와 같다.
@@ -96,6 +97,13 @@ class RunConfig:
     # 전달하지 않고 안내문을 넣어 한 턴에 max_repeat_retries번 다시 시킨다. 다시도 같으면 그대로 전달한다.
     # 온도는 올리지 않는다(2단계 G2, 7단계 C2에서 온도를 올리면 나빠졌다).
     repeat: Literal["D0", "D1"] = "D0"
+    # X1(15단계): 읽기 도구 get_order가 결과의 shipping 바로 뒤에 배송 행의 사실(shipment: 배송 상태,
+    # 출고·수령 시각, 도착 예정일. track_shipment와 같은 값·표기)을 더하고, 도구 설명의 둘째 문단도 그에 맞게
+    # 바뀐다(tools.py의 GET_ORDER_X1_DESCRIPTION). 택배사·송장 번호는 여전히 track_shipment에만 있고, 반품
+    # 가능 여부·접수 마감일 같은 계산된 판단은 넣지 않는다("읽기 도구는 사실만", docs/design.md "도구").
+    # X0이면 도구 목록과 결과가 이 축이 생기기 전과 같다. 등록부는 run.py가 tools.build_registry(reads=...)로
+    # 고르고, 서비스·MCP 서버는 X0이다.
+    reads: Literal["X0", "X1"] = "X0"
     # 에이전트는 0.0(결정적)으로 두고, 시뮬레이터는 0.3으로 둬 시도마다 고객의 말이 조금씩 달라지게 한다.
     # 시뮬레이터 값은 기준선 첫 실행 뒤 0.7에서 0.3으로 낮췄다(docs/experiments.md 공통 규칙 무작위성).
     # base_seed는 derive_seed의 첫 입력이라, 같은 명령은 같은 seed로 돈다.

@@ -504,11 +504,15 @@ def test_b_skips_only_the_long_episode():
 
 # GPU 전 확인: 지금 코드로 D1 구성을 돌리면 manifest의 설정·두 제공자 설명·하니스 글 해시가 D1 기록과 같다.
 # 제공자는 실행기와 같은 인자로 만들고 서버에서 읽는 digest·버전만 기록의 값으로 둔다. 과제·seed·프롬프트
-# 해시는 test_stage10이 8단계 M2b 기록(D1 기록과 같은 값)과 맞춰 본다.
+# 해시는 test_stage10이 8단계 M2b 기록(D1 기록과 같은 값)과 맞춰 본다. 설정은 기록에 있는 키가 모두 같고, 기록
+# 뒤에 생긴 키는 15단계 읽기 도구 출력 축(reads) 하나이며 기본값(X0)이다(analyze.setup_differences도 옛 기록에
+# 없는 키를 기본값으로 본다).
 def test_a_new_run_of_the_d1_setup_pairs_with_the_record():
     manifest = analyze.load_manifest(ARMS["D1"])
     config = RunConfig(model="qwen3.5:4b", policy="P1", num_ctx=12288, user_num_ctx=12288, repeat="D1")
-    assert config.to_dict() == manifest["config"]
+    recorded = manifest["config"]
+    assert {k: v for k, v in config.to_dict().items() if k in recorded} == recorded
+    assert {k: v for k, v in config.to_dict().items() if k not in recorded} == {"reads": "X0"}
     agent = OllamaProvider("qwen3.5:4b", num_ctx=12288, think=False)
     user = OllamaProvider("qwen2.5:7b-instruct", num_ctx=12288, num_gpu=None)
     for provider, key in ((agent, "agent_provider"), (user, "user_provider")):

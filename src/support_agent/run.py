@@ -11,6 +11,8 @@
         --episode dev-018:1 --episode dev-018:2 를 더하고, 뒤에 `analyze stitch` (docs/experiments.md 9단계)
     14단계(프롬프트 주입 과제, 대본 고객): --tasks adv --trials 2 --policy P1 --model qwen3.5:4b --think off
         --num-ctx 12288 --user-script, 뒤에 `analyze adversarial` (docs/experiments.md 14단계)
+    15단계(get_order에 배송 시각): 8단계 M2b 구성에 --reads X1 을 더하고, 뒤에 `analyze guards`
+        (docs/experiments.md 15단계)
 
 기록은 outputs/runs/<run_id>/에 쌓인다(git이 무시함). --official을 주면 reports/에 쓴다(커밋 대상). 그러려면
 작업 트리가 깨끗해야 하고, 시험용 과제 파일은 --allow-test도 있어야 한다. GPU를 다른 프로젝트와 나눠 쓰므로,
@@ -31,6 +33,9 @@
 #   쓴 뒤에 실패하지 않게 한다.
 # - --user-script(14단계)는 고객을 과제의 대본 줄(user.script)을 말하는 ScriptedUser로 바꾼다. 시뮬레이터
 #   모델을 만들지도 올리지도 않고, manifest의 고객 자리에 SCRIPT_USER를 적는다(docs/experiments.md 14단계).
+# - --reads X1(15단계)은 get_order의 결과와 설명이 다른 도구 등록부(tools.build_registry(reads="X1"))로 돈다.
+#   manifest에는 축 값마다의 도구 목록 해시(tools_sha256_by_reads)를 함께 남겨, analyze same-setup --ignore
+#   reads가 다른 도구 글의 차이를 가리지 않고 짝지을 수 있게 한다.
 # [흐름] 인자 확인 → RunConfig → 제공자 준비 → GPU 확인 → 도구·seed·정답 덤프 → 음성 채널 → 모델 적재 →
 # run_id·폴더 → manifest·seed 덤프 → _run_all → summary(Ctrl+C나 오류에도 finally로 씀).
 
@@ -68,7 +73,7 @@ from support_agent.paths import OUTPUTS, REPORTS, ROOT
 from support_agent.records import EpisodeResult
 from support_agent.seed import build_seed_engine
 from support_agent.tasks import Task, load_tasks
-from support_agent.tools import NAME_TOLERANCE, build_registry
+from support_agent.tools import NAME_TOLERANCE, READS_VALUES, build_registry
 from support_agent.user_sim import LLMUser, ScriptedUser, User, build_user_prompt
 from support_agent.voice.speech import versions as speech_versions
 from support_agent.voice.speech import voice_extra as speech_voice_extra
@@ -139,6 +144,13 @@ def text_sha256(text: str) -> str:
 
 def safe_name(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", text).strip("-")
+
+
+# 모델에게 보인 도구 목록(agent.visible_tools: 이름, 설명, 인자 스키마)의 sha256. manifest의
+# prompt_sha256.tools와 15단계의 tools_sha256_by_reads가 같은 셈을 쓴다(키를 정렬한 JSON, 한국어는 그대로).
+# analyze same-setup이 두 실행의 이 값을 맞대므로 셈하는 방법을 바꾸면 옛 기록과 짝짓기가 모두 끊긴다.
+def tools_sha256(registry, config: RunConfig) -> str:
+    return text_sha256(json.dumps(visible_tools(registry, config), ensure_ascii=False, sort_keys=True))
 
 
 # --- manifest의 하니스 글 해시(harness_sha256) ---
@@ -411,6 +423,13 @@ def main() -> None:
         help="D1(13단계): 바로 앞에 고객에게 전달한 답과 같은 답을 붙잡아 한 번 다시 시킨다",
     )
     parser.add_argument(
+        "--reads",
+        choices=list(READS_VALUES),
+        default="X0",
+        help="X1(15단계): get_order 결과의 shipping 뒤에 배송 상태·출고·수령 시각·도착 예정일(shipment)을 "
+        "더하고 그 도구 설명의 둘째 문단을 바꾼다. 택배사·송장 번호는 track_shipment에만 있다",
+    )
+    parser.add_argument(
         "--user-on-cpu",
         action="store_true",
         help="시뮬레이터 모델을 CPU에서 돌린다 (에이전트 모델이 GPU 메모리를 남기지 않을 때)",
@@ -519,6 +538,7 @@ def main() -> None:
         claims=args.claims,
         errors=args.errors,
         repeat=args.repeat,
+        reads=args.reads,
         num_ctx=args.num_ctx,
         user_num_ctx=None if args.user_script else user_num_ctx,
     )
@@ -586,9 +606,10 @@ def main() -> None:
             f"{OTHER_GPU_USE_LIMIT_MIB}). Another job is probably running; not starting (--force overrides)."
         )
 
-    # V4면 find_customer 대신 verify_caller가 든 등록부를 만든다. seed DB는 프로세스에서 한 번 만들어 읽기
-    # 전용으로 쓰고, 에피소드마다 복사한다.
-    registry = build_registry(caller_id=config.caller_id)
+    # V4면 find_customer 대신 verify_caller가, X1(15단계)이면 get_order 자리에 X1 판이 든 등록부를 만든다.
+    # 정답 재실행(gold_dump_of)과 판정도 같은 등록부를 쓴다(X1은 읽기 결과만 바꾸므로 정답 DB는 X0과 같다).
+    # seed DB는 프로세스에서 한 번 만들어 읽기 전용으로 쓰고, 에피소드마다 복사한다.
+    registry = build_registry(caller_id=config.caller_id, reads=config.reads)
     seed_engine = build_seed_engine()
     seed_dump = db.dump_db(seed_engine)
     policy_text = load_policy()
@@ -610,8 +631,8 @@ def main() -> None:
             print(f"{config.model} was evicted by that load; loaded it again ... {seconds:.1f} s")
     if user_provider is not None and config.user_model != config.model:
         print("warning: two models take turns; if both do not fit in GPU memory every turn reloads one")
-    # run_id = 시작 시각(UTC) + 모델 + 축 코드 + 라벨. 음성 축은 채널이 있을 때만, C·E·D 축은
-    # 기본값(C0·E0·D0)이 아닐 때만 넣는다(그래서 지금까지의 실행 이름 꼴이 그대로다). 이 실행기는 평가
+    # run_id = 시작 시각(UTC) + 모델 + 축 코드 + 라벨. 음성 축은 채널이 있을 때만, C·E·D·X 축은
+    # 기본값(C0·E0·D0·X0)이 아닐 때만 넣는다(그래서 지금까지의 실행 이름 꼴이 그대로다). 이 실행기는 평가
     # 하니스라 벽시계를 써도 된다(도구·seed·판정 코드만 시각을 읽지 않는다).
     started = datetime.now(UTC)
     run_id = "-".join(
@@ -627,6 +648,7 @@ def main() -> None:
             config.claims if config.claims != "C0" else "",
             config.errors if config.errors != "E0" else "",
             config.repeat if config.repeat != "D0" else "",
+            config.reads if config.reads != "X0" else "",
             safe_name(args.label),
         ]
         if p
@@ -643,7 +665,11 @@ def main() -> None:
     # 등의 버전과 음성 모델 세 가지의 HF 캐시 스냅숏). 이 키가 없는 기존 음성 기록과의 짝짓기·끼워 넣기를
     # 막지 않으려고 voice_channel·versions와 따로 두고, analyze same-setup·respell은 이 키를 보지 않는다
     # (voice/speech.py의 voice_extra).
-    tools_json = json.dumps(visible_tools(registry, config), ensure_ascii=False, sort_keys=True)
+    # tools_sha256_by_reads(2026-11-01부터): 15단계 읽기 도구 출력 축의 값마다 이 실행의 구성(V4 여부, think
+    # 도구가 보이는지)으로 만든 도구 목록 해시. 이 실행의 값(config.reads) 쪽이 prompt_sha256.tools와 같다.
+    # analyze same-setup --ignore reads는 두 실행의 X0 판을 맞대므로 X1이 바꾼 get_order 설명 말고 다른 도구
+    # 글이 달라지면 그대로 걸린다. 이 필드는 setup_differences가 통째로 비교하지 않으므로 이 필드가 없는 옛
+    # 기록(모두 X0)과의 짝짓기를 막지 않는다.
     manifest: dict[str, Any] = {
         "run_id": run_id,
         "started_at": started.isoformat(timespec="seconds"),
@@ -661,7 +687,11 @@ def main() -> None:
                 build_system_prompt(policy_text, manifest_tasks[0].now, caller_id=config.caller_id)
             ),
             "user_sim": text_sha256(build_user_prompt(manifest_tasks[0])),
-            "tools": text_sha256(tools_json),
+            "tools": tools_sha256(registry, config),
+        },
+        "tools_sha256_by_reads": {
+            reads: tools_sha256(build_registry(caller_id=config.caller_id, reads=reads), config)
+            for reads in READS_VALUES
         },
         "harness_sha256": harness,
         "agent_provider": provider.describe(),

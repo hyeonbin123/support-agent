@@ -10,6 +10,7 @@
     uv run python -m support_agent.analyze claims reports/<실행> [실행 폴더 더 ...]
     uv run python -m support_agent.analyze same-setup reports/<실행> reports/<짝지을 실행>
         [--ignore voice] [--ignore-prompt tools agent_system]   (9단계: V2와 V4는 이 둘이 다르다)
+        [--ignore reads]   (15단계: 도구 목록 해시는 두 실행의 X0 판으로 맞댄다)
     uv run python -m support_agent.analyze smoke outputs/runs/<8단계 후보의 스모크 실행>
     uv run python -m support_agent.analyze select reports/<P1 7B dev> reports/<P0 7B dev> reports/<후보> ..
     uv run python -m support_agent.analyze verdict reports/<P1 7B test> reports/<P0 7B test> reports/<후보>
@@ -27,7 +28,7 @@
     uv run python -m support_agent.analyze sim-check reports/<7B 시뮬레이터 실행> reports/<다른 시뮬레이터>
     uv run python -m support_agent.analyze respelled reports/<음성 실행> [...]   (말로 풀어 쓰기를 고친 뒤)
     uv run python -m support_agent.analyze stitch reports/<음성 실행> reports/<다시 잰 실행> [--out <폴더>]
-    uv run python -m support_agent.analyze guards reports/<M2b 개발용> reports/<팔> [...]   (13단계 선택)
+    uv run python -m support_agent.analyze guards reports/<M2b 개발용> reports/<팔> [...]   (13·15단계 선택)
     uv run python -m support_agent.analyze guards-verdict reports/<M2b 시험용> reports/<고른 구성 시험용>
     uv run python -m support_agent.analyze replay reports/<기록> reports/<같은 설정으로 다시 돈 실행>
     uv run python -m support_agent.analyze grounding reports/<실행> [...] [--sheet <파일> --n 20]
@@ -532,8 +533,31 @@ def old_records_harness(commit: str | None) -> dict[str, str]:
     return {**OLD_RECORDS_HARNESS_SHA256, **_OLD_RECORDS_HARNESS_BY_COMMIT.get(commit or "", {})}
 
 
+# 15단계 읽기 도구 출력 축(reads)을 무시하고 짝지을 때, manifest 하나의 도구 목록 해시(prompt_sha256.tools)를
+# 그 자리에서 X0 판으로 바꾼다. X1은 get_order의 설명을 바꾸므로 X1 실행의 도구 해시는 X0 실행과 늘 다르다.
+# 실행기는 2026-11-01부터 축 값마다의 도구 목록 해시(manifest의 tools_sha256_by_reads)를 남기므로 그 X0 판을
+# 쓰면, X1이 바꾼 설명 말고 다른 도구 글의 차이는 그대로 'prompt_sha256 differs (tools)'로 걸린다. 도구 해시를
+# 통째로 빼는 방법(--ignore-prompt tools)은 그 차이까지 가린다. 이 필드가 없는 옛 manifest는 모두 X0 실행이라
+# 기록된 해시가 곧 X0 판이다. 돌려주는 것은 짝지을 수 없는 이유들이다: X1인데 축 값별 해시가 없거나, 이 실행의
+# 값 쪽 해시가 기록된 도구 해시와 다르면(실행기가 만든 manifest가 아님) 바꾸지 않고 그 이유를 낸다.
+def _tools_as_x0(manifest: dict[str, Any]) -> list[str]:
+    """manifest의 prompt_sha256.tools를 X0 판으로 바꾼다. 바꿀 수 없는 이유가 있으면 그 목록."""
+    prompts = manifest.get("prompt_sha256")
+    if not isinstance(prompts, dict) or "tools" not in prompts:
+        return []  # 도구 해시를 비교하지 않는 경우(--ignore-prompt tools 등)
+    reads = manifest["config"].get("reads", RunConfig.reads)
+    by_reads = manifest.get("tools_sha256_by_reads")
+    name = manifest.get("run_id", "?")
+    if by_reads is None:
+        return [] if reads == "X0" else [f"{name}: reads {reads} without tools_sha256_by_reads"]
+    if "X0" not in by_reads or by_reads.get(reads) != prompts["tools"]:
+        return [f"{name}: tools_sha256_by_reads[{reads}] does not match prompt_sha256.tools"]
+    manifest["prompt_sha256"] = {**prompts, "tools": by_reads["X0"]}
+    return []
+
+
 # 두 실행을 '한 축만 다른 같은 설정'으로 짝지어도 되는지 확인하고, 안 되는 이유를 목록으로 돌려준다(빈 목록 =
-# 짝지어도 됨). analyze same-setup과 8·10·12단계의 짝짓기 검사가 쓴다.
+# 짝지어도 됨). analyze same-setup과 8·10·12·13·15단계의 짝짓기 검사가 쓴다.
 # 비교 항목: 무시할 축을 뺀 모든 설정(옛 manifest에 없는 필드는 기본값으로 봄), 시도 수, 과제 해시, seed 해시,
 # 프롬프트 해시(V4는 에이전트 프롬프트와 도구 목록이 일부러 달라 뺄 수 있음), 하니스 글 해시(없는 옛
 # manifest는 old_records_harness로 채움), 두 제공자 정보(모델 digest, Ollama 버전, 옵션), 과제별 판정된 시도
@@ -547,6 +571,7 @@ def setup_differences(
     해시, seed 해시, `ignore_prompts`를 뺀 프롬프트 해시(V4는 에이전트 프롬프트와 도구 목록을 일부러
     바꾼다), 하니스 글 해시(필드가 없는 옛 manifest는 2026-10-29 코드의 값으로 보되 글이 달랐던 첫 기준선은
     그 기록의 값으로 본다), 두 제공자(모델 digest, 서버 버전, 옵션), 그리고 과제별로 판정된 시도.
+    `ignore`에 reads(15단계)가 있으면 도구 목록 해시는 두 실행의 X0 판으로 맞댄다(_tools_as_x0).
     """
     a, b = load_manifest(run_a), load_manifest(run_b)
     for manifest in (a, b):
@@ -575,6 +600,10 @@ def setup_differences(
         left, right = a["config"].get(key, defaults.get(key)), b["config"].get(key, defaults.get(key))
         if left != right:
             out.append(f"config.{key}: {left!r} != {right!r}")
+    # 15단계 reads를 무시할 때만: 아래 프롬프트 해시 비교 전에 도구 목록 해시를 두 실행의 X0 판으로 맞춘다.
+    if "reads" in ignore:
+        for manifest in (a, b):
+            out += _tools_as_x0(manifest)
     for key in (
         "trials",
         "task_sha256",
@@ -1237,10 +1266,11 @@ def _sim_command(args: argparse.Namespace) -> None:
         print(sim_report.check(args.base_dir, args.run_dir)[0])
 
 
-# 13단계(가드 네 팔) 명령을 guard_report.py로 넘긴다. guard_report.py도 이 모듈을 가져다 쓰므로 함수 안에서
-# 가져온다. 선택은 합친 팔이 더 필요하면 그 팔을 알리고, 짝지을 수 없으면 종료 코드 1로 끝난다.
+# 13단계(가드 네 팔)·15단계(읽기 도구 출력 X1) 명령을 guard_report.py로 넘긴다. guard_report.py도 이 모듈을
+# 가져다 쓰므로 함수 안에서 가져온다. 선택은 합친 팔이 더 필요하면 그 팔을 알리고, 짝지을 수 없으면 종료 코드
+# 1로 끝난다.
 def _guards_command(args: argparse.Namespace) -> None:
-    """13단계 명령. 코드는 guard_report.py에 있다."""
+    """13·15단계 명령. 코드는 guard_report.py에 있다."""
     from support_agent import guard_report
 
     if args.command == "guards":
@@ -1317,7 +1347,12 @@ def main() -> None:
     pairing = commands.add_parser("same-setup")
     pairing.add_argument("run_a", type=Path)
     pairing.add_argument("run_b", type=Path)
-    pairing.add_argument("--ignore", nargs="*", default=["voice"], help="달라도 되는 설정 축")
+    pairing.add_argument(
+        "--ignore",
+        nargs="*",
+        default=["voice"],
+        help="달라도 되는 설정 축 (reads를 넣으면 도구 목록 해시는 두 실행의 X0 판으로 맞댄다, 15단계)",
+    )
     pairing.add_argument(
         "--ignore-prompt",
         nargs="*",
@@ -1369,10 +1404,12 @@ def main() -> None:
     stitching.add_argument("--out", type=Path, default=None, help="기본: <original>-respelled")
     guarding = commands.add_parser("guards")
     guarding.add_argument("base_dir", type=Path, help="8단계 qwen3.5:4b 개발용 기록 (기준)")
-    guarding.add_argument("run_dirs", nargs="+", type=Path, help="13단계 팔의 개발용 실행들 (합친 팔 포함)")
+    guarding.add_argument(
+        "run_dirs", nargs="+", type=Path, help="13단계 팔(합친 팔 포함)이나 15단계 X1의 개발용 실행들"
+    )
     guard_judging = commands.add_parser("guards-verdict")
     guard_judging.add_argument("base_dir", type=Path, help="8단계 qwen3.5:4b 시험용 기록 (기준)")
-    guard_judging.add_argument("run_dir", type=Path, help="13단계에서 고른 구성의 시험용 실행")
+    guard_judging.add_argument("run_dir", type=Path, help="13·15단계에서 고른 구성의 시험용 실행")
     # replay: 같은 설정으로 일부 과제(--task-id)나 일부 에피소드(--episode)를 다시 돈 실행을 기록의 같은
     # (과제, 시도)와 맞대어, LLM 출력이 글자까지 같은지 에피소드마다 낸다(13단계 끝 "원인 확인"의 읽기 명령).
     # 짝지을 수 없으면(설정이 다름, 기록에 없는 과제·에피소드) 이유를 내고 종료 코드 1로 끝난다.

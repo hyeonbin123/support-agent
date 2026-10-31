@@ -1,6 +1,6 @@
-"""13단계(4B 에이전트의 남은 실패를 겨냥한 가드) 분석: 개발용 선택과 시험용 판정, 그리고 모든 팔 비교에
-붙이는 음성 대조(장치가 한 번도 작동하지 않은 에피소드로 본 실행 잡음)와 다시 돈 실행 맞대기. 모델을 부르지
-않는다.
+"""13단계(4B 에이전트의 남은 실패를 겨냥한 가드)와 15단계(읽기 도구 출력 X1) 분석: 개발용 선택과 시험용
+판정, 그리고 모든 팔 비교에 붙이는 음성 대조(장치가 한 번도 작동하지 않은 에피소드로 본 실행 잡음)와 다시 돈
+실행 맞대기. 모델을 부르지 않는다.
 
 사용법:
     uv run python -m support_agent.analyze guards reports/<M2b 개발용> reports/<팔 개발용> [...]
@@ -11,12 +11,17 @@
 # [파일 역할] 13단계 규칙(docs/experiments.md 13단계, 측정 전에 커밋)을 그대로 코드로 옮긴 분석. 팔(C1, G1,
 # E1, D1, 합친 팔)의 개발용 기록을 8단계 qwen3.5:4b 개발용 기록(기준)과 과제 단위로 짝지어 선택 조건을
 # 계산하고, 고른 구성의 시험용 기록으로 판정을 낸다. 보고만 하는 지표(유형별 pass^1, 전달된 거짓 완료, 같은 답
-# 되풀이로 끝난 에피소드, 전달된 멈춤 답, 가드 발동 수, 시간)도 함께 낸다.
+# 되풀이로 끝난 에피소드, 전달된 멈춤 답, 가드 발동 수, 시간)도 함께 낸다. 15단계(같은 문서 15단계)는 같은
+# 선택·판정 규칙을 읽기 도구 출력 축 X1(get_order에 배송 시각) 한 팔에 쓰고, X1 팔이 있을 때만 읽기 도구 보고
+# 표(get_order·track_shipment 호출, 배송 시각을 본 거절 에피소드, 프롬프트 토큰, get_order 호출 시간)를 더
+# 낸다.
 # [설계 이유] 문턱값과 판정표를 측정 전에 상수로 고정해, 결과를 본 뒤 기준을 바꿀 수 없게 한다(이 프로젝트의
-# 측정 방식). 짝짓기 검사는 analyze.setup_differences를 그대로 쓰고 가드 축 넷만 달라도 되게 한다.
-# [주의] E1은 거절 과제의 판정 값(수령일·출고일 같은 날짜)과 같은 종류의 사실을 도구 오류 글에 붙인다. 그래서
-# 거절 유형은 따로 보고하고, 거절이 아닌 세 유형의 pass^1이 기준보다 낮으면(한 에피소드라도) E1을 고르지
-# 않는다. 시험용 기록으로는 판정만 하고 무엇도 고치지 않는다.
+# 측정 방식). 짝짓기 검사는 analyze.setup_differences를 그대로 쓰고 가드 축 넷과 읽기 축(reads)만 달라도 되게
+# 한다.
+# [주의] E1은 거절 과제의 판정 값(수령일·출고일 같은 날짜)과 같은 종류의 사실을 도구 오류 글에 붙이고, X1은
+# 같은 종류의 사실을 get_order 결과에 붙인다. 그래서 거절 유형은 따로 보고하고, 거절이 아닌 세 유형의 pass^1이
+# 기준보다 낮으면(한 에피소드라도) 그 팔을 고르지 않는다(FACT_ARMS). 시험용 기록으로는 판정만 하고 무엇도
+# 고치지 않는다.
 # [음성 대조] 기준과 장치 축(가드·도구 글)만 다른 팔에서, 다른 장치가 두 에피소드 어느 쪽에서도 작동하지 않은
 # (과제, 시도) 짝은 장치가 대화를 바꿀 수 없었던 짝이다. 그 짝이 기준과 갈리면 실행 잡음이다. guards·
 # guards-verdict 보고서 끝과 analyze compare의 순열 p 줄 아래에 이 표를 붙인다(docs/experiments.md 공통 규칙
@@ -51,11 +56,17 @@ from support_agent.analyze import (
 )
 from support_agent.config import FIRST_AGENT_MESSAGE, RunConfig
 
-# 13단계가 바꾸는 축(설정 이름)과 기본값. 이 넷 말고는 기준과 같아야 짝지을 수 있다.
-GUARD_AXES = {"claims": "C0", "guard": "G0", "errors": "E0", "repeat": "D0"}
+# 13단계가 바꾸는 가드 축 넷과 15단계의 읽기 도구 출력 축(reads), 그리고 기본값. 이 축들 말고는 기준과 같아야
+# 짝지을 수 있다. reads를 무시할 때 도구 목록 해시는 analyze.setup_differences가 두 실행의 X0 판으로 맞댄다.
+GUARD_AXES = {"claims": "C0", "guard": "G0", "errors": "E0", "repeat": "D0", "reads": "X0"}
 # 합친 팔에서 같은 성공률일 때 고르는 순서(작은 변경부터): 이미 있던 가드(C1, G1), 새 루프 가드(D1), 도구 글을
-# 바꾸는 E1(판정 값과 같은 종류의 사실을 주므로 마지막).
-TIE_ORDER = ("C1", "G1", "D1", "E1")
+# 바꾸는 E1(판정 값과 같은 종류의 사실을 주므로 13단계에서 마지막), 그 뒤에 15단계의 X1(읽기 도구 결과와
+# 설명을 바꾸고 E1처럼 판정 값과 같은 종류의 사실을 준다). 15단계는 X1 한 팔이라 순서가 쓰일 일은 없지만, 고른
+# 단일 팔을 이 순서로 정렬하므로 모든 팔 이름이 들어 있어야 한다.
+TIE_ORDER = ("C1", "G1", "D1", "E1", "X1")
+# 판정 값(수령일·출고일 같은 날짜)과 같은 종류의 사실을 모델에 주는 팔. 이 팔이 들면 개발용 선택 조건 5와
+# 시험용 판정 4(거절이 아닌 세 유형의 pass^1이 기준보다 낮지 않다)를 더한다(13단계 E1, 15단계 X1 규칙).
+FACT_ARMS = ("E1", "X1")
 # 개발용 선택 조건(13단계 규칙): pass^1 차이 점추정 +3.1%p(96 에피소드 중 3) 이상, 정답에 없는 쓰기가 기준 + 2
 # 이하, 통과된 규정 위반 0, 형식 오류·근거 없는 완료 주장으로 끝난 에피소드 합 2 이하.
 MIN_GAIN = 3 / 96
@@ -83,20 +94,20 @@ _KINDS = ("lookup", "action", "refusal", "composite")
 _FLOAT_SLACK = 1e-9  # 3/96 같은 경계값을 부동소수 오차로 놓치지 않게
 
 
-# 실행의 팔 이름: 기본값이 아닌 가드 축 코드를 축 순서(C, G, E, D)로 이어 쓴 것(예: "C1", "C1+D1"). 모두
-# 기본값이면 "기준".
+# 실행의 팔 이름: 기본값이 아닌 가드·읽기 축 코드를 축 순서(C, G, E, D, X)로 이어 쓴 것(예: "C1", "C1+D1",
+# "X1"). 모두 기본값이면 "기준".
 def arm_of(run_dir: Path) -> str:
     config = {**RunConfig().to_dict(), **load_manifest(run_dir)["config"]}
     return arm_name([config[axis] for axis, default in GUARD_AXES.items() if config[axis] != default])
 
 
-# 축 코드 목록을 축 순서(C, G, E, D)로 이어 쓴 팔 이름. 빈 목록이면 "기준".
+# 축 코드 목록을 축 순서(C, G, E, D, X)로 이어 쓴 팔 이름. 빈 목록이면 "기준".
 def arm_name(codes: list[str]) -> str:
-    order = "CGED"
+    order = "CGEDX"
     return "+".join(sorted(codes, key=lambda code: order.index(code[0]))) or "기준"
 
 
-# 기준과 팔이 가드 축 넷 말고 같은 설정인가(analyze same-setup과 같은 검사). 다르면 그 이유들.
+# 기준과 팔이 가드 축 넷과 읽기 축 말고 같은 설정인가(analyze same-setup과 같은 검사). 다르면 그 이유들.
 def pairing_problems(base_dir: Path, cand_dir: Path) -> list[str]:
     return setup_differences(base_dir, cand_dir, ignore=tuple(GUARD_AXES))
 
@@ -108,6 +119,29 @@ def ends_in_a_loop(episode: dict[str, Any]) -> bool:
     return len(replies) >= 3 and len(set(replies[-3:])) == 1
 
 
+# 에이전트가 배송 시각(출고·수령 시각, 도착 예정일)을 본 에피소드인가: 성공한 track_shipment가 있거나, 성공한
+# get_order 결과에 비어 있지 않은 shipment가 있다(15단계 X1. X0의 get_order 결과에는 이 키가 없다). 15단계
+# 보고 표의 '배송 시각을 본 거절 에피소드'가 쓴다. 기록의 도구 결과 글(JSON)만 읽고 대화 글은 보지 않는다.
+def saw_shipment_times(episode: dict[str, Any]) -> bool:
+    for tool in episode.get("tool_calls") or ():
+        if not tool.get("ok"):
+            continue
+        if tool.get("name") == "track_shipment":
+            return True
+        if tool.get("name") == "get_order":
+            try:
+                result = json.loads(tool.get("content") or "")
+            except ValueError:
+                continue
+            if isinstance(result, dict) and result.get("shipment"):
+                return True
+    return False
+
+
+def _mean(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
 # 기록 하나의 보고용 수치. 판정된 에피소드(infra 제외)만 센다.
 def run_stats(run_dir: Path) -> dict[str, Any]:
     episodes = [e for e in load_episodes(run_dir) if e["status"] != "infra_error"]
@@ -117,6 +151,8 @@ def run_stats(run_dir: Path) -> dict[str, Any]:
     errors_on = load_manifest(run_dir)["config"].get("errors") == "E1"
     endings = Counter(e["termination"] for e in episodes)
     found, replies = _other_script(episodes)
+    tool_calls = [t for e in episodes for t in e["tool_calls"]]
+    refusals = [e for e in episodes if types.get(e["task_id"]) == "refusal"]
     return {
         "by_task": by_task,
         "pass1": pass_k(by_task, 1),
@@ -146,6 +182,19 @@ def run_stats(run_dir: Path) -> dict[str, Any]:
         "agent_ms": sum(c["wall_ms"] for c in agent_calls) / len(agent_calls) if agent_calls else 0.0,
         "other_script": f"{found}/{replies}",
         "infra": sum(e["status"] == "infra_error" for e in load_episodes(run_dir)),
+        # 15단계 읽기 도구 보고(reads_table): 두 도구의 호출 수와 성공 수, 배송 시각을 본 거절 에피소드와 거절
+        # 에피소드 수, 에이전트 호출당 프롬프트 토큰(서버가 알려 준 값이 있는 호출만), get_order 호출당
+        # ms(도구 실행 시간, 기록의 ms).
+        "get_order_calls": sum(t["name"] == "get_order" for t in tool_calls),
+        "get_order_ok": sum(t["name"] == "get_order" and bool(t["ok"]) for t in tool_calls),
+        "track_shipment_calls": sum(t["name"] == "track_shipment" for t in tool_calls),
+        "track_shipment_ok": sum(t["name"] == "track_shipment" and bool(t["ok"]) for t in tool_calls),
+        "refusal_saw_times": sum(saw_shipment_times(e) for e in refusals),
+        "refusal_episodes": len(refusals),
+        "prompt_tokens": _mean(
+            [c["prompt_tokens"] for c in agent_calls if c.get("prompt_tokens") is not None]
+        ),
+        "get_order_ms": _mean([t["ms"] for t in tool_calls if t["name"] == "get_order" and "ms" in t]),
     }
 
 
@@ -158,7 +207,7 @@ def _difference(base: dict[str, Any], cand: dict[str, Any]) -> tuple[float, floa
     return paired_difference(base["by_task"], cand["by_task"], 1)
 
 
-# 개발용 선택 조건 다섯(E1이 든 팔만 다섯째). (조건 이름, 만족 여부) 목록.
+# 개발용 선택 조건 다섯(E1·X1이 든 팔만 다섯째). (조건 이름, 만족 여부) 목록.
 def dev_conditions(base: dict[str, Any], cand: dict[str, Any], arm: str) -> list[tuple[str, bool]]:
     diff, _, _ = _difference(base, cand)
     checks = [
@@ -173,7 +222,7 @@ def dev_conditions(base: dict[str, Any], cand: dict[str, Any], arm: str) -> list
             cand["format_and_claim_endings"] <= MAX_FORMAT_AND_CLAIM_ENDINGS,
         ),
     ]
-    if "E1" in arm.split("+"):
+    if any(code in FACT_ARMS for code in arm.split("+")):
         checks.append(
             ("거절이 아닌 유형 pass^1 ≥ 기준", cand["not_refusal"] >= base["not_refusal"] - _FLOAT_SLACK)
         )
@@ -213,21 +262,52 @@ def _tables(names: list[str], arms: dict[str, str], stats: dict[str, dict[str, A
     return lines
 
 
-# 개발용 선택(13단계 규칙). 첫 실행이 기준(8단계 M2b 개발용), 나머지가 팔. 단일 팔(가드 축 하나)과 합친
-# 팔(둘 이상)을 함께 받는다. 돌려주는 것: 보고서 글과 고른 구성(없으면 None, 합친 팔이 필요한데 없으면
-# "need:<팔>").
+# 15단계 읽기 도구 보고 표(보고만, 판정에 넣지 않음). X1 팔이 있는 보고서에만 붙인다(13단계 보고서는 그대로).
+# 열: get_order·track_shipment 호출 수(괄호 안은 성공 수), 배송 시각을 본 거절 에피소드(saw_shipment_times /
+# 판정된 거절 에피소드), 에이전트 호출당 프롬프트 토큰(X1은 get_order 결과가 길어져 는다), get_order 호출당
+# ms.
+def reads_table(names: list[str], arms: dict[str, str], stats: dict[str, dict[str, Any]]) -> list[str]:
+    lines = [
+        "읽기 도구 (15단계, 보고만. 배송 시각을 본 = 성공한 track_shipment 또는 shipment가 있는 "
+        "get_order 결과)",
+        "",
+        "| 실행 | 팔 | get_order 호출 (성공) | track_shipment 호출 (성공) | 배송 시각을 본 거절 에피소드 "
+        "| 에이전트 호출당 프롬프트 토큰 | get_order 호출당 ms |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for name in names:
+        s = stats[name]
+        lines.append(
+            f"| {name} | {arms[name]} | {s['get_order_calls']} ({s['get_order_ok']}) "
+            f"| {s['track_shipment_calls']} ({s['track_shipment_ok']}) "
+            f"| {s['refusal_saw_times']}/{s['refusal_episodes']} | {s['prompt_tokens']:.0f} "
+            f"| {s['get_order_ms']:.1f} |"
+        )
+    return lines
+
+
+# 보고서에 15단계 읽기 도구 표를 붙이는가: 실행 가운데 X1 팔(이름에 X1)이 있을 때만.
+def _has_reads_arm(arms: dict[str, str]) -> bool:
+    return any("X1" in arm.split("+") for arm in arms.values())
+
+
+# 개발용 선택(13단계 규칙, 15단계도 같은 규칙). 첫 실행이 기준(8단계 M2b 개발용), 나머지가 팔. 단일
+# 팔(가드·읽기 축 하나)과 합친 팔(둘 이상)을 함께 받는다. 돌려주는 것: 보고서 글과 고른 구성(없으면 None, 합친
+# 팔이 필요한데 없으면 "need:<팔>"). X1 팔이 있으면 두 보고 표 뒤에 15단계 읽기 도구 표를 붙인다.
 def select(base_dir: Path, arm_dirs: list[Path]) -> tuple[str, str | None]:
     names = [base_dir.name, *(d.name for d in arm_dirs)]
     arms = {base_dir.name: arm_of(base_dir), **{d.name: arm_of(d) for d in arm_dirs}}
     problems = [f"- {d.name}: {p}" for d in arm_dirs for p in pairing_problems(base_dir, d)]
     if problems:
-        return "짝지을 수 없음 (가드 축 넷 말고 다른 설정):\n" + "\n".join(problems), None
+        return "짝지을 수 없음 (가드·읽기 축 말고 다른 설정):\n" + "\n".join(problems), None
     stats = {d.name: run_stats(d) for d in [base_dir, *arm_dirs]}
     base = stats[base_dir.name]
     # 음성 대조 표(보고만)는 보고서 맨 끝에 붙인다. 미발동 몫이 선택 문턱(MIN_GAIN) 크기면 그 줄도 낸다(선택
     # 조건은 그대로, docs/experiments.md 공통 규칙 "음성 대조").
     negative = ["", *negative_control_lines(base_dir, arm_dirs, threshold=MIN_GAIN)]
     lines = _tables(names, arms, stats)
+    if _has_reads_arm(arms):
+        lines += ["", *reads_table(names, arms, stats)]
     lines += ["", "| 실행 | 팔 | 선택 조건 | 결과 |", "|---|---|---|---|"]
     passed: dict[str, str] = {}  # 팔 → 실행 이름(조건을 모두 만족한 것)
     for d in arm_dirs:
@@ -282,7 +362,9 @@ def select(base_dir: Path, arm_dirs: list[Path]) -> tuple[str, str | None]:
     return "\n".join(lines + negative), chosen
 
 
-# 시험용 판정(13단계 규칙). 기준은 8단계 M2b 시험용, 후보는 고른 구성의 시험용 한 번.
+# 시험용 판정(13단계 규칙, 15단계도 같은 규칙). 기준은 8단계 M2b 시험용, 후보는 고른 구성의 시험용 한 번. 판정
+# 4(거절이 아닌 세 유형이 기준보다 낮지 않다)는 고른 구성에 E1·X1(FACT_ARMS)이 있을 때만 보고 그 팔 이름을
+# 적는다.
 def verdict(base_dir: Path, cand_dir: Path) -> tuple[str, str]:
     problems = pairing_problems(base_dir, cand_dir)
     if problems:
@@ -291,12 +373,17 @@ def verdict(base_dir: Path, cand_dir: Path) -> tuple[str, str]:
     base, cand = stats[base_dir.name], stats[cand_dir.name]
     arm = arm_of(cand_dir)
     names = [base_dir.name, cand_dir.name]
-    lines = _tables(names, {base_dir.name: arm_of(base_dir), cand_dir.name: arm}, stats)
+    arms = {base_dir.name: arm_of(base_dir), cand_dir.name: arm}
+    lines = _tables(names, arms, stats)
+    if _has_reads_arm(arms):
+        lines += ["", *reads_table(names, arms, stats)]
     diff, low, high = _difference(base, cand)
     rises = low > 0
     writes_ok = cand["unexpected_writes"] <= base["unexpected_writes"] + TEST_WRITE_SLACK
     clean = cand["violations"] == 0
-    e1_ok = "E1" not in arm.split("+") or cand["not_refusal"] >= base["not_refusal"] - _FLOAT_SLACK
+    facts = [code for code in arm.split("+") if code in FACT_ARMS]  # 판정 4를 보는 팔 (E1, X1)
+    named = "·".join(facts)
+    facts_ok = not facts or cand["not_refusal"] >= base["not_refusal"] - _FLOAT_SLACK
     lines += [
         "",
         f"1. pass^1 차이 {_pp(diff)} [{_pp(low)}, {_pp(high)}], 구간 아래 끝 > 0: "
@@ -305,19 +392,19 @@ def verdict(base_dir: Path, cand_dir: Path) -> tuple[str, str]:
         f"{'예' if writes_ok else '아니오'}",
         f"3. 통과된 규정 위반 0: {'예' if clean else '아니오 (P1에서 0이 아니면 도구 버그로 보고 멈춘다)'}",
     ]
-    if "E1" in arm.split("+"):
+    if facts:
         lines.append(
-            f"4. (E1) 거절이 아닌 유형 pass^1 {cand['not_refusal']:.1%} ≥ 기준 {base['not_refusal']:.1%}: "
-            f"{'예' if e1_ok else '아니오'}"
+            f"4. ({named}) 거절이 아닌 유형 pass^1 {cand['not_refusal']:.1%} "
+            f"≥ 기준 {base['not_refusal']:.1%}: {'예' if facts_ok else '아니오'}"
         )
     if not clean:
         result = "멈춤 (통과된 규정 위반)"
-    elif rises and writes_ok and e1_ok:
+    elif rises and writes_ok and facts_ok:
         result = "개선"
     elif rises and not writes_ok:
         result = "성공률은 올랐지만 위험한 쓰기가 늘었음"
-    elif rises and not e1_ok:
-        result = "개선을 확인하지 못함 (E1: 거절이 아닌 유형이 내려감)"
+    elif rises and not facts_ok:
+        result = f"개선을 확인하지 못함 ({named}: 거절이 아닌 유형이 내려감)"
     else:
         result = "개선을 확인하지 못함"
     lines.append(f"\n판정: **{result}**")
@@ -337,8 +424,8 @@ def verdict(base_dir: Path, cand_dir: Path) -> tuple[str, str]:
 # 설정을 한 번 더 재는 대조는 실행기 상태가 바뀌지 않으면 글자까지 같게 재현돼 잡음을 0으로 잘못 보일 수
 # 있어, 이미 있는 기록 안의 미발동 짝을 쓴다(docs/experiments.md 공통 규칙 "음성 대조").
 # [발동 판정] 축(설정 이름)마다 판정 함수를 FIRED에 등록한다. 판정 함수가 없는 축이 다르면
-# NegativeControlError로 멈춘다: 새 축(예: 읽기 도구 출력 축)을 더하면서 판정을 빠뜨리면 모든 짝이
-# '미발동'으로 세여 장치의 효과가 잡음으로 보이기 때문이다. 장치 축 말고 다른 설정이 달라도 짝짓지
+# NegativeControlError로 멈춘다: 새 축을 더하면서 판정을 빠뜨리면 모든 짝이 '미발동'으로 세여 장치의 효과가
+# 잡음으로 보이기 때문이다(15단계 읽기 도구 출력 축 reads는 x1_fired). 장치 축 말고 다른 설정이 달라도 짝짓지
 # 않는다(same-setup과 같은 검사).
 
 
@@ -380,13 +467,27 @@ def e1_fired(episode: dict[str, Any]) -> bool:
     )
 
 
-# 축(manifest config의 이름) → 그 축의 장치가 에피소드에서 한 번이라도 작동했는가. 13단계 가드 축 넷이다
-# (GUARD_AXES와 같은 이름, 테스트가 빠짐없이 있는지 본다).
+def x1_fired(episode: dict[str, Any]) -> bool:
+    """X1(15단계)이 작동한 에피소드: 에이전트 호출이 한 번이라도 있다.
+
+    X1은 get_order의 도구 설명을 바꾸고, 도구 목록은 모든 에이전트 호출의 입력에 들어간다(agent.py가
+    호출마다 visible_tools를 보낸다). 그래서 설명을 본 모델의 출력은 첫 호출부터 달라질 수 있고, get_order를
+    부르지 않은 에피소드도 장치가 대화를 바꿀 수 있었던 짝이다. 에이전트 호출 없이 끝난 에피소드(고객이 첫
+    말에서 끝냄)만 미발동이다. 이 정의에서는 X1 팔의 음성 대조에 미발동 짝이 거의 없어 실행 잡음을 기록
+    안에서 가를 수 없고, 그것을 15단계 규칙의 한계에 적었다. get_order 결과의 shipment를 실제로 본
+    에피소드는 saw_shipment_times로 따로 센다.
+    """
+    return any(call.get("who") == "agent" for call in episode.get("llm_calls") or ())
+
+
+# 축(manifest config의 이름) → 그 축의 장치가 에피소드에서 한 번이라도 작동했는가. 13단계 가드 축 넷과 15단계
+# 읽기 축이다(GUARD_AXES와 같은 이름, 테스트가 빠짐없이 있는지 본다).
 FIRED: dict[str, Callable[[dict[str, Any]], bool]] = {
     "claims": _held("unbacked_claim"),
     "guard": _held("stall"),
     "errors": e1_fired,
     "repeat": _held("repeat"),
+    "reads": x1_fired,
 }
 
 

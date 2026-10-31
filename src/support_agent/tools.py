@@ -17,14 +17,17 @@
 # - 결정성: 현재 시각·uuid·난수를 쓰지 않는다(테스트가 ast로 검사). 시각은 ctx.now, 새 행 id는 내용이나
 #   개수에서 만든다
 # [연결] 평가(run.py, judge.py의 정답 재실행), 서비스(service/core.py), MCP 서버가 build_registry()로 같은
-# 도구를 쓴다. 규정 검사를 바꾸면 prompts/policy.md, docs/design.md의 표, rules.py를 같이 고친다.
+# 도구를 쓴다. 규정 검사를 바꾸면 prompts/policy.md, docs/design.md의 표, rules.py를 같이 고친다. 15단계 읽기
+# 도구 출력 축(X1)은 build_registry(reads="X1")이 get_order 자리에 설명과 결과가 다른 판을 넣는 것으로만
+# 다르다(평가 실행기만 쓴다).
 
 from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import replace
 from datetime import datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
 from sqlalchemy import select, update
@@ -469,7 +472,9 @@ def list_orders(session: Session, ctx: ToolContext, args: CustomerArgs) -> dict:
 
 
 # 주문 한 건의 전체 사실. 환불액·반품 가능 여부 같은 판단은 넣지 않고, 결제·줄 상태·접수 내역·보상 쿠폰만
-# 준다. 출고·수령 시각은 track_shipment로 따로 본다.
+# 준다. 출고·수령 시각은 track_shipment로 따로 본다. 15단계 X1(--reads X1)에서는 이 도구 대신 아래
+# GET_ORDER_X1(같은 이름, 결과에 shipment, 설명 둘째 문단만 다름)이 등록된다. 이 함수와 docstring은 X0 판이라
+# 고치지 않는다(모델이 본 도구 설명과 결과가 기록과 같아야 한다).
 @tool(write=False)
 def get_order(session: Session, ctx: ToolContext, args: OrderArgs) -> dict:
     """주문 한 건의 상품, 금액, 결제, 배송지, 반품·교환 접수, 보상 쿠폰 내역을 조회한다.
@@ -556,7 +561,22 @@ def get_product(session: Session, ctx: ToolContext, args: ProductArgs) -> dict:
     }
 
 
-# 배송 조회. 시각은 KST 표기로, 도착 예정일은 날짜만 준다.
+# 배송 행의 사실: 배송 상태(코드와 한국어 표기), 출고·수령 시각(KST 'YYYY-MM-DD HH:MM', 아직이면 None), 도착
+# 예정일(날짜만). track_shipment 결과의 뒤 다섯 키이고, 15단계 X1의 get_order가 shipment로 같은 것을 보여
+# 준다. 두 도구가 이 함수 하나를 써서 값과 표기가 늘 같다. 택배사·송장 번호는 넣지 않는다(track_shipment에만
+# 있음).
+def _shipment_fact(shipment: db.Shipment) -> dict:
+    return {
+        "status": shipment.status.value,
+        "status_label": label(shipment.status),
+        "shipped_at": format_kst(shipment.shipped_at),
+        "delivered_at": format_kst(shipment.delivered_at),
+        "promised_by": format_kst_date(shipment.promised_by),
+    }
+
+
+# 배송 조회. 시각은 KST 표기로, 도착 예정일은 날짜만 준다. 결과의 키 순서는 주문 번호, 택배사, 송장 번호, 그
+# 뒤 배송 행의 사실 다섯이다(docs/design.md 도구 표).
 @tool(write=False)
 def track_shipment(session: Session, ctx: ToolContext, args: OrderArgs) -> dict:
     """주문의 택배사, 송장 번호, 배송 상태, 출고·수령 시각, 도착 예정일을 조회한다."""
@@ -567,12 +587,44 @@ def track_shipment(session: Session, ctx: ToolContext, args: OrderArgs) -> dict:
         "order_id": order.id,
         "carrier": shipment.carrier,
         "tracking_no": shipment.tracking_no,
-        "status": shipment.status.value,
-        "status_label": label(shipment.status),
-        "shipped_at": format_kst(shipment.shipped_at),
-        "delivered_at": format_kst(shipment.delivered_at),
-        "promised_by": format_kst_date(shipment.promised_by),
+        **_shipment_fact(shipment),
     }
+
+
+# --- 15단계 X1: get_order에 배송 시각 ---
+# 읽기 도구 출력 축(RunConfig.reads, docs/experiments.md 15단계)의 값. X0은 지금까지의 get_order, X1은
+# 아래 판이다. run.py의 --reads 선택지와 manifest의 tools_sha256_by_reads가 이 목록을 쓴다.
+READS_VALUES: tuple[str, ...] = ("X0", "X1")
+
+# X1 get_order의 도구 설명(모델에게 그대로 가는 글이라 측정 재현성 때문에 원문을 고정한다). 첫 문단은 X0
+# 판(get_order docstring)과 같고, 둘째 문단만 다르다: X0은 "출고·수령 시각은 track_shipment로 본다."이고, X1은
+# 결과에 더한 shipment(배송 상태, 출고·수령 시각, 도착 예정일)를 알리면서 택배사·송장 번호는 여전히
+# track_shipment로 본다고 적는다. 결과와 다른 말을 하는 설명은 모델을 헷갈리게 하므로 결과를 바꿀 때 설명도
+# 함께 바꾼다.
+GET_ORDER_X1_DESCRIPTION = (
+    "주문 한 건의 상품, 금액, 결제, 배송지, 반품·교환 접수, 보상 쿠폰 내역을 조회한다.\n\n"
+    "배송 상태와 출고·수령 시각, 도착 예정일도 함께 보여 준다. 택배사·송장 번호는 track_shipment로 본다."
+)
+
+
+# X1 get_order의 핸들러: X0 결과(get_order 핸들러가 만든 그대로)의 shipping 바로 뒤에 shipment(배송 행의 사실,
+# _shipment_fact)를 끼운다. 배송 행이 없는 주문은 None(JSON null)이다(track_shipment는 이때
+# shipment_not_found로 실패하지만, 주문 조회는 실패시키지 않는다). 본인 확인·존재·소유 오류는 X0 핸들러가 먼저
+# 내므로 글자까지 같다. 새 ctx.require를 더하지 않아 도구 오류 글(manifest 하니스 글 해시의 tool_errors)도
+# 그대로다. 주문 행은 X0 핸들러가 이미 이 세션에 읽어 두었으므로 session.get은 새 SQL 없이 같은 객체를 준다.
+def _get_order_with_shipment(session: Session, ctx: ToolContext, args: OrderArgs) -> dict:
+    facts = get_order.handler(session, ctx, args)
+    shipment = session.get(db.Order, facts["order_id"]).shipment
+    out: dict = {}
+    for key, value in facts.items():
+        out[key] = value
+        if key == "shipping":
+            out["shipment"] = None if shipment is None else _shipment_fact(shipment)
+    return out
+
+
+# X1의 get_order 도구 정의: 이름·인자 모델·쓰기 여부는 get_order와 같고, 설명과 핸들러만 X1 판이다.
+GET_ORDER_X1 = replace(get_order, description=GET_ORDER_X1_DESCRIPTION, handler=_get_order_with_shipment)
 
 
 # ------------------------------------------------------------------------------------------------- writes
@@ -893,16 +945,19 @@ def think(session: Session, ctx: ToolContext, args: ThinkArgs) -> dict:
     return {"ok": True}
 
 
-def build_registry(*, caller_id: bool = False) -> Registry:
+def build_registry(*, caller_id: bool = False, reads: Literal["X0", "X1"] = "X0") -> Registry:
     """대화 하나가 쓰는 도구 등록부. caller_id=True(음성 V4)면 find_customer 자리에 verify_caller가 들어간다.
+    reads="X1"(15단계)이면 get_order 자리에 GET_ORDER_X1(결과에 shipment, 설명 둘째 문단이 다름)이 들어간다.
 
-    나머지 도구는 같다. run.py가 실행 설정(config.caller_id)에 따라 고르고, 서비스와 MCP 서버는 기본값을
-    쓴다."""
+    나머지 도구는 같다. run.py가 실행 설정(config.caller_id, config.reads)에 따라 고르고, 서비스와 MCP 서버는
+    기본값을 쓴다. reads가 READS_VALUES 밖이면 ValueError다(오타로 X0 실행을 X1로 적지 않게)."""
+    if reads not in READS_VALUES:
+        raise ValueError(f"reads must be one of {READS_VALUES}, got {reads!r}")
     return make_registry(
         verify_caller if caller_id else find_customer,
         get_customer,
         list_orders,
-        get_order,
+        GET_ORDER_X1 if reads == "X1" else get_order,
         get_product,
         track_shipment,
         cancel_order,

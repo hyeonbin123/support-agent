@@ -73,7 +73,8 @@ def episodes_to_replay(run: str) -> list[dict[str, Any]]:
 
 
 # 에피소드의 도구 호출을 기록된 순서와 인자(raw_arguments) 그대로 새 DB 복사본에 실행한다. 문맥은 그 실행의
-# 설정(P0/P1, V4의 발신 번호)과 과제의 고정 시각이다. 모델은 부르지 않는다.
+# 설정(P0/P1, V4의 발신 번호)과 과제의 고정 시각이다. 등록부는 그 실행의 V4 여부와 15단계 읽기 도구 출력
+# 축(reads, 없는 옛 기록은 X0)으로 만든다(X1 기록의 get_order 결과에는 shipment가 있다). 모델은 부르지 않는다.
 @pytest.mark.parametrize("run", recorded_runs())
 def test_recorded_tool_calls_replay_to_the_same_results_and_database(run):
     manifest = json.loads((REPORTS / run / "manifest.json").read_text(encoding="utf-8"))
@@ -81,7 +82,7 @@ def test_recorded_tool_calls_replay_to_the_same_results_and_database(run):
     assert manifest["seed_hash"] == db.state_hash(db.dump_db(seed))
     config = manifest["config"]
     caller_id = config.get("voice") == "V4"
-    registry = build_registry(caller_id=caller_id)
+    registry = build_registry(caller_id=caller_id, reads=config.get("reads", "X0"))
     tasks = tasks_of(manifest["tasks_file"])
     for episode in episodes_to_replay(run):
         task = tasks[episode["task_id"]]

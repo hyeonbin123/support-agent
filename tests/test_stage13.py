@@ -502,5 +502,6 @@ def test_the_registered_rules_match_the_code():
         assert text in STAGE13, text
     assert guard_report.MIN_GAIN == 3 / 96 and guard_report.DEV_WRITE_SLACK == 2
     assert guard_report.TEST_WRITE_SLACK == 3 and guard_report.C1_SERVICE_MIN_DIFF == -0.05
-    assert guard_report.TIE_ORDER == ("C1", "G1", "D1", "E1")
+    # 13단계 네 팔의 순서는 등록한 그대로다. 15단계의 X1은 그 뒤에 붙는다(tests/test_stage15.py가 본다).
+    assert guard_report.TIE_ORDER[:4] == ("C1", "G1", "D1", "E1")
     assert RunConfig().max_repeat_retries == 1
