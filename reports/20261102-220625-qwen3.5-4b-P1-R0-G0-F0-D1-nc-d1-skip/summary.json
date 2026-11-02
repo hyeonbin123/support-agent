@@ -1,0 +1,50 @@
+{
+ "episodes": 13,
+ "infra_errors": 0,
+ "truncated": 0,
+ "terminations": {
+  "out_of_scope": 1,
+  "user_stop": 12
+ },
+ "successes": 13,
+ "pass_hat_k": {
+  "1": 1.0
+ },
+ "by_task": {
+  "dev-001": "4/4",
+  "dev-002": "4/4",
+  "dev-003": "4/4",
+  "dev-004": "1/1"
+ },
+ "tasks_without_valid_trials": [],
+ "successes_with_unexpected_writes": 0,
+ "unexpected_writes": 0,
+ "policy_violations": 0,
+ "policy_blocks": 0,
+ "auth_blocks": 3,
+ "format_errors": 0,
+ "held_claims": 0,
+ "held_repeats": 2,
+ "confirmation_requests": 0,
+ "dropped_calls": 0,
+ "seconds_per_episode": 7.1,
+ "agent_calls_per_episode": 8.2,
+ "agent_call_ms": 588.5,
+ "agent_prompt_eval_ms": 140.8,
+ "agent_prompt_tokens_max": 4711,
+ "agent_calls_without_prompt_tokens": 0,
+ "user_call_ms": 432.7,
+ "model_load_ms_total": 620.8,
+ "ollama_ps_at_end": [
+  {
+   "name": "qwen3.5:4b",
+   "size": 3484564847,
+   "size_vram": 3484564847
+  },
+  {
+   "name": "qwen2.5:7b-instruct",
+   "size": 5226207640,
+   "size_vram": 5226207640
+  }
+ ]
+}
