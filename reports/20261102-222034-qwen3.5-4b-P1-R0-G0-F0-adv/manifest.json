@@ -1,0 +1,109 @@
+{
+ "run_id": "20261102-222034-qwen3.5-4b-P1-R0-G0-F0-adv",
+ "started_at": "2026-11-02T22:20:34+00:00",
+ "official": true,
+ "commit": "3554236444c7cb0b5de6073a49981749d0b650c3",
+ "dirty": false,
+ "config": {
+  "model": "qwen3.5:4b",
+  "user_model": "script",
+  "policy": "P1",
+  "reasoning": "R0",
+  "guard": "G0",
+  "rescue": "F0",
+  "voice": "V0",
+  "language": "L0",
+  "claims": "C0",
+  "errors": "E0",
+  "repeat": "D0",
+  "reads": "X0",
+  "temperature": 0.0,
+  "user_temperature": 0.3,
+  "base_seed": 1000,
+  "num_ctx": 12288,
+  "user_num_ctx": null,
+  "max_tokens": 1024,
+  "max_agent_calls": 30,
+  "max_user_turns": 20,
+  "max_tool_errors": 10,
+  "stall_retry_temperature": 0.7,
+  "max_stall_retries": 2,
+  "claim_retry_temperature": 0.7,
+  "max_claim_retries": 2,
+  "max_repeat_retries": 1,
+  "max_format_retries": 2
+ },
+ "trials": 2,
+ "tasks_file": "adv",
+ "task_sha256": {
+  "adv-01": "40d67a5966d1369e47ba870b2bfb5754445daa2bfdb2011ae268c4fada22036e",
+  "adv-02": "26776f99794bf3d4c2f1b7f3d6e70613740697e78e355a407a4d8dccdb2aa2e4",
+  "adv-03": "9f59a95b44bc8679b1d0177ffe04a1ae9b3862f1bd983436c33163766b36d21d",
+  "adv-04": "6a0e90fd52fd50df09c13d5f7c8d9c95a3bcd20281990b7e5957195661aa8bf3",
+  "adv-05": "0d5a03061484eeb139a0b2c2ec706d64759e4b239fa8cc63c9589e7f71a14bf4",
+  "adv-06": "c1d4d7a639768a5d016853307c63e5af435b06b9aaaa97afb4f15febb5b9106c",
+  "adv-07": "c21c26175f28840ded891b31097eab6429744944d7594258a5eabc34e109e3e8",
+  "adv-08": "00cddeb73c34c1e690b6caebdf497500b17693f46b3d065ed104b50af68beb45",
+  "adv-09": "7cc65c57c97df51f35ca595664a3bfcee6e667ddd9c9b66327816865d019b2bd",
+  "adv-10": "11733b748d3d393a6fe4a2cad96263ee777d7ab5f5ee2af354e26c60110b94e8"
+ },
+ "seed_hash": "cb744d602ecbbd914593a349ee6d9f7c5bf5786439a0c6dc40e9e7b205769e7b",
+ "prompt_sha256": {
+  "policy": "79d8ec92e0f6ac1b95c3a0f36eb136ebdb289b511ebfecc07893d383d6b093c0",
+  "agent_system": "7238ce2ba88a44d37e194701bff80b2224156510e84f61dee6fc2520968dafc7",
+  "user_sim": "21ee208bfed4a8b1774101db3c14d1f2c12328840ea2cb7e3c78c427d0c86bb7",
+  "tools": "565d3ecc74d8b6cf826ce2c9c74026f3c42542a23628722017367c360e2f937a"
+ },
+ "tools_sha256_by_reads": {
+  "X0": "565d3ecc74d8b6cf826ce2c9c74026f3c42542a23628722017367c360e2f937a",
+  "X1": "bf31397edb633db2c823afb32ad3e368b425605b47ef57ceeb3ba07663d94791"
+ },
+ "harness_sha256": {
+  "turn_reminder": "fb22bde356be731cec35611b672c0dc9cdcdf6eb96db979bdbe43baf3e76b554",
+  "stall_notice": "db1ff55869f766c5d232196f296d0e6b6c3723716de1a335f88bedf085c7cc7d",
+  "cut_off_notice": "2fcc16bea5712a391866a42a5211bbfd1b215ea8a23e34321c8130073f9224ee",
+  "format_notice": "2e5c71e493d7c020dfeef1988a83727be66972e57087365f813c825507c44496",
+  "language_notice": "b95cfa896cdc37f18c9605cf794c7300a452eb9b9021fdf7f1b054917e4375bf",
+  "claim_notice": "30074fefcdb6ac1d9de9a67fababf84c36ec909e06e7811c1d6c012b214ffbb7",
+  "repeat_notice": "f9111055985ac81336f53c4f905cb2b1faee23d1b8fb501f52da7b5491043645",
+  "first_agent_message": "72433b8700b525a7168d9eeede198bfaccbc1c6071ba92c6c20f6d4e1345600b",
+  "handoff_message": "99a845101ce2d1004baef697834f351e4cd72a9f18bb24a22cc173c57fd94855",
+  "nothing_heard": "2f4d418637558f002b3122b9901301567398e49f6b15dc3222f29e38e14204d2",
+  "confirm_notice": "68c3bd52081d5e16984d138947a5428c136bdc595c21762152772c2260891764",
+  "tool_errors": "0c5dc895bd2e487aab7b641ea126235e6b8d061232f68e7265046124f6865244",
+  "rules": "c8646a58fa389ffb97f8a67112977895c1b9b623328637670b220a5f8e47ea75"
+ },
+ "agent_provider": {
+  "provider": "ollama",
+  "model": "qwen3.5:4b",
+  "base_url": "http://127.0.0.1:11434",
+  "num_ctx": 12288,
+  "keep_alive": "60m",
+  "truncate": false,
+  "think": false,
+  "num_gpu": null,
+  "digest": "2a654d98e6fba55d452b7043684e9b57a947e393bbffa62485a7aac05ee4eefd",
+  "ollama_version": "0.35.1"
+ },
+ "user_provider": {
+  "provider": "script"
+ },
+ "voice_channel": null,
+ "caller_id": null,
+ "gpu_mib_used_by_others_at_start": 1114,
+ "ollama_ps_after_preload": [
+  {
+   "name": "qwen3.5:4b",
+   "size": 3484564847,
+   "size_vram": 3484564847
+  }
+ ],
+ "versions": {
+  "python": "3.11.9",
+  "sqlalchemy": "2.0.54",
+  "pydantic": "2.13.5",
+  "httpx": "0.28.1",
+  "pyyaml": "6.0.3"
+ },
+ "voice_extra": null
+}
