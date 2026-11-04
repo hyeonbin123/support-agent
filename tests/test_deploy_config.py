@@ -3,23 +3,29 @@
 # [테스트 묶음] 돌고 있는 서비스가 아니라 저장소에 있는 배포 설정의 글을 읽어 확인한다: GitHub Actions 작업의
 # 토큰 권한이 읽기 전용이고 모든 액션이 커밋 SHA로 고정됐는지, Docker 이미지가 uv 내려받기 캐시를 이미지
 # 레이어에 남기지 않고 uvicorn 접근 로그를 끄는지, compose의 앱 컨테이너가 권한을 줄여 뜨는지, 문서에 적힌
-# 실제 서비스 실행 명령도 접근 로그를 끄는지.
+# 실제 서비스 실행 명령도 접근 로그를 끄는지, 문서의 설정 목록이 서비스 설정(Settings)의 필드를 빠짐없이
+# 적는지.
 # [왜 중요한가] 고객 쪽 API는 세션 id를 경로에 넣고(/api/sessions/{id}/…) 그 id가 고객의 유일한 열쇠다. 접근
 # 로그에 경로가 남으면 로그를 읽을 수 있는 누구나 그 상담을 이어 갈 수 있다(docs/service.md "세션 id가 곧
 # 열쇠다"). 태그로 부른 액션은 누가 태그를 다른 커밋으로 옮기면 그 코드가 CI에서 돈다. 이런 설정은 한 줄을
-# 지워도 기능 테스트가 하나도 깨지지 않으므로 글자 그대로 고정해 둔다.
+# 지워도 기능 테스트가 하나도 깨지지 않으므로 글자 그대로 고정해 둔다. 설정 목록도 같다: 설정을 더하면서
+# 목록을 고치지 않아도 아무 테스트가 실패하지 않는다.
 # [방법] YAML은 PyYAML로, Dockerfile과 문서는 줄 단위로 읽는다. Docker·GitHub·네트워크에는 닿지 않는다.
-# 이미지를 실제로 빌드해 컨테이너를 띄워 보는 확인은 이 테스트의 몫이 아니다.
+# 설정 목록은 서비스 설정 클래스의 필드 이름과 맞춰 본다(설정 값을 만들지는 않는다). 이미지를 실제로 빌드해
+# 컨테이너를 띄워 보는 확인은 이 테스트의 몫이 아니다.
 
 from __future__ import annotations
 
-# json: Dockerfile의 CMD는 JSON 배열(exec 형식)이라 그대로 읽는다. re: `uses:` 줄과 커밋 SHA 모양을 본다.
-# yaml: 워크플로와 compose.yaml을 읽는다(tests/test_service.py도 compose.yaml을 이렇게 읽는다).
+# json: Dockerfile의 CMD는 JSON 배열(exec 형식)이라 그대로 읽는다. re: `uses:` 줄과 커밋 SHA 모양, 문서의
+# `대문자_이름`을 본다. yaml: 워크플로와 compose.yaml을 읽는다(tests/test_service.py도 compose.yaml을 이렇게
+# 읽는다). PREFIX·Settings: 서비스 설정의 환경 변수 접두사(SUPPORT_AGENT_)와 필드 목록(model_fields).
 import json
 import re
 from pathlib import Path
 
 import yaml
+
+from support_agent.service.settings import PREFIX, Settings
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -136,3 +142,19 @@ def test_documented_service_commands_turn_off_the_access_log():
     assert len({name for name, _ in commands}) >= 3  # README, service.md, voice.md
     for name, line in commands:
         assert "--no-access-log" in line, (name, line)
+
+
+# docs/service.md "실행"의 설정 목록: "설정은 환경 변수로 한다"로 시작하는 한 줄(문단)에 `대문자_이름`으로
+# 적은 이름이 서비스 설정(Settings)의 필드와 같아야 한다. 빠진 설정도, 설정에 없는 이름도 실패다. 환경
+# 변수는 접두사 SUPPORT_AGENT_ 뒤에 필드 이름을 대문자로 붙인 것이고(Settings.from_env), 목록은 접두사를
+# 뗀 이름으로 적는다. 같은 줄의 날짜 붙은 보탬 문장에 적은 이름도 함께 세고, 줄 머리에 적은 접두사
+# 자체(`SUPPORT_AGENT_`)는 이름이 아니라 뺀다. 그런 줄은 꼭 하나여야 한다(둘이면 어느 쪽이 목록인지
+# 모른다). 설정을 더하면서 목록을 고치지 않으면 문서만 읽고는 그 설정이 있는지 알 수 없다(2026-11-05까지
+# LOAD_SEED·EXPOSE_OPENAPI가 빠져 있었다).
+def test_the_documented_settings_list_names_every_service_setting():
+    lines = (ROOT / "docs" / "service.md").read_text(encoding="utf-8").splitlines()
+    (paragraph,) = [line for line in lines if line.startswith("설정은 환경 변수로 한다")]
+    documented = set(re.findall(r"`([A-Z][A-Z0-9_]*)`", paragraph)) - {PREFIX}
+    fields = {name.upper() for name in Settings.model_fields}
+    missing, unknown = sorted(fields - documented), sorted(documented - fields)
+    assert not missing and not unknown, f"목록에 없는 설정 {missing}, 설정에 없는 이름 {unknown}"

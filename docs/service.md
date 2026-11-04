@@ -27,7 +27,7 @@ Docker 없이 SQLite 파일로도 돈다.
 uv run uvicorn support_agent.service.app:create_app --factory --port 8062 --no-access-log
 ```
 
-설정은 환경 변수로 한다 (`SUPPORT_AGENT_` 접두사, `service/settings.py`): `DATABASE_URL`, `OLLAMA_URL`, `MODEL`, `THINK`, `NUM_CTX`, `KEEP_ALIVE`, `PRELOAD`, `POLICY`, `CLAIMS`, `GUARD`, `ERRORS`, `REPEAT`, `NOW`, `APPROVAL_REFUND_WON`, `ADMIN_TOKEN`, `MAX_MESSAGE_CHARS`, `MAX_AGENT_CALLS_PER_TURN`, `MAX_TURNS_PER_SESSION`, `VOICE`, `TTS_DEVICE`, `STT_DEVICE`, `MAX_AUDIO_BYTES`, `MAX_AUDIO_SECONDS`, `MAX_TTS_CHARS`, `MAX_CONCURRENT_TURNS`, `MAX_CONCURRENT_SPEECH`. 범위 밖 값은 서비스가 시작할 때 거절한다 (아래 "한도"의 설정 범위).
+설정은 환경 변수로 한다 (`SUPPORT_AGENT_` 접두사, `service/settings.py`): `DATABASE_URL`, `OLLAMA_URL`, `MODEL`, `THINK`, `NUM_CTX`, `KEEP_ALIVE`, `PRELOAD`, `POLICY`, `CLAIMS`, `GUARD`, `ERRORS`, `REPEAT`, `NOW`, `APPROVAL_REFUND_WON`, `ADMIN_TOKEN`, `MAX_MESSAGE_CHARS`, `MAX_AGENT_CALLS_PER_TURN`, `MAX_TURNS_PER_SESSION`, `LOAD_SEED`, `EXPOSE_OPENAPI`, `VOICE`, `TTS_DEVICE`, `STT_DEVICE`, `MAX_AUDIO_BYTES`, `MAX_AUDIO_SECONDS`, `MAX_TTS_CHARS`, `MAX_CONCURRENT_TURNS`, `MAX_CONCURRENT_SPEECH`. 범위 밖 값은 서비스가 시작할 때 거절한다 (아래 "한도"의 설정 범위). (2026-11-05 보탬) `LOAD_SEED`·`EXPOSE_OPENAPI` 두 설정이 이 목록에 빠져 있어 넣었다. `LOAD_SEED`(기본 켬)는 위 "처음 뜰 때" 줄의 생성 데이터 넣기를 켜고 끈다: 끄면 마이그레이션만 하고 생성 데이터를 넣지 않아 빈 DB면 빈 쇼핑몰로 뜬다 (MCP 서버도 같은 설정을 읽는다). `EXPOSE_OPENAPI`(기본 끔)는 API 설명(`/openapi.json`)을 내놓는다 (아래 "모델 없이 띄우기, 보안 스캔"). 이 목록이 설정과 같은지는 `tests/test_deploy_config.py`가 확인한다.
 
 ## 구성
 
