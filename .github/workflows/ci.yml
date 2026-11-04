@@ -41,9 +41,16 @@ jobs:
           persist-credentials: false
 
       # setup-uv는 v10 같은 큰 버전 태그를 내지 않아 정확한 릴리스로 고정해 왔다. 그 릴리스의 커밋 SHA로 부른다.
+      # cache-suffix: 캐시 키 끝에 붙는 이름이다. setup-uv의 캐시 키는 러너 OS·해석기 판·pyproject.toml·uv.lock
+      # 해시로 만들어져, 이름을 붙이지 않으면 같은 러너에서 캐시를 켠 다른 작업과 키가 같아진다. 2026-11-01부터
+      # audit 작업이 기본값(켬)으로 같은 키에 pip-audit만 든 캐시를 먼저 저장했고, 이 작업은 그 캐시에 적중한 뒤
+      # 정확히 같은 키라 자기 캐시를 저장하지 않아 실행마다 의존성을 다시 받았다(아래 audit 작업은 이제 캐시를
+      # 쓰지 않는다). 이름을 붙이면 이 작업은 audit이 남긴 그 캐시를 더는 받지 않고, 이름이 붙은 새 키로 첫 실행이
+      # 자기 캐시를 저장한 뒤 다음 실행부터 그것을 받는다.
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
         with:
           enable-cache: true
+          cache-suffix: test
 
       - name: Install dependencies
         run: uv sync --frozen
@@ -79,7 +86,13 @@ jobs:
         with:
           persist-credentials: false
 
+      # 캐시를 쓰지 않는다. 적지 않으면 setup-uv의 기본값(auto)이 GitHub 호스트 러너에서 캐시를 켜고, 키가 test
+      # 작업과 같은 재료(러너 OS·해석기 판·pyproject.toml·uv.lock 해시)로 만들어진다. 몇 초 만에 끝나는 이 작업이
+      # pip-audit만 든 캐시를 먼저 저장하면 test 작업이 그 캐시에 적중하고 자기 캐시를 저장하지 못한다(2026-11-01~
+      # 11-05 실제로 그랬다). 이 작업이 받는 것은 pip-audit 하나라 캐시 이득도 작다.
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
+        with:
+          enable-cache: false
 
       - name: Audit the locked default group
         shell: bash

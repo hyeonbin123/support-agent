@@ -1,10 +1,10 @@
 """배포 설정(CI 워크플로, Dockerfile, compose.yaml)과 실행 문서가 지키기로 한 보안·운영 약속을 확인한다."""
 
 # [테스트 묶음] 돌고 있는 서비스가 아니라 저장소에 있는 배포 설정의 글을 읽어 확인한다: GitHub Actions 작업의
-# 토큰 권한이 읽기 전용이고 모든 액션이 커밋 SHA로 고정됐는지, Docker 이미지가 uv 내려받기 캐시를 이미지
-# 레이어에 남기지 않고 uvicorn 접근 로그를 끄는지, compose의 앱 컨테이너가 권한을 줄여 뜨는지, 문서에 적힌
-# 실제 서비스 실행 명령도 접근 로그를 끄는지, 문서의 설정 목록이 서비스 설정(Settings)의 필드를 빠짐없이
-# 적는지.
+# 토큰 권한이 읽기 전용이고 모든 액션이 커밋 SHA로 고정됐는지, 작업끼리 setup-uv 캐시 키를 나눠 쓰지
+# 않는지(2026-11-05부터), Docker 이미지가 uv 내려받기 캐시를 이미지 레이어에 남기지 않고 uvicorn 접근 로그를
+# 끄는지, compose의 앱 컨테이너가 권한을 줄여 뜨는지, 문서에 적힌 실제 서비스 실행 명령도 접근 로그를 끄는지,
+# 문서의 설정 목록이 서비스 설정(Settings)의 필드를 빠짐없이 적는지.
 # [왜 중요한가] 고객 쪽 API는 세션 id를 경로에 넣고(/api/sessions/{id}/…) 그 id가 고객의 유일한 열쇠다. 접근
 # 로그에 경로가 남으면 로그를 읽을 수 있는 누구나 그 상담을 이어 갈 수 있다(docs/service.md "세션 id가 곧
 # 열쇠다"). 태그로 부른 액션은 누가 태그를 다른 커밋으로 옮기면 그 코드가 CI에서 돈다. 이런 설정은 한 줄을
@@ -80,6 +80,32 @@ def test_ci_audits_the_locked_default_group_with_a_pinned_pip_audit():
         assert flag in run, flag
 
 
+# CI 작업끼리 setup-uv 캐시를 같은 키로 나눠 쓰지 않는다. setup-uv의 캐시 키는 러너 OS·해석기 판·의존성 파일
+# (pyproject.toml·uv.lock 등) 해시 뒤에 cache-suffix를 붙여 만든다(고정한 setup-uv v10.1.0의
+# src/cache/restore-cache.ts computeKeys). 그래서 같은 러너 이미지에서 도는 두 작업이 둘 다 캐시를 켜고
+# cache-suffix가 같으면 키가 같다. 먼저 끝난 작업이 그 키로 캐시를 저장하면 다른 작업은 그 캐시에 적중하는데,
+# setup-uv는 정확히 같은 키에 적중한 작업의 캐시를 저장하지 않으므로(src/save-cache.ts) 적중한 작업은 실행마다
+# 자기 의존성을 다시 내려받는다. 2026-11-01~11-05 CI에서 실제로 그랬다: 몇 초 만에 끝나는 audit 작업이
+# pip-audit만 든 캐시를 먼저 저장했고, test 작업은 그 캐시에 적중한 뒤 실행마다 의존성 대부분(11-05 실행에서
+# 설치한 48개 가운데 44개)을 다시 받았다.
+# enable-cache를 적지 않으면 기본값 auto이고 GitHub 호스트 러너에서는 켜진다. YAML에서 false는 불리언으로
+# 읽히지만 따옴표로 쓴 "false"도 setup-uv에는 같은 뜻이라 글자로 바꿔 비교한다.
+def test_ci_jobs_do_not_share_a_setup_uv_cache_key():
+    workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    cached: dict[str, list[str]] = {}  # cache-suffix → 캐시를 켠 작업 이름들
+    for name, job in workflow["jobs"].items():
+        for step in job.get("steps", []):
+            if not step.get("uses", "").startswith("astral-sh/setup-uv@"):
+                continue
+            options = step.get("with") or {}
+            if str(options.get("enable-cache", "auto")).lower() != "false":
+                cached.setdefault(str(options.get("cache-suffix", "")), []).append(name)
+    # test 작업은 캐시를 쓴다. 비어 있으면 setup-uv 단계를 찾지 못한 것이라 아래 검사가 아무것도 보지 않는다.
+    assert cached
+    shared = {suffix: jobs for suffix, jobs in cached.items() if len(jobs) > 1}
+    assert not shared, f"같은 setup-uv 캐시 키를 쓰는 작업 {shared}"
+
+
 # Dockerfile을 지시 단위로 나눈다: 빈 줄과 주석 줄은 빼고, 줄 끝 `\`로 이어진 줄은 한 지시로 붙인다. 첫 줄의
 # 파서 지시(`# syntax=…`)도 주석 모양이라 여기서는 빠지므로 테스트가 따로 본다.
 def _dockerfile_instructions(text: str) -> list[str]:
@@ -144,17 +170,32 @@ def test_documented_service_commands_turn_off_the_access_log():
         assert "--no-access-log" in line, (name, line)
 
 
-# docs/service.md "실행"의 설정 목록: "설정은 환경 변수로 한다"로 시작하는 한 줄(문단)에 `대문자_이름`으로
-# 적은 이름이 서비스 설정(Settings)의 필드와 같아야 한다. 빠진 설정도, 설정에 없는 이름도 실패다. 환경
-# 변수는 접두사 SUPPORT_AGENT_ 뒤에 필드 이름을 대문자로 붙인 것이고(Settings.from_env), 목록은 접두사를
-# 뗀 이름으로 적는다. 같은 줄의 날짜 붙은 보탬 문장에 적은 이름도 함께 세고, 줄 머리에 적은 접두사
-# 자체(`SUPPORT_AGENT_`)는 이름이 아니라 뺀다. 그런 줄은 꼭 하나여야 한다(둘이면 어느 쪽이 목록인지
-# 모른다). 설정을 더하면서 목록을 고치지 않으면 문서만 읽고는 그 설정이 있는지 알 수 없다(2026-11-05까지
-# LOAD_SEED·EXPOSE_OPENAPI가 빠져 있었다).
+# docs/service.md "실행"의 설정 목록: "설정은 환경 변수로 한다"로 시작하는 한 줄(문단)의 목록 부분에
+# `대문자_이름`으로 적은 이름이 서비스 설정(Settings)의 필드와 같아야 한다. 빠진 설정도, 설정에 없는 이름도,
+# 같은 이름을 두 번 적은 것도 실패다. 환경 변수는 접두사 SUPPORT_AGENT_ 뒤에 필드 이름을 대문자로 붙인
+# 것이고(Settings.from_env), 목록은 접두사를 뗀 이름으로 적는다. 줄 머리의 괄호에는 그 접두사가 적혀 있어야
+# 한다(코드의 PREFIX와 같은 글자).
+# 목록 부분은 머리의 괄호를 닫는 `): ` 뒤부터 첫 문장 끝(`. `) 앞까지이고, 그 안은 `, `로 나눈 `이름`뿐이어야
+# 한다. 같은 줄의 뒤 문장(범위 검사 안내, 날짜 붙은 보탬)에 적은 이름은 세지 않는다. 2026-11-05 보탬 문장이
+# `LOAD_SEED`·`EXPOSE_OPENAPI`를 다시 적기 때문에, 줄 전체에서 세던 앞 판은 목록 부분에서 그 이름이 빠져도
+# 통과했다. 그런 줄은 꼭 하나여야 한다(둘이면 어느 쪽이 목록인지 모른다). 목록 모양이 바뀌면(두 줄로 접음,
+# 이름 사이에 설명 글) 이름을 잘못 세는 대신 실패하므로, 그때는 이 테스트를 새 모양에 맞춘다. 설정을 더하면서
+# 목록을 고치지 않으면 문서만 읽고는 그 설정이 있는지 알 수 없다(2026-11-05까지 LOAD_SEED·EXPOSE_OPENAPI가
+# 빠져 있었다).
 def test_the_documented_settings_list_names_every_service_setting():
     lines = (ROOT / "docs" / "service.md").read_text(encoding="utf-8").splitlines()
     (paragraph,) = [line for line in lines if line.startswith("설정은 환경 변수로 한다")]
-    documented = set(re.findall(r"`([A-Z][A-Z0-9_]*)`", paragraph)) - {PREFIX}
+    head, opened, rest = paragraph.partition("): ")
+    listed, ended, _ = rest.partition(". ")
+    assert opened and ended, f"목록 부분(`): ` 뒤, 첫 `. ` 앞)을 찾지 못함: {paragraph[:80]}"
+    assert f"`{PREFIX}`" in head, head
+    items = listed.split(", ")
+    odd = [item for item in items if not re.fullmatch(r"`[A-Z][A-Z0-9_]*`", item)]
+    assert not odd, f"목록에 `이름`이 아닌 항목 {odd}"
+    names = [item.strip("`") for item in items]
+    twice = sorted({name for name in names if names.count(name) > 1})
+    assert not twice, f"두 번 적은 이름 {twice}"
+    documented = set(names)
     fields = {name.upper() for name in Settings.model_fields}
     missing, unknown = sorted(fields - documented), sorted(documented - fields)
     assert not missing and not unknown, f"목록에 없는 설정 {missing}, 설정에 없는 이름 {unknown}"
