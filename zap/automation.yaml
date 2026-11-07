@@ -70,10 +70,15 @@ jobs:
       maxDuration: 5
 
   # Default policy, as HawkScan's. The service runs at most four turns at once and answers 503 beyond that.
+  # threadPerHost 1 (2026-11-07부터, 15차 스캔 전의 설정 변경. 8~14차는 4였다): 이 서비스는 한 세션의 턴을 잠금으로
+  # 차례로 처리하고 메시지 턴 하나가 수백 ms 동안 세션 잠금과 SQLite 쓰기를 쥔다. 스레드 4개로 돌리면 시간 기반
+  # 규칙(40024, SQLite 시간 기반 SQL 주입)이 재는 응답 시간에 다른 스레드의 요청을 기다린 시간이 섞여, 데이터로
+  # 저장만 되는 글(13차)이나 '없는 세션'으로 끝나는 조회(14차)가 느린 SQL처럼 보였다(docs/service.md 스캔 표).
+  # 스레드가 하나면 그 대기가 없다. 액티브 스캔 시간은 그만큼 길어진다.
   - type: activeScan
     parameters:
       context: support-agent
-      threadPerHost: 4
+      threadPerHost: 1
       maxScanDurationInMins: 120
 
   - type: passiveScan-wait
