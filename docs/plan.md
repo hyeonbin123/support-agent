@@ -150,6 +150,6 @@ MCP 서버 ──> 같은 도구 등록부
 
 확인하지 않은 것 (모델과 GPU가 필요하다)
 
-- 3단계 조건 그대로의 "실제 모델(Ollama)이 붙은 `docker compose up`에서 상담이 끝까지 됨". 위에서는 모델 자리에 규칙 대역을 넣었다
+- 3단계 조건 그대로의 "실제 모델(Ollama)이 붙은 `docker compose up`에서 상담이 끝까지 됨". 위에서는 모델 자리에 규칙 대역을 넣었다. (2026-11-07 추가 확인) 이 줄은 확인했다: origin을 새로 클론해(`f03cb9e`) `docker compose -p <다른 이름> up -d --build`로 띄운 스택(앱 8063·DB 55463, 호스트 Ollama 0.35.1의 `qwen3.5:4b`, think off)에 상담 하나를 보냈다. 본인 확인(find_customer) → 주문 조회(get_order) → 취소 요청에 모델이 한 번 되물어 "네, 취소해 주세요."를 더 보낸 뒤 cancel_order 성공, DB의 주문 O-90003은 `cancelled`, 감사 로그에 session_started·customer_message·llm_call·tool_call·agent_reply가 남았다. 실행 확인이지 측정이 아니고(모델 답은 매번 다를 수 있다), 정리 뒤 본 스택의 볼륨은 그대로다. 아래 두 줄은 그대로 확인하지 않았다
 - 6단계의 "README대로 측정이 재현됨" 가운데 실제 모델로 다시 재는 부분(`run --tasks dev --trials 4`). 기록에서 수치를 다시 계산하는 것까지만 했다
 - 음성 그룹(`uv sync --group voice`)의 설치와 음성 측정
