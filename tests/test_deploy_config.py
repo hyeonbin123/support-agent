@@ -59,8 +59,9 @@ def test_ci_token_is_read_only_and_every_action_is_pinned_to_a_commit():
             assert found["version"] and re.fullmatch(r"v\d+\.\d+\.\d+", found["version"]), line
 
 
-# CI의 audit 작업(2026-11-01부터): 잠금 파일의 기본 그룹(본체 + dev. CI와 서비스 Docker 이미지가 설치하는
-# 것)을 판을 고정한 pip-audit으로 공개 권고와 대조한다. 설치 없이(--disable-pip, --no-deps) 잠금 그대로의
+# CI의 audit 작업(2026-11-01부터): 잠금 파일의 기본 그룹(본체 + dev. CI의 test 작업이 설치하는 것이고, 서비스
+# Docker 이미지는 --no-dev라 그중 본체만 설치한다)을 판을 고정한 pip-audit으로 공개 권고와 대조한다. 설치
+# 없이(--disable-pip, --no-deps) 잠금 그대로의
 # 판만 보고(--frozen), 대조하지 못한 패키지가 있으면 실패한다(--strict). 단계 셸은 bash라 파이프 앞쪽의
 # 명령(uv export, grep)이 실패해도 단계가 실패한다(GitHub Actions의 bash는 pipefail을 켠다). 새 권고가 공개된
 # 날 코드와 상관없는 push가 막히지 않게 이 작업만 실패로 남는다(continue-on-error). 음성 그룹은 대조하지

@@ -63,9 +63,10 @@ jobs:
       - name: Test
         run: uv run pytest -q
 
-  # 공개 보안 권고 대조(2026-11-01부터). uv.lock의 기본 그룹(본체 + dev. 위 test 작업과 서비스 Docker 이미지가
-  # 설치하는 것)의 고정 판을 PyPI의 권고 정보(pip-audit 기본)와 대조한다. 패키지를 설치하지 않고(--disable-pip,
-  # --no-deps) 잠금에 고정된 `이름==판`만 본다.
+  # 공개 보안 권고 대조(2026-11-01부터). uv.lock의 기본 그룹(본체 + dev. 위 test 작업이 `uv sync --frozen`으로
+  # 설치하는 것이고, 서비스 Docker 이미지는 `uv sync --frozen --no-dev`라 그중 본체만 설치한다)의 고정 판을 PyPI의
+  # 권고 정보(pip-audit 기본)와 대조한다. 패키지를 설치하지 않고(--disable-pip, --no-deps) 잠금에 고정된
+  # `이름==판`만 본다.
   # - continue-on-error: 새 권고가 공개된 날 코드와 상관없는 push·PR이 막히지 않게, 이 작업이 실패해도 워크플로는
   #   통과한다. 이 작업만 실패로 표시되므로, 보면 판단해서 올리거나(`uv lock --upgrade-package <패키지>`) 이유를
   #   적고 `--ignore-vuln <ID>`로 이 단계에 더한다(지금은 없음)
